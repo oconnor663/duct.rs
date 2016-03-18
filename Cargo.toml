@@ -5,3 +5,6 @@ authors = ["oconnor663@gmail.com"]
 description = "a library for creating shell pipelines"
 repository = "https://github.com/oconnor663/duct.rs"
 license = "MIT"
+
+[dependencies]
+libc = "0.2.8"
