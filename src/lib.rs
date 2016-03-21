@@ -1,15 +1,14 @@
-extern crate libc;
-
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::mem;
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{IntoRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 use std::thread::JoinHandle;
+
+mod pipe;
 
 pub trait Expression: Clone + Debug {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus>;
@@ -32,7 +31,7 @@ pub trait Expression: Clone + Debug {
         let (stdout, stdout_reader) = pipe_with_reader_thread();
         let context = IoContext {
             stdin: CloneableStdio::Inherit,
-            stdout: CloneableStdio::Fd(stdout),
+            stdout: CloneableStdio::Handle(stdout),
             stderr: CloneableStdio::Inherit,
         };
         let status = try!(self.exec(context));
@@ -87,7 +86,7 @@ impl Expression for ArgvCommand {
         if let Some(ref path) = self.stdout {
             let file = try!(File::create(path));
             command.stdout(unsafe {
-                FromRawFd::from_raw_fd(file.into_raw_fd())
+                Stdio::from_raw_fd(file.into_raw_fd())
             });
         }
         Ok(try!(command.status()))
@@ -110,14 +109,14 @@ impl Pipe {
 impl Expression for Pipe {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
         let IoContext{stdin, stdout, stderr} = context;
-        let (read_pipe, write_pipe) = open_pipe();
+        let (read_pipe, write_pipe) = pipe::open_pipe();
         let left_context = IoContext{
             stdin: stdin,
-            stdout: CloneableStdio::Fd(write_pipe),
+            stdout: CloneableStdio::Handle(write_pipe),
             stderr: stderr.clone(),
         };
         let right_context = IoContext{
-            stdin: CloneableStdio::Fd(read_pipe),
+            stdin: CloneableStdio::Handle(read_pipe),
             stdout: stdout,
             stderr: stderr,
         };
@@ -163,75 +162,22 @@ pub struct IoContext {
 #[derive(Clone, Debug)]
 enum CloneableStdio {
     Inherit,
-    Fd(CloneableFd),
+    Handle(pipe::Handle),
 }
 
 impl CloneableStdio {
     fn to_stdio(self) -> Stdio {
         match self {
             CloneableStdio::Inherit => Stdio::inherit(),
-            CloneableStdio::Fd(fd) => unsafe {
-                FromRawFd::from_raw_fd(fd.into_raw_fd())
-            },
+            CloneableStdio::Handle(handle) => handle.to_stdio(),
         }
     }
 }
 
-#[derive(Debug)]
-struct CloneableFd {
-    // The struct *owns* this file descriptor, and will close it in drop().
-    fd: RawFd,
-}
-
-impl Clone for CloneableFd {
-    fn clone(&self) -> Self {
-        let new_fd = unsafe { libc::dup(self.fd) };
-        assert!(new_fd >= 0);
-        unsafe { FromRawFd::from_raw_fd(new_fd) }
-    }
-}
-
-impl FromRawFd for CloneableFd {
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        CloneableFd{fd: fd}
-    }
-}
-
-impl IntoRawFd for CloneableFd {
-    fn into_raw_fd(self) -> RawFd {
-        let fd = self.fd;
-        mem::forget(self);  // prevent drop() from closing the fd
-        fd
-    }
-}
-
-impl Drop for CloneableFd {
-    fn drop(&mut self) {
-        let error = unsafe { libc::close(self.fd) };
-        assert_eq!(error, 0);
-    }
-}
-
-// (read, write)
-// TODO: error handling
-fn open_pipe() -> (CloneableFd, CloneableFd) {
-    unsafe {
-        let mut pipes = [0, 0];
-        let error = libc::pipe(pipes.as_mut_ptr());
-        assert_eq!(error, 0);
-        // prevent child processes from inheriting these by default
-        for fd in &pipes {
-            let ret = libc::ioctl(*fd, libc::FIOCLEX);
-            assert_eq!(ret, 0);
-        }
-        (FromRawFd::from_raw_fd(pipes[0]), FromRawFd::from_raw_fd(pipes[1]))
-    }
-}
-
-fn pipe_with_reader_thread() -> (CloneableFd, JoinHandle<io::Result<Vec<u8>>>) {
-    let (read_pipe, write_pipe) = open_pipe();
+fn pipe_with_reader_thread() -> (pipe::Handle, JoinHandle<io::Result<Vec<u8>>>) {
+    let (read_pipe, write_pipe) = pipe::open_pipe();
     let thread = std::thread::spawn(move || {
-        let mut read_file = unsafe { File::from_raw_fd(read_pipe.into_raw_fd()) };
+        let mut read_file = read_pipe.to_file();
         let mut output = Vec::new();
         try!(read_file.read_to_end(&mut output));
         Ok(output)
