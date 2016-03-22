@@ -12,6 +12,10 @@ pub struct Handle {
 }
 
 impl Handle {
+    pub fn from_file(file: File) -> Handle {
+        unsafe { Handle::from_raw_fd(file.into_raw_fd()) }
+    }
+
     pub fn to_file(self) -> File {
         unsafe { File::from_raw_fd(self.into_raw_fd()) }
     }

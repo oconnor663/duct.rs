@@ -3,7 +3,6 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::os::unix::io::{IntoRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 use std::thread::JoinHandle;
@@ -12,6 +11,8 @@ mod pipe;
 
 pub trait Expression: Clone + Send + Debug + 'static {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus>;
+
+    fn get_ioargs(&mut self) -> &mut IoArgs;
 
     fn run(&self) -> Result<Output, Error> {
         let context = IoContext {
@@ -47,19 +48,34 @@ pub trait Expression: Clone + Send + Debug + 'static {
             Err(Error::Status(output))
         }
     }
+
+    fn stdin(&mut self, path: &AsRef<Path>) -> &mut Self {
+        self.get_ioargs().stdin = Some(path.as_ref().to_owned());
+        self
+    }
+
+    fn stdout(&mut self, path: &AsRef<Path>) -> &mut Self {
+        self.get_ioargs().stdout = Some(path.as_ref().to_owned());
+        self
+    }
+
+    fn stderr(&mut self, path: &AsRef<Path>) -> &mut Self {
+        self.get_ioargs().stderr = Some(path.as_ref().to_owned());
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ArgvCommand {
     argv: Vec<OsString>,
-    stdout: Option<PathBuf>,
+    ioargs: IoArgs,
 }
 
 impl ArgvCommand {
     pub fn new<T: AsRef<OsStr>>(prog: T) -> ArgvCommand {
         ArgvCommand{
             argv: vec![prog.as_ref().to_owned()],
-            stdout: None,
+            ioargs: IoArgs::new(),
         }
     }
 
@@ -67,29 +83,23 @@ impl ArgvCommand {
         self.argv.push(arg.as_ref().to_owned());
         self
     }
-
-    pub fn stdout<T: AsRef<Path>>(&mut self, path: T) -> &mut Self {
-        self.stdout = Some(path.as_ref().to_owned());
-        self
-    }
 }
 
 impl Expression for ArgvCommand {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
-        let IoContext{stdin, stdout, stderr} = context;
+        let new_context = try!(self.ioargs.update_context(context));
+        let IoContext{stdin, stdout, stderr} = new_context;
         // Create a Command and add the args.
         let mut command = Command::new(&self.argv[0]);
         command.args(&self.argv[1..]);
         command.stdin(stdin.to_stdio());
         command.stdout(stdout.to_stdio());
         command.stderr(stderr.to_stdio());
-        if let Some(ref path) = self.stdout {
-            let file = try!(File::create(path));
-            command.stdout(unsafe {
-                Stdio::from_raw_fd(file.into_raw_fd())
-            });
-        }
         Ok(try!(command.status()))
+    }
+
+    fn get_ioargs(&mut self) -> &mut IoArgs {
+        &mut self.ioargs
     }
 }
 
@@ -97,17 +107,19 @@ impl Expression for ArgvCommand {
 pub struct Pipe<T: Expression, U: Expression> {
     left: T,
     right: U,
+    ioargs: IoArgs,
 }
 
 impl<T: Expression, U: Expression> Pipe<T, U> {
     pub fn new(left: &T, right: &U) -> Pipe<T, U> {
-        Pipe{left: left.clone(), right: right.clone()}
+        Pipe{left: left.clone(), right: right.clone(), ioargs: IoArgs::new()}
     }
 }
 
 impl<T: Expression, U: Expression> Expression for Pipe<T, U> {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
-        let IoContext{stdin, stdout, stderr} = context;
+        let new_context = try!(self.ioargs.update_context(context));
+        let IoContext{stdin, stdout, stderr} = new_context;
         let (read_pipe, write_pipe) = pipe::open_pipe();
         let left_context = IoContext{
             stdin: stdin,
@@ -130,6 +142,10 @@ impl<T: Expression, U: Expression> Expression for Pipe<T, U> {
             _ => left_status,
         }
     }
+
+    fn get_ioargs(&mut self) -> &mut IoArgs {
+        &mut self.ioargs
+    }
 }
 
 #[derive(Debug)]
@@ -148,6 +164,35 @@ impl From<io::Error> for Error {
 impl From<std::string::FromUtf8Error> for Error {
     fn from(err: std::string::FromUtf8Error) -> Error {
         Error::Utf8(err)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IoArgs {
+    stdin: Option<PathBuf>,
+    stdout: Option<PathBuf>,
+    stderr: Option<PathBuf>,
+}
+
+impl IoArgs {
+    fn new() -> IoArgs {
+        IoArgs { stdin: None, stdout: None, stderr: None }
+    }
+
+    fn update_context(&self, mut context: IoContext) -> Result<IoContext, io::Error> {
+        if let Some(ref path) = self.stdin {
+            context.stdin = CloneableStdio::Handle(pipe::Handle::from_file(
+                try!(File::open(&path))));
+        }
+        if let Some(ref path) = self.stdout {
+            context.stdout = CloneableStdio::Handle(pipe::Handle::from_file(
+                try!(File::create(&path))));
+        }
+        if let Some(ref path) = self.stderr {
+            context.stderr = CloneableStdio::Handle(pipe::Handle::from_file(
+                try!(File::create(&path))));
+        }
+        Ok(context)
     }
 }
 
