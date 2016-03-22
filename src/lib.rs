@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 
 mod pipe;
 
-pub trait Expression: Clone + Debug {
+pub trait Expression: Clone + Send + Debug + 'static {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus>;
 
     fn run(&self) -> Result<Output, Error> {
@@ -94,19 +94,18 @@ impl Expression for ArgvCommand {
 }
 
 #[derive(Debug, Clone)]
-pub struct Pipe {
-    // TODO: Make this hold any Expression.
-    left: ArgvCommand,
-    right: ArgvCommand,
+pub struct Pipe<T: Expression, U: Expression> {
+    left: T,
+    right: U,
 }
 
-impl Pipe {
-    pub fn new(left: &ArgvCommand, right: &ArgvCommand) -> Pipe {
+impl<T: Expression, U: Expression> Pipe<T, U> {
+    pub fn new(left: &T, right: &U) -> Pipe<T, U> {
         Pipe{left: left.clone(), right: right.clone()}
     }
 }
 
-impl Expression for Pipe {
+impl<T: Expression, U: Expression> Expression for Pipe<T, U> {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
         let IoContext{stdin, stdout, stderr} = context;
         let (read_pipe, write_pipe) = pipe::open_pipe();
@@ -125,7 +124,7 @@ impl Expression for Pipe {
             left_clone.exec(left_context)
         });
         let right_status = self.right.exec(right_context);
-        let left_status = left_thread.join().unwrap();  // TODO: handle errors here?
+        let left_status = left_thread.join().unwrap();
         match right_status {
             Err(_) => right_status,
             _ => left_status,
@@ -225,10 +224,12 @@ mod test {
     fn test_pipe() {
         let mut left = ArgvCommand::new("echo");
         left.arg("hi");
+        let mut middle = ArgvCommand::new("sed");
+        middle.arg("s/i/o/");
         let mut right = ArgvCommand::new("sed");
-        right.arg("s/i/o/");
-        let pipe = Pipe::new(&left, &right);
+        right.arg("s/h/j/");
+        let pipe = Pipe::new(&left, &Pipe::new(&middle, &right));
         let output = pipe.read().unwrap();
-        assert_eq!(output, "ho");
+        assert_eq!(output, "jo");
     }
 }
