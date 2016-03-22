@@ -191,13 +191,10 @@ mod test {
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::PathBuf;
-    use std::process::Command;
-    use std::str::from_utf8;
 
     fn mktemp() -> PathBuf {
-        // TODO: use duct for this :)
-        let output = Command::new("mktemp").output().unwrap();
-        let path: PathBuf = from_utf8(&output.stdout).unwrap().trim().into();
+        let output = ArgvCommand::new("mktemp").read().unwrap();
+        let path: PathBuf = output.trim().into();
         println!("here's the path we're using: {:?}", path);
         path
     }
