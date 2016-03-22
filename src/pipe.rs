@@ -66,3 +66,19 @@ pub fn open_pipe() -> (Handle, Handle) {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::open_pipe;
+    use std::io::prelude::*;
+
+    #[test]
+    fn it_works() {
+        let (r, w) = open_pipe();
+        let mut r_file = r.to_file();
+        let mut w_file = w.to_file();
+        w_file.write_all(b"some stuff").unwrap();
+        drop(w_file);
+        let mut output = Vec::new();
+        r_file.read_to_end(&mut output).unwrap();
+    }
+}
