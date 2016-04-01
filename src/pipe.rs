@@ -95,7 +95,7 @@ mod test {
     use std::io::prelude::*;
 
     #[test]
-    fn it_works() {
+    fn test_pipes() {
         let (r, w) = open_pipe();
         let mut r_file = r.clone().to_file();
         let mut w_file = w.clone().to_file();
