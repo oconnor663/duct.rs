@@ -339,12 +339,13 @@ mod test {
 
     #[test]
     fn test_path() {
-        let input_path = Path::new("/tmp/duct_file_input");
-        let output_path = Path::new("/tmp/duct_file_output");
+        let input_path = sh("mktemp").read().unwrap();
+        let output_path = sh("mktemp").read().unwrap();
+        println!("Here are the paths: {:?} {:?}", &input_path, &output_path);
         File::create(&input_path).unwrap().write_all(b"foo").unwrap();
         let mut expr = sh("sed s/o/a/g");
-        expr.ioargs.stdin = InputArg::Path(input_path.to_owned());
-        expr.ioargs.stdout = OutputArg::Path(output_path.to_owned());
+        expr.ioargs.stdin = InputArg::Path(input_path.into());
+        expr.ioargs.stdout = OutputArg::Path(output_path.clone().into());
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
