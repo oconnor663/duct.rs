@@ -1,172 +1,150 @@
 use std::ffi::{OsStr, OsString};
-use std::fmt::Debug;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio, Output, ExitStatus};
+use std::path::PathBuf;
+use std::process::{Command, Output, ExitStatus};
 use std::thread::JoinHandle;
 
 mod pipe;
 
-pub trait Expression: Clone + Send + Debug + 'static {
-    fn exec_inner(&self, context: IoContext) -> io::Result<ExitStatus>;
+pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression {
+    let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
+    Expression {
+        inner: ExpressionInner::ArgvCommand(argv_vec),
+        ioargs: IoArgs::new(),
+    }
+}
 
-    fn get_ioargs(&self) -> &IoArgs;
+pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression {
+    Expression {
+        inner: ExpressionInner::ShCommand(command.as_ref().to_owned()),
+        ioargs: IoArgs::new(),
+    }
+}
 
-    fn get_ioargs_mut(&mut self) -> &mut IoArgs;
+pub fn pipe(left: Expression, right: Expression) -> Expression {
+    Expression {
+        inner: ExpressionInner::Pipe(Box::new(left), Box::new(right)),
+        ioargs: IoArgs::new(),
+    }
+}
 
-    fn run(&self) -> Result<Output, Error> {
-        let status = try!(apply_ioargs_and_exec(self, IoContext::new()));
-        Ok(Output{
-            status: status,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
+pub fn then(left: Expression, right: Expression) -> Expression {
+    Expression {
+        inner: ExpressionInner::Then(Box::new(left), Box::new(right)),
+        ioargs: IoArgs::new(),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Expression {
+    // TODO: Make these private.
+    pub inner: ExpressionInner,
+    pub ioargs: IoArgs,
+}
+
+// TODO: Make this private.
+#[derive(Clone, Debug)]
+pub enum ExpressionInner {
+    ArgvCommand(Vec<OsString>),
+    ShCommand(OsString),
+    Pipe(Box<Expression>, Box<Expression>),
+    Then(Box<Expression>, Box<Expression>),
+}
+
+impl Expression {
+    pub fn run(&self) -> Result<Output, Error> {
+        unreachable!();
+    }
+
+    pub fn read(&self) -> Result<String, Error> {
+        let (handle, reader) = pipe_with_reader_thread();
+        let mut context = IoContext::new();
+        context.stdout = handle;
+        let status = try!(self.exec(context));
+        let stdout_vec = try!(reader.join().unwrap());
+        if !status.success() {
+            return Err(Error::Status(Output {
+                status: status,
+                stdout: stdout_vec,
+                stderr: Vec::new(),
+            }));
+        }
+        let stdout_string = try!(std::str::from_utf8(&stdout_vec))
+                                .trim_right_matches('\n')
+                                .to_owned();
+        Ok(stdout_string)
+    }
+
+    fn exec(&self, parent_context: IoContext) -> io::Result<ExitStatus> {
+        self.ioargs.with_child_context(parent_context, |context| {
+            match self.inner {
+                ExpressionInner::ArgvCommand(ref argv) => exec_argv(argv, context),
+                ExpressionInner::ShCommand(ref command) => exec_sh(command, context),
+                ExpressionInner::Pipe(ref left, ref right) => exec_pipe(left, right, context),
+                ExpressionInner::Then(ref left, ref right) => exec_then(left, right, context),
+            }
         })
     }
-
-    fn read(&self) -> Result<String, Error> {
-        let (stdout, stdout_reader) = pipe_with_reader_thread();
-        let mut context = IoContext::new();
-        context.stdout = CloneableStdio::Handle(stdout);
-        let status = try!(apply_ioargs_and_exec(self, context));
-        let output = Output{
-            status: status,
-            stdout: try!(stdout_reader.join().unwrap()),
-            stderr: Vec::new(),
-        };
-        if output.status.success() {
-            // TODO: should only trim newlines
-            Ok(try!(String::from_utf8(output.stdout)).trim_right().to_string())
-        } else {
-            Err(Error::Status(output))
-        }
-    }
-
-    fn input<T: AsRef<[u8]>>(&mut self, buf: T) -> &mut Self {
-        self.get_ioargs_mut().input = Some(buf.as_ref().to_owned());
-        self
-    }
-
-    fn stdin<T: AsRef<Path>>(&mut self, path: T) -> &mut Self {
-        self.get_ioargs_mut().stdin = Some(path.as_ref().to_owned());
-        self
-    }
-
-    fn stdout<T: AsRef<Path>>(&mut self, path: T) -> &mut Self {
-        self.get_ioargs_mut().stdout = Some(path.as_ref().to_owned());
-        self
-    }
-
-    fn stderr<T: AsRef<Path>>(&mut self, path: T) -> &mut Self {
-        self.get_ioargs_mut().stderr = Some(path.as_ref().to_owned());
-        self
-    }
-
-    // How will pipe() work here? Can it use <T>?
 }
 
-#[derive(Debug, Clone)]
-pub struct ArgvCommand {
-    argv: Vec<OsString>,
-    ioargs: IoArgs,
+fn exec_argv(argv: &Vec<OsString>, context: IoContext) -> io::Result<ExitStatus> {
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]);
+    command.stdin(context.stdin.to_stdio());
+    command.stdout(context.stdout.to_stdio());
+    command.stderr(context.stderr.to_stdio());
+    command.status()
 }
 
-impl ArgvCommand {
-    pub fn new<T: AsRef<OsStr>>(prog: T) -> ArgvCommand {
-        ArgvCommand{
-            argv: vec![prog.as_ref().to_owned()],
-            ioargs: IoArgs::new(),
-        }
-    }
+fn exec_sh(command: &OsStr, context: IoContext) -> io::Result<ExitStatus> {
+    // TODO: What shell should we be using here, really?
+    // TODO: Figure out how cmd.exe works on Windows.
+    let mut argv = Vec::new();
+    argv.push("bash".into());
+    argv.push("-c".into());
+    argv.push(command.to_owned());
+    exec_argv(&argv, context)
+}
 
-    pub fn arg<T: AsRef<OsStr>>(&mut self, arg: T) -> &mut Self {
-        self.argv.push(arg.as_ref().to_owned());
-        self
+fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
+    let (read_pipe, write_pipe) = pipe::open_pipe();
+    let left_context = IoContext {
+        stdin: context.stdin,
+        stdout: write_pipe,
+        stderr: context.stderr.clone(),
+    };
+    let right_context = IoContext {
+        stdin: read_pipe,
+        stdout: context.stdout,
+        stderr: context.stderr,
+    };
+    // TODO: Use a scoped thread here, to avoid this stupid clone.
+    let left_expression_clone = left.clone();
+    let thread = std::thread::spawn(move || left_expression_clone.exec(left_context));
+    let right_status = try!(right.exec(right_context));
+    let left_status = try!(thread.join().unwrap());
+    if !right_status.success() {
+        Ok(right_status)
+    } else {
+        Ok(left_status)
     }
 }
 
-impl Expression for ArgvCommand {
-    fn exec_inner(&self, context: IoContext) -> io::Result<ExitStatus> {
-        let IoContext{stdin, stdout, stderr} = context;
-        let mut command = Command::new(&self.argv[0]);
-        command.args(&self.argv[1..]);
-        command.stdin(stdin.to_stdio());
-        command.stdout(stdout.to_stdio());
-        command.stderr(stderr.to_stdio());
-        command.status()
-    }
-
-    fn get_ioargs(&self) -> &IoArgs {
-        &self.ioargs
-    }
-
-    fn get_ioargs_mut(&mut self) -> &mut IoArgs {
-        &mut self.ioargs
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Pipe<T: Expression, U: Expression> {
-    left: T,
-    right: U,
-    ioargs: IoArgs,
-}
-
-impl<T: Expression, U: Expression> Pipe<T, U> {
-    pub fn new(left: &T, right: &U) -> Pipe<T, U> {
-        Pipe{left: left.clone(), right: right.clone(), ioargs: IoArgs::new()}
-    }
-}
-
-impl<T: Expression, U: Expression> Expression for Pipe<T, U> {
-    fn exec_inner(&self, context: IoContext) -> io::Result<ExitStatus> {
-        // Assemble new IoContexts for the left and the right sides.
-        let IoContext{stdin, stdout, stderr} = context;
-        let (read_pipe, write_pipe) = pipe::open_pipe();
-        let left_context = IoContext{
-            stdin: stdin,
-            stdout: CloneableStdio::Handle(write_pipe),
-            stderr: stderr.clone(),
-        };
-        let right_context = IoContext{
-            stdin: CloneableStdio::Handle(read_pipe),
-            stdout: stdout,
-            stderr: stderr,
-        };
-
-        // Clone the left side, and pass it to a new thread to execute.
-        // TODO: Probably use a scoped thread here.
-        let left_clone = self.left.clone();
-        let left_thread = std::thread::spawn(move || {
-            apply_ioargs_and_exec(&left_clone, left_context)
-        });
-
-        // Execute the right side in parallel, on this thread.
-        let right_status = try!(apply_ioargs_and_exec(&self.right, right_context));
-
-        // Wait for the left to finish, then return the rightmost error, if any.
-        let left_status = try!(left_thread.join().unwrap());
-        if right_status.success() {
-            Ok(left_status)
-        } else {
-            Ok(right_status)
-        }
-    }
-
-    fn get_ioargs(&self) -> &IoArgs {
-        &self.ioargs
-    }
-
-    fn get_ioargs_mut(&mut self) -> &mut IoArgs {
-        &mut self.ioargs
+fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
+    let status = try!(left.exec(context.clone()));
+    if !status.success() {
+        Ok(status)
+    } else {
+        right.exec(context)
     }
 }
 
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    Utf8(std::string::FromUtf8Error),
+    Utf8(std::str::Utf8Error),
     Status(Output),
 }
 
@@ -176,92 +154,116 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<std::string::FromUtf8Error> for Error {
-    fn from(err: std::string::FromUtf8Error) -> Error {
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Error {
         Error::Utf8(err)
     }
 }
 
+// IoArgs store the redirections and other settings associated with an expression. At execution
+// time, IoArgs are used to modify an IoContext, which contains the actual pipes that child process
+// TODO: Make this private.
 #[derive(Clone, Debug)]
 pub struct IoArgs {
-    input: Option<Vec<u8>>,
-    stdin: Option<PathBuf>,
-    stdout: Option<PathBuf>,
-    stderr: Option<PathBuf>,
+    stdin: InputArg,
+    stdout: OutputArg,
+    stderr: OutputArg,
 }
 
 impl IoArgs {
     fn new() -> IoArgs {
-        IoArgs { input: None, stdin: None, stdout: None, stderr: None }
-    }
-}
-
-fn apply_ioargs_and_exec<T: Expression>(expr: &T, mut context: IoContext) -> io::Result<ExitStatus> {
-    // Update the IoContext, if any IO arguments are defined for the current expression. This might
-    // require spawning a writer thread.
-    let ioargs = expr.get_ioargs();
-    if let Some(ref path) = ioargs.stdin {
-        context.stdin = CloneableStdio::Handle(pipe::Handle::from_file(
-            try!(File::open(&path))));
-    }
-    if let Some(ref path) = ioargs.stdout {
-        context.stdout = CloneableStdio::Handle(pipe::Handle::from_file(
-            try!(File::create(&path))));
-    }
-    if let Some(ref path) = ioargs.stderr {
-        context.stderr = CloneableStdio::Handle(pipe::Handle::from_file(
-            try!(File::create(&path))));
-    }
-    let mut writer_thread = None;
-    if let Some(ref input) = ioargs.input {
-        let (pipe_handle, thread_joiner) = pipe_with_writer_thread(input.clone());
-        writer_thread = Some(thread_joiner);
-        context.stdin = CloneableStdio::Handle(pipe_handle);
+        IoArgs {
+            stdin: InputArg::Inherit,
+            stdout: OutputArg::Inherit,
+            stderr: OutputArg::Inherit,
+        }
     }
 
-    // Execute the expression using the updated IoContext.
-    let exec_result = expr.exec_inner(context);
+    fn with_child_context<F, T>(&self, parent_context: IoContext, inner: F) -> io::Result<T>
+        where F: FnOnce(IoContext) -> io::Result<T>
+    {
+        let (stdin, maybe_stdin_thread) = try!(self.stdin.update_handle(parent_context.stdin));
+        let stdout = try!(self.stdout.update_handle(parent_context.stdout));
+        let stderr = try!(self.stderr.update_handle(parent_context.stderr));
+        let child_context = IoContext {
+            stdin: stdin,
+            stdout: stdout,
+            stderr: stderr,
+        };
 
-    // If we created a writer thread above, join it, even if the result above is an error.
-    // TODO: Suppress closed pipe errors, but pass along others.
-    let mut writer_result = Ok(());
-    if let Some(join_handle) = writer_thread {
-        writer_result = join_handle.join().unwrap();
+        let result = try!(inner(child_context));
+
+        if let Some(thread) = maybe_stdin_thread {
+            try!(thread.join().unwrap());
+        }
+
+        Ok(result)
     }
-
-    let status = try!(exec_result);
-    try!(writer_result);
-    Ok(status)
 }
 
 #[derive(Clone, Debug)]
+enum InputArg {
+    Inherit,
+    Null,
+    Path(PathBuf),
+    Bytes(Vec<u8>),
+}
+
+impl InputArg {
+    fn update_handle(&self,
+                     parent_handle: pipe::Handle)
+                     -> io::Result<(pipe::Handle, Option<JoinHandle<io::Result<()>>>)> {
+        let mut maybe_thread = None;
+        let handle = match self {
+            &InputArg::Inherit => parent_handle,
+            &InputArg::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
+            &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open(&p))),
+            &InputArg::Bytes(ref v) => {
+                // TODO: figure out a way to get rid of this clone
+                let (handle, thread) = pipe_with_writer_thread(v.clone());
+                maybe_thread = Some(thread);
+                handle
+            }
+        };
+        Ok((handle, maybe_thread))
+    }
+}
+
+#[derive(  Clone, Debug)]
+enum OutputArg {
+    Inherit,
+    Null,
+    Path(PathBuf), // TODO: stdout/stderr swaps
+}
+
+impl OutputArg {
+    fn update_handle(&self, parent_handle: pipe::Handle) -> io::Result<pipe::Handle> {
+        let handle = match self {
+            &OutputArg::Inherit => parent_handle,
+            &OutputArg::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
+            &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create(&p))),
+        };
+        Ok(handle)
+    }
+}
+
+// An IoContext represents the file descriptors child processes are talking to at execution time.
+// It's initialized in run(), with dups of the stdin/stdout/stderr pipes, and then passed down to
+// sub-expressions. Compound expressions will clone() it, and pipes/redirections will modify it
+// according to their IoArgs.
+#[derive(Clone, Debug)]
 pub struct IoContext {
-    stdin: CloneableStdio,
-    stdout: CloneableStdio,
-    stderr: CloneableStdio,
+    stdin: pipe::Handle,
+    stdout: pipe::Handle,
+    stderr: pipe::Handle,
 }
 
 impl IoContext {
     fn new() -> IoContext {
         IoContext {
-            stdin: CloneableStdio::Inherit,
-            stdout: CloneableStdio::Inherit,
-            stderr: CloneableStdio::Inherit,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-enum CloneableStdio {
-    Inherit,
-    Handle(pipe::Handle),
-}
-
-impl CloneableStdio {
-    fn to_stdio(self) -> Stdio {
-        match self {
-            CloneableStdio::Inherit => Stdio::inherit(),
-            CloneableStdio::Handle(handle) => handle.to_stdio(),
+            stdin: pipe::Handle::stdin(),
+            stdout: pipe::Handle::stdout(),
+            stderr: pipe::Handle::stderr(),
         }
     }
 }
@@ -289,56 +291,64 @@ fn pipe_with_writer_thread(input: Vec<u8>) -> (pipe::Handle, JoinHandle<io::Resu
 
 #[cfg(test)]
 mod test {
-    use super::{ArgvCommand, Pipe, Expression};
+    use super::{cmd, sh, pipe, then, InputArg, OutputArg};
     use std::fs::File;
     use std::io::prelude::*;
-    use std::path::PathBuf;
+    use std::path::Path;
 
-    fn mktemp() -> PathBuf {
-        let output = ArgvCommand::new("mktemp").read().unwrap();
-        let path: PathBuf = output.trim().into();
-        println!("here's the path we're using: {:?}", path);
-        path
+    #[test]
+    fn test_cmd() {
+        let output = cmd(&["echo", "hi"]).read().unwrap();
+        assert_eq!("hi", output);
     }
 
     #[test]
-    fn test_run() {
-        let result = ArgvCommand::new("true").arg("foo").arg("bar").run();
-        assert!(result.unwrap().status.success());
-    }
-
-    #[test]
-    fn test_read() {
-        let output = ArgvCommand::new("echo").arg("hi").read().unwrap();
-        assert_eq!(output, "hi");
-    }
-
-    #[test]
-    fn test_stdout() {
-        let path = mktemp();
-        let result = ArgvCommand::new("echo").arg("hi").stdout(&path).run();
-        assert!(result.unwrap().status.success());
-        let mut contents = String::new();
-        File::open(&path).unwrap().read_to_string(&mut contents).unwrap();
-        assert_eq!(contents, "hi\n");
+    fn test_sh() {
+        let output = sh("echo hi").read().unwrap();
+        assert_eq!("hi", output);
     }
 
     #[test]
     fn test_pipe() {
-        let mut left = ArgvCommand::new("echo");
-        left.arg("hi");
-        let mut middle = ArgvCommand::new("sed");
-        middle.arg("s/i/o/");
-        let mut right = ArgvCommand::new("sed");
-        right.arg("s/h/j/");
-        let pipe = Pipe::new(&left, &Pipe::new(&middle, &right));
-        let output = pipe.read().unwrap();
-        assert_eq!(output, "jo");
+        let output = pipe(sh("echo hi"), sh("sed s/i/o/")).read().unwrap();
+        assert_eq!("ho", output);
+    }
+
+    #[test]
+    fn test_then() {
+        let output = then(sh("echo -n hi"), sh("echo lo")).read().unwrap();
+        assert_eq!("hilo", output);
     }
 
     #[test]
     fn test_input() {
-        let output = ArgvCommand::new("cat").input(&"blarg".as_bytes()).read().unwrap();
-        assert_eq!(output, "blarg");
+        let mut expr = sh("sed s/f/g/");
+        expr.ioargs.stdin = InputArg::Bytes(b"foo".to_vec());
+        let output = expr.read().unwrap();
+        assert_eq!("goo", output);
+    }
+
+    #[test]
+    fn test_null() {
+        let mut expr = cmd(&["cat"]);
+        expr.ioargs.stdin = InputArg::Null;
+        expr.ioargs.stdout = OutputArg::Null;
+        let output = expr.read().unwrap();
+        assert_eq!("", output);
+    }
+
+    #[test]
+    fn test_path() {
+        let input_path = Path::new("/tmp/duct_file_input");
+        let output_path = Path::new("/tmp/duct_file_output");
+        File::create(&input_path).unwrap().write_all(b"foo").unwrap();
+        let mut expr = sh("sed s/o/a/g");
+        expr.ioargs.stdin = InputArg::Path(input_path.to_owned());
+        expr.ioargs.stdout = OutputArg::Path(output_path.to_owned());
+        let output = expr.read().unwrap();
+        assert_eq!("", output);
+        let mut file_output = String::new();
+        File::open(&output_path).unwrap().read_to_string(&mut file_output).unwrap();
+        assert_eq!("faa", file_output);
     }
 }

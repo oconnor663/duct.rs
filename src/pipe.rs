@@ -12,6 +12,19 @@ pub struct Handle {
 }
 
 impl Handle {
+    // TODO: Is giving unlocked access to the standard descriptors unsafe?
+    pub fn stdin() -> Handle {
+        dup_or_panic(libc::STDIN_FILENO)
+    }
+
+    pub fn stdout() -> Handle {
+        dup_or_panic(libc::STDOUT_FILENO)
+    }
+
+    pub fn stderr() -> Handle {
+        dup_or_panic(libc::STDERR_FILENO)
+    }
+
     pub fn from_file(file: File) -> Handle {
         unsafe { Handle::from_raw_fd(file.into_raw_fd()) }
     }
@@ -27,15 +40,13 @@ impl Handle {
 
 impl Clone for Handle {
     fn clone(&self) -> Self {
-        let new_fd = unsafe { libc::dup(self.fd) };
-        assert!(new_fd >= 0);
-        unsafe { FromRawFd::from_raw_fd(new_fd) }
+        dup_or_panic(self.fd)
     }
 }
 
 impl FromRawFd for Handle {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        Handle{fd: fd}
+        Handle { fd: fd }
     }
 }
 
@@ -70,6 +81,14 @@ pub fn open_pipe() -> (Handle, Handle) {
     }
 }
 
+fn dup_or_panic(fd: RawFd) -> Handle {
+    unsafe {
+        let new_fd = libc::dup(fd);
+        assert!(new_fd >= 0, "dup() returned an error");
+        FromRawFd::from_raw_fd(new_fd)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::open_pipe;
@@ -78,8 +97,9 @@ mod test {
     #[test]
     fn it_works() {
         let (r, w) = open_pipe();
-        let mut r_file = r.to_file();
-        let mut w_file = w.to_file();
+        let mut r_file = r.clone().to_file();
+        let mut w_file = w.clone().to_file();
+        drop(w);
         w_file.write_all(b"some stuff").unwrap();
         drop(w_file);
         let mut output = Vec::new();
