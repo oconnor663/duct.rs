@@ -87,6 +87,21 @@ impl Expression {
             }
         })
     }
+
+    pub fn stdin(&mut self, arg: InputArg) -> &mut Self {
+        self.ioargs.stdin = arg;
+        self
+    }
+
+    pub fn stdout(&mut self, arg: OutputArg) -> &mut Self {
+        self.ioargs.stdout = arg;
+        self
+    }
+
+    pub fn stderr(&mut self, arg: OutputArg) -> &mut Self {
+        self.ioargs.stderr = arg;
+        self
+    }
 }
 
 fn exec_argv(argv: &Vec<OsString>, context: IoContext) -> io::Result<ExitStatus> {
@@ -202,7 +217,7 @@ impl IoArgs {
 }
 
 #[derive(Clone, Debug)]
-enum InputArg {
+pub enum InputArg {
     Inherit,
     Null,
     Path(PathBuf),
@@ -230,7 +245,7 @@ impl InputArg {
 }
 
 #[derive(  Clone, Debug)]
-enum OutputArg {
+pub enum OutputArg {
     Inherit,
     Null,
     Path(PathBuf), // TODO: stdout/stderr swaps
@@ -294,7 +309,6 @@ mod test {
     use super::{cmd, sh, pipe, then, InputArg, OutputArg};
     use std::fs::File;
     use std::io::prelude::*;
-    use std::path::Path;
 
     #[test]
     fn test_cmd() {
@@ -323,7 +337,7 @@ mod test {
     #[test]
     fn test_input() {
         let mut expr = sh("sed s/f/g/");
-        expr.ioargs.stdin = InputArg::Bytes(b"foo".to_vec());
+        expr.stdin(InputArg::Bytes(b"foo".to_vec()));
         let output = expr.read().unwrap();
         assert_eq!("goo", output);
     }
@@ -331,8 +345,8 @@ mod test {
     #[test]
     fn test_null() {
         let mut expr = cmd(&["cat"]);
-        expr.ioargs.stdin = InputArg::Null;
-        expr.ioargs.stdout = OutputArg::Null;
+        expr.stdin(InputArg::Null);
+        expr.stdout(OutputArg::Null);
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
@@ -344,8 +358,8 @@ mod test {
         println!("Here are the paths: {:?} {:?}", &input_path, &output_path);
         File::create(&input_path).unwrap().write_all(b"foo").unwrap();
         let mut expr = sh("sed s/o/a/g");
-        expr.ioargs.stdin = InputArg::Path(input_path.into());
-        expr.ioargs.stdout = OutputArg::Path(output_path.clone().into());
+        expr.stdin(InputArg::Path(input_path.into()));
+        expr.stdout(OutputArg::Path(output_path.clone().into()));
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
