@@ -1,14 +1,17 @@
+extern crate crossbeam;
+
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, ExitStatus};
 use std::thread::JoinHandle;
 
 mod pipe;
 
-pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression {
+pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
     let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
     Expression {
         inner: ExpressionInner::ArgvCommand(argv_vec),
@@ -16,21 +19,21 @@ pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression {
     }
 }
 
-pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression {
+pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
     Expression {
         inner: ExpressionInner::ShCommand(command.as_ref().to_owned()),
         ioargs: IoArgs::new(),
     }
 }
 
-pub fn pipe(left: Expression, right: Expression) -> Expression {
+pub fn pipe<'a>(left: Expression<'a>, right: Expression<'a>) -> Expression<'a> {
     Expression {
         inner: ExpressionInner::Pipe(Box::new(left), Box::new(right)),
         ioargs: IoArgs::new(),
     }
 }
 
-pub fn then(left: Expression, right: Expression) -> Expression {
+pub fn then<'a>(left: Expression<'a>, right: Expression<'a>) -> Expression<'a> {
     Expression {
         inner: ExpressionInner::Then(Box::new(left), Box::new(right)),
         ioargs: IoArgs::new(),
@@ -38,22 +41,22 @@ pub fn then(left: Expression, right: Expression) -> Expression {
 }
 
 #[derive(Clone, Debug)]
-pub struct Expression {
+pub struct Expression<'a> {
     // TODO: Make these private.
-    pub inner: ExpressionInner,
-    pub ioargs: IoArgs,
+    pub inner: ExpressionInner<'a>,
+    pub ioargs: IoArgs<'a>,
 }
 
 // TODO: Make this private.
 #[derive(Clone, Debug)]
-pub enum ExpressionInner {
+pub enum ExpressionInner<'a> {
     ArgvCommand(Vec<OsString>),
     ShCommand(OsString),
-    Pipe(Box<Expression>, Box<Expression>),
-    Then(Box<Expression>, Box<Expression>),
+    Pipe(Box<Expression<'a>>, Box<Expression<'a>>),
+    Then(Box<Expression<'a>>, Box<Expression<'a>>),
 }
 
-impl Expression {
+impl<'a> Expression<'a> {
     pub fn run(&self) -> Result<Output, Error> {
         unreachable!();
     }
@@ -88,7 +91,7 @@ impl Expression {
         })
     }
 
-    pub fn stdin(&mut self, arg: InputArg) -> &mut Self {
+    pub fn stdin(&mut self, arg: InputArg<'a>) -> &mut Self {
         self.ioargs.stdin = arg;
         self
     }
@@ -135,11 +138,16 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
         stdout: context.stdout,
         stderr: context.stderr,
     };
-    // TODO: Use a scoped thread here, to avoid this stupid clone.
-    let left_expression_clone = left.clone();
-    let thread = std::thread::spawn(move || left_expression_clone.exec(left_context));
-    let right_status = try!(right.exec(right_context));
-    let left_status = try!(thread.join().unwrap());
+
+    let (left_result, right_result) = crossbeam::scope(|scope| {
+        let left_joiner = scope.spawn(|| left.exec(left_context));
+        let right_result = right.exec(right_context);
+        let left_result = left_joiner.join();
+        (left_result, right_result)
+    });
+
+    let right_status = try!(right_result);
+    let left_status = try!(left_result);
     if !right_status.success() {
         Ok(right_status)
     } else {
@@ -179,14 +187,14 @@ impl From<std::str::Utf8Error> for Error {
 // time, IoArgs are used to modify an IoContext, which contains the actual pipes that child process
 // TODO: Make this private.
 #[derive(Clone, Debug)]
-pub struct IoArgs {
-    stdin: InputArg,
+pub struct IoArgs<'a> {
+    stdin: InputArg<'a>,
     stdout: OutputArg,
     stderr: OutputArg,
 }
 
-impl IoArgs {
-    fn new() -> IoArgs {
+impl<'a> IoArgs<'a> {
+    fn new() -> IoArgs<'static> {
         IoArgs {
             stdin: InputArg::Inherit,
             stdout: OutputArg::Inherit,
@@ -217,14 +225,14 @@ impl IoArgs {
 }
 
 #[derive(Clone, Debug)]
-pub enum InputArg {
+pub enum InputArg<'a> {
     Inherit,
     Null,
-    Path(PathBuf),
-    Bytes(Vec<u8>),
+    Path(Cow<'a, Path>),
+    Bytes(Cow<'a, [u8]>),
 }
 
-impl InputArg {
+impl<'a> InputArg<'a> {
     fn update_handle(&self,
                      parent_handle: pipe::Handle)
                      -> io::Result<(pipe::Handle, Option<JoinHandle<io::Result<()>>>)> {
@@ -235,7 +243,7 @@ impl InputArg {
             &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open(&p))),
             &InputArg::Bytes(ref v) => {
                 // TODO: figure out a way to get rid of this clone
-                let (handle, thread) = pipe_with_writer_thread(v.clone());
+                let (handle, thread) = pipe_with_writer_thread(v.clone().into_owned());
                 maybe_thread = Some(thread);
                 handle
             }
@@ -307,6 +315,7 @@ fn pipe_with_writer_thread(input: Vec<u8>) -> (pipe::Handle, JoinHandle<io::Resu
 #[cfg(test)]
 mod test {
     use super::{cmd, sh, pipe, then, InputArg, OutputArg};
+    use std::borrow::Cow;
     use std::fs::File;
     use std::io::prelude::*;
 
@@ -337,7 +346,7 @@ mod test {
     #[test]
     fn test_input() {
         let mut expr = sh("sed s/f/g/");
-        expr.stdin(InputArg::Bytes(b"foo".to_vec()));
+        expr.stdin(InputArg::Bytes(Cow::Owned(b"foo".to_vec())));
         let output = expr.read().unwrap();
         assert_eq!("goo", output);
     }
@@ -358,7 +367,7 @@ mod test {
         println!("Here are the paths: {:?} {:?}", &input_path, &output_path);
         File::create(&input_path).unwrap().write_all(b"foo").unwrap();
         let mut expr = sh("sed s/o/a/g");
-        expr.stdin(InputArg::Path(input_path.into()));
+        expr.stdin(InputArg::Path(Cow::Owned(input_path.into())));
         expr.stdout(OutputArg::Path(output_path.clone().into()));
         let output = expr.read().unwrap();
         assert_eq!("", output);
