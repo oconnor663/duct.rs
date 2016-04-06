@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, ExitStatus};
 use std::thread::JoinHandle;
 
@@ -96,12 +96,12 @@ impl<'a> Expression<'a> {
         self
     }
 
-    pub fn stdout(&mut self, arg: OutputArg) -> &mut Self {
+    pub fn stdout(&mut self, arg: OutputArg<'a>) -> &mut Self {
         self.ioargs.stdout = arg;
         self
     }
 
-    pub fn stderr(&mut self, arg: OutputArg) -> &mut Self {
+    pub fn stderr(&mut self, arg: OutputArg<'a>) -> &mut Self {
         self.ioargs.stderr = arg;
         self
     }
@@ -189,8 +189,8 @@ impl From<std::str::Utf8Error> for Error {
 #[derive(Clone, Debug)]
 pub struct IoArgs<'a> {
     stdin: InputArg<'a>,
-    stdout: OutputArg,
-    stderr: OutputArg,
+    stdout: OutputArg<'a>,
+    stderr: OutputArg<'a>,
 }
 
 impl<'a> IoArgs<'a> {
@@ -252,14 +252,15 @@ impl<'a> InputArg<'a> {
     }
 }
 
+// TODO: stdout/stderr swaps
 #[derive(  Clone, Debug)]
-pub enum OutputArg {
+pub enum OutputArg<'a> {
     Inherit,
     Null,
-    Path(PathBuf), // TODO: stdout/stderr swaps
+    Path(Cow<'a, Path>),
 }
 
-impl OutputArg {
+impl<'a> OutputArg<'a> {
     fn update_handle(&self, parent_handle: pipe::Handle) -> io::Result<pipe::Handle> {
         let handle = match self {
             &OutputArg::Inherit => parent_handle,
@@ -346,7 +347,7 @@ mod test {
     #[test]
     fn test_input() {
         let mut expr = sh("sed s/f/g/");
-        expr.stdin(InputArg::Bytes(Cow::Owned(b"foo".to_vec())));
+        expr.stdin(InputArg::Bytes(Cow::Borrowed(b"foo")));
         let output = expr.read().unwrap();
         assert_eq!("goo", output);
     }
@@ -367,8 +368,8 @@ mod test {
         println!("Here are the paths: {:?} {:?}", &input_path, &output_path);
         File::create(&input_path).unwrap().write_all(b"foo").unwrap();
         let mut expr = sh("sed s/o/a/g");
-        expr.stdin(InputArg::Path(Cow::Owned(input_path.into())));
-        expr.stdout(OutputArg::Path(output_path.clone().into()));
+        expr.stdin(InputArg::Path(Cow::Borrowed(input_path.as_ref())));
+        expr.stdout(OutputArg::Path(Cow::Borrowed(output_path.as_ref())));
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
