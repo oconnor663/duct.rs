@@ -42,14 +42,12 @@ pub fn then<'a>(left: Expression<'a>, right: Expression<'a>) -> Expression<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Expression<'a> {
-    // TODO: Make these private.
-    pub inner: ExpressionInner<'a>,
-    pub ioargs: IoArgs<'a>,
+    inner: ExpressionInner<'a>,
+    ioargs: IoArgs<'a>,
 }
 
-// TODO: Make this private.
 #[derive(Clone, Debug)]
-pub enum ExpressionInner<'a> {
+enum ExpressionInner<'a> {
     ArgvCommand(Vec<OsString>),
     ShCommand(OsString),
     Pipe(Box<Expression<'a>>, Box<Expression<'a>>),
@@ -185,9 +183,8 @@ impl From<std::str::Utf8Error> for Error {
 
 // IoArgs store the redirections and other settings associated with an expression. At execution
 // time, IoArgs are used to modify an IoContext, which contains the actual pipes that child process
-// TODO: Make this private.
 #[derive(Clone, Debug)]
-pub struct IoArgs<'a> {
+struct IoArgs<'a> {
     stdin: InputArg<'a>,
     stdout: OutputArg<'a>,
     stderr: OutputArg<'a>,
