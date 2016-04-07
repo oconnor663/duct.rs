@@ -208,6 +208,8 @@ impl<'a> IoArgs<'a> {
                                                        .update_handle(parent_context.stdin, scope));
             let stdout = try!(self.stdout.update_handle(parent_context.stdout));
             let stderr = try!(self.stderr.update_handle(parent_context.stderr));
+            let (stdout, stderr) = apply_swaps(stdout, stderr, &self.stdout, &self.stderr);
+
             let child_context = IoContext {
                 stdin: stdin,
                 stdout: stdout,
@@ -223,6 +225,26 @@ impl<'a> IoArgs<'a> {
             Ok(ret)
         })
     }
+}
+
+// returns (new_stdout, new_stderr)
+fn apply_swaps(stdout_handle: pipe::Handle,
+               stderr_handle: pipe::Handle,
+               stdout_arg: &OutputArg,
+               stderr_arg: &OutputArg)
+               -> (pipe::Handle, pipe::Handle) {
+    // TODO: These clones are a little excessive.
+    let new_stdout = if let &OutputArg::Stderr = stdout_arg {
+        stderr_handle.clone()
+    } else {
+        stdout_handle.clone()
+    };
+    let new_stderr = if let &OutputArg::Stdout = stderr_arg {
+        stdout_handle.clone()
+    } else {
+        stderr_handle.clone()
+    };
+    (new_stdout, new_stderr)
 }
 
 #[derive(Clone, Debug)]
@@ -258,13 +280,18 @@ impl<'a> InputArg<'a> {
 pub enum OutputArg<'a> {
     Inherit,
     Null,
+    Stdout,
+    Stderr,
     Path(Cow<'a, Path>),
 }
 
 impl<'a> OutputArg<'a> {
     fn update_handle(&self, parent_handle: pipe::Handle) -> io::Result<pipe::Handle> {
         let handle = match self {
-            &OutputArg::Inherit => parent_handle,
+            // Stdout and Stderr are no-ops here, but with_child_context interprets them. This is
+            // because they refer to the *child's* stdout/stderr, with other redirections already
+            // applied, rather than to the parent's.
+            &OutputArg::Inherit | &OutputArg::Stdout | &OutputArg::Stderr => parent_handle,
             &OutputArg::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
             &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create(&p))),
         };
@@ -394,5 +421,13 @@ mod test {
         set_input(&mut c);
         let output = c.read().unwrap();
         assert_eq!("I own this: foo", output);
+    }
+
+    #[test]
+    fn test_stderr_to_stdout() {
+        let mut command = sh("echo hi >&2");
+        command.stderr(OutputArg::Stdout);
+        let output = command.read().unwrap();
+        assert_eq!("hi", output);
     }
 }

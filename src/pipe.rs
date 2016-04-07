@@ -75,11 +75,8 @@ pub fn open_pipe() -> (Handle, Handle) {
         let mut pipes = [0, 0];
         let error = libc::pipe(pipes.as_mut_ptr());
         assert_eq!(error, 0);
-        // prevent child processes from inheriting these by default
-        for fd in &pipes {
-            let ret = libc::ioctl(*fd, libc::FIOCLEX);
-            assert_eq!(ret, 0);
-        }
+        make_uninheritable(pipes[0]);
+        make_uninheritable(pipes[1]);
         (Handle::from_raw_fd(pipes[0]), Handle::from_raw_fd(pipes[1]))
     }
 }
@@ -88,8 +85,14 @@ fn dup_or_panic(fd: RawFd) -> Handle {
     unsafe {
         let new_fd = libc::dup(fd);
         assert!(new_fd >= 0, "dup() returned an error");
+        make_uninheritable(new_fd);
         FromRawFd::from_raw_fd(new_fd)
     }
+}
+
+unsafe fn make_uninheritable(fd: RawFd) {
+    let ret = libc::ioctl(fd, libc::FIOCLEX);
+    assert_eq!(ret, 0);
 }
 
 #[cfg(test)]
