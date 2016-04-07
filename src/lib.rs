@@ -320,7 +320,7 @@ fn pipe_with_writer_thread<'a>(input: &'a [u8],
 
 #[cfg(test)]
 mod test {
-    use super::{cmd, sh, pipe, then, InputArg, OutputArg};
+    use super::*;
     use std::borrow::Cow;
     use std::fs::File;
     use std::io::prelude::*;
@@ -380,5 +380,19 @@ mod test {
         let mut file_output = String::new();
         File::open(&output_path).unwrap().read_to_string(&mut file_output).unwrap();
         assert_eq!("faa", file_output);
+    }
+
+    #[test]
+    fn test_owned_input() {
+        fn set_input(expr: &mut Expression) {
+            let mystr = format!("I own this: {}", "foo");
+            // This would be a lifetime error if we tried to use &mystr.
+            expr.stdin(InputArg::Bytes(Cow::Owned(mystr.into_bytes())));
+        }
+
+        let mut c = cmd(&["cat"]);
+        set_input(&mut c);
+        let output = c.read().unwrap();
+        assert_eq!("I own this: foo", output);
     }
 }
