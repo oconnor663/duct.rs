@@ -202,22 +202,26 @@ impl<'a> IoArgs<'a> {
     fn with_child_context<F, T>(&self, parent_context: IoContext, inner: F) -> io::Result<T>
         where F: FnOnce(IoContext) -> io::Result<T>
     {
-        let (stdin, maybe_stdin_thread) = try!(self.stdin.update_handle(parent_context.stdin));
-        let stdout = try!(self.stdout.update_handle(parent_context.stdout));
-        let stderr = try!(self.stderr.update_handle(parent_context.stderr));
-        let child_context = IoContext {
-            stdin: stdin,
-            stdout: stdout,
-            stderr: stderr,
-        };
+        crossbeam::scope(|scope| {
+            let parent_context = parent_context;  // move it into the closure
+            let (stdin, maybe_stdin_thread) = try!(self.stdin
+                                                       .update_handle(parent_context.stdin, scope));
+            let stdout = try!(self.stdout.update_handle(parent_context.stdout));
+            let stderr = try!(self.stderr.update_handle(parent_context.stderr));
+            let child_context = IoContext {
+                stdin: stdin,
+                stdout: stdout,
+                stderr: stderr,
+            };
 
-        let result = try!(inner(child_context));
+            let ret = try!(inner(child_context));
 
-        if let Some(thread) = maybe_stdin_thread {
-            try!(thread.join().unwrap());
-        }
+            if let Some(thread) = maybe_stdin_thread {
+                try!(thread.join());
+            }
 
-        Ok(result)
+            Ok(ret)
+        })
     }
 }
 
@@ -230,17 +234,17 @@ pub enum InputArg<'a> {
 }
 
 impl<'a> InputArg<'a> {
-    fn update_handle(&self,
-                     parent_handle: pipe::Handle)
-                     -> io::Result<(pipe::Handle, Option<JoinHandle<io::Result<()>>>)> {
+    fn update_handle(&'a self,
+                     parent_handle: pipe::Handle,
+                     scope: &crossbeam::Scope<'a>)
+                     -> io::Result<(pipe::Handle, Option<WriterThreadJoiner>)> {
         let mut maybe_thread = None;
         let handle = match self {
             &InputArg::Inherit => parent_handle,
             &InputArg::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
             &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open(&p))),
             &InputArg::Bytes(ref v) => {
-                // TODO: figure out a way to get rid of this clone
-                let (handle, thread) = pipe_with_writer_thread(v.clone().into_owned());
+                let (handle, thread) = pipe_with_writer_thread(v, scope);
                 maybe_thread = Some(thread);
                 handle
             }
@@ -250,7 +254,7 @@ impl<'a> InputArg<'a> {
 }
 
 // TODO: stdout/stderr swaps
-#[derive(  Clone, Debug)]
+#[derive(Clone, Debug)]
 pub enum OutputArg<'a> {
     Inherit,
     Null,
@@ -300,9 +304,13 @@ fn pipe_with_reader_thread() -> (pipe::Handle, JoinHandle<io::Result<Vec<u8>>>) 
     (write_pipe, thread)
 }
 
-fn pipe_with_writer_thread(input: Vec<u8>) -> (pipe::Handle, JoinHandle<io::Result<()>>) {
+type WriterThreadJoiner = crossbeam::ScopedJoinHandle<io::Result<()>>;
+
+fn pipe_with_writer_thread<'a>(input: &'a [u8],
+                               scope: &crossbeam::Scope<'a>)
+                               -> (pipe::Handle, WriterThreadJoiner) {
     let (read_pipe, write_pipe) = pipe::open_pipe();
-    let thread = std::thread::spawn(move || {
+    let thread = scope.spawn(move || {
         let mut write_file = write_pipe.to_file();
         try!(write_file.write_all(&input));
         Ok(())

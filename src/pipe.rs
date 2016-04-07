@@ -38,6 +38,9 @@ impl Handle {
     }
 }
 
+// TODO: Instead of making cloning so explicit, pass Handle around by reference and give it an
+// &self make_stdio() method. Under the hood that will call dup(), but maybe someday when we have a
+// more flexible Command implementation it won't need to.
 impl Clone for Handle {
     fn clone(&self) -> Self {
         dup_or_panic(self.fd)
