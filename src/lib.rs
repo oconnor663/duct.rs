@@ -252,6 +252,8 @@ pub enum InputArg<'a> {
     Inherit,
     Null,
     Path(Cow<'a, Path>),
+    // TODO: Figure out what the hell to do with these File variants. They don't work with Cow,
+    // because they're not Clone/ToOwned.
     FileRef(&'a File),
     FileOwned(File),
     Bytes(Cow<'a, [u8]>),
@@ -287,6 +289,8 @@ pub enum OutputArg<'a> {
     Stdout,
     Stderr,
     Path(Cow<'a, Path>),
+    // TODO: Figure out what the hell to do with these File variants. They don't work with Cow,
+    // because they're not Clone/ToOwned.
     FileRef(&'a File),
     FileOwned(File),
 }
