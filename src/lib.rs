@@ -347,9 +347,10 @@ fn pipe_with_writer_thread<'a>(input: &'a [u8],
 
 #[cfg(test)]
 mod test {
+    extern crate tempfile;
+
     use super::*;
     use std::borrow::Cow;
-    use std::fs::File;
     use std::io::prelude::*;
 
     #[test]
@@ -395,17 +396,19 @@ mod test {
 
     #[test]
     fn test_path() {
-        let input_path = sh("mktemp").read().unwrap();
-        let output_path = sh("mktemp").read().unwrap();
-        println!("Here are the paths: {:?} {:?}", &input_path, &output_path);
-        File::create(&input_path).unwrap().write_all(b"foo").unwrap();
+        let mut input_file = tempfile::NamedTempFile::new().unwrap();
+        let mut output_file = tempfile::NamedTempFile::new().unwrap();
+        println!("Here are the paths: {:?} {:?}",
+                 input_file.path(),
+                 output_file.path());
+        input_file.write_all(b"foo").unwrap();
         let mut expr = sh("sed s/o/a/g");
-        expr.stdin(InputArg::Path(Cow::Borrowed(input_path.as_ref())));
-        expr.stdout(OutputArg::Path(Cow::Borrowed(output_path.as_ref())));
+        expr.stdin(InputArg::Path(Cow::Owned(input_file.path().to_owned())));
+        expr.stdout(OutputArg::Path(Cow::Owned(output_file.path().to_owned())));
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
-        File::open(&output_path).unwrap().read_to_string(&mut file_output).unwrap();
+        output_file.read_to_string(&mut file_output).unwrap();
         assert_eq!("faa", file_output);
     }
 

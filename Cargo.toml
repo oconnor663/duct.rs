@@ -9,3 +9,4 @@ license = "MIT"
 [dependencies]
 libc = "0.2.8"
 crossbeam = "0.2.8"
+tempfile = "2.1.1"
