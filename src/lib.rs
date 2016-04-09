@@ -40,13 +40,13 @@ pub fn then<'a>(left: Expression<'a>, right: Expression<'a>) -> Expression<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Expression<'a> {
     inner: ExpressionInner<'a>,
     ioargs: IoArgs<'a>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum ExpressionInner<'a> {
     ArgvCommand(Vec<OsString>),
     ShCommand(OsString),
@@ -183,7 +183,7 @@ impl From<std::str::Utf8Error> for Error {
 
 // IoArgs store the redirections and other settings associated with an expression. At execution
 // time, IoArgs are used to modify an IoContext, which contains the actual pipes that child process
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct IoArgs<'a> {
     stdin: InputArg<'a>,
     stdout: OutputArg<'a>,
@@ -247,11 +247,13 @@ fn apply_swaps(stdout_handle: pipe::Handle,
     (new_stdout, new_stderr)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum InputArg<'a> {
     Inherit,
     Null,
     Path(Cow<'a, Path>),
+    FileRef(&'a File),
+    FileOwned(File),
     Bytes(Cow<'a, [u8]>),
 }
 
@@ -265,6 +267,8 @@ impl<'a> InputArg<'a> {
             &InputArg::Inherit => parent_handle,
             &InputArg::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
             &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open(&p))),
+            &InputArg::FileRef(ref f) => pipe::Handle::dup_file(f),
+            &InputArg::FileOwned(ref f) => pipe::Handle::dup_file(f),
             &InputArg::Bytes(ref v) => {
                 let (handle, thread) = pipe_with_writer_thread(v, scope);
                 maybe_thread = Some(thread);
@@ -276,13 +280,15 @@ impl<'a> InputArg<'a> {
 }
 
 // TODO: stdout/stderr swaps
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum OutputArg<'a> {
     Inherit,
     Null,
     Stdout,
     Stderr,
     Path(Cow<'a, Path>),
+    FileRef(&'a File),
+    FileOwned(File),
 }
 
 impl<'a> OutputArg<'a> {
@@ -294,6 +300,8 @@ impl<'a> OutputArg<'a> {
             &OutputArg::Inherit | &OutputArg::Stdout | &OutputArg::Stderr => parent_handle,
             &OutputArg::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
             &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create(&p))),
+            &OutputArg::FileRef(ref f) => pipe::Handle::dup_file(f),
+            &OutputArg::FileOwned(ref f) => pipe::Handle::dup_file(f),
         };
         Ok(handle)
     }
@@ -352,6 +360,7 @@ mod test {
     use super::*;
     use std::borrow::Cow;
     use std::io::prelude::*;
+    use std::io::SeekFrom;
 
     #[test]
     fn test_cmd() {
@@ -432,5 +441,16 @@ mod test {
         command.stderr(OutputArg::Stdout);
         let output = command.read().unwrap();
         assert_eq!("hi", output);
+    }
+
+    #[test]
+    fn test_file() {
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        temp.write_all(b"example").unwrap();
+        temp.seek(SeekFrom::Start(0)).unwrap();
+        let mut expr = cmd(&["cat"]);
+        expr.stdin(InputArg::FileRef(&temp));
+        let output = expr.read().unwrap();
+        assert_eq!(output, "example");
     }
 }

@@ -1,7 +1,7 @@
 extern crate libc;
 
 use std::mem;
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{FromRawFd, IntoRawFd, AsRawFd, RawFd};
 use std::fs::File;
 use std::process::Stdio;
 
@@ -27,6 +27,10 @@ impl Handle {
 
     pub fn from_file(file: File) -> Handle {
         unsafe { Handle::from_raw_fd(file.into_raw_fd()) }
+    }
+
+    pub fn dup_file(file: &File) -> Handle {
+        dup_or_panic(file.as_raw_fd())
     }
 
     pub fn to_file(self) -> File {
