@@ -1,6 +1,6 @@
 extern crate crossbeam;
 
-use std::borrow::Cow;
+use std::borrow::Borrow;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -40,13 +40,11 @@ pub fn then<'a>(left: Expression<'a>, right: Expression<'a>) -> Expression<'a> {
     }
 }
 
-#[derive(Debug)]
 pub struct Expression<'a> {
     inner: ExpressionInner<'a>,
     ioargs: IoArgs<'a>,
 }
 
-#[derive(Debug)]
 enum ExpressionInner<'a> {
     ArgvCommand(Vec<OsString>),
     ShCommand(OsString),
@@ -183,7 +181,6 @@ impl From<std::str::Utf8Error> for Error {
 
 // IoArgs store the redirections and other settings associated with an expression. At execution
 // time, IoArgs are used to modify an IoContext, which contains the actual pipes that child process
-#[derive(Debug)]
 struct IoArgs<'a> {
     stdin: InputArg<'a>,
     stdout: OutputArg<'a>,
@@ -247,16 +244,12 @@ fn apply_swaps(stdout_handle: pipe::Handle,
     (new_stdout, new_stderr)
 }
 
-#[derive(Debug)]
 pub enum InputArg<'a> {
     Inherit,
     Null,
-    Path(Cow<'a, Path>),
-    // TODO: Figure out what the hell to do with these File variants. They don't work with Cow,
-    // because they're not Clone/ToOwned.
-    FileRef(&'a File),
-    FileOwned(File),
-    Bytes(Cow<'a, [u8]>),
+    Path(Box<Borrow<Path> + Sync + 'a>),
+    File(Box<Borrow<File> + Sync + 'a>),
+    Bytes(Box<Borrow<[u8]> + Sync + 'a>),
 }
 
 impl<'a> InputArg<'a> {
@@ -268,11 +261,10 @@ impl<'a> InputArg<'a> {
         let handle = match self {
             &InputArg::Inherit => parent_handle,
             &InputArg::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
-            &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open(&p))),
-            &InputArg::FileRef(ref f) => pipe::Handle::dup_file(f),
-            &InputArg::FileOwned(ref f) => pipe::Handle::dup_file(f),
+            &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open((&**p).borrow()))),
+            &InputArg::File(ref f) => pipe::Handle::dup_file((&**f).borrow()),
             &InputArg::Bytes(ref v) => {
-                let (handle, thread) = pipe_with_writer_thread(v, scope);
+                let (handle, thread) = pipe_with_writer_thread((&**v).borrow(), scope);
                 maybe_thread = Some(thread);
                 handle
             }
@@ -281,18 +273,13 @@ impl<'a> InputArg<'a> {
     }
 }
 
-// TODO: stdout/stderr swaps
-#[derive(Debug)]
 pub enum OutputArg<'a> {
     Inherit,
     Null,
     Stdout,
     Stderr,
-    Path(Cow<'a, Path>),
-    // TODO: Figure out what the hell to do with these File variants. They don't work with Cow,
-    // because they're not Clone/ToOwned.
-    FileRef(&'a File),
-    FileOwned(File),
+    Path(Box<Borrow<Path> + Sync + 'a>),
+    File(Box<Borrow<File> + Sync + 'a>),
 }
 
 impl<'a> OutputArg<'a> {
@@ -303,9 +290,8 @@ impl<'a> OutputArg<'a> {
             // applied, rather than to the parent's.
             &OutputArg::Inherit | &OutputArg::Stdout | &OutputArg::Stderr => parent_handle,
             &OutputArg::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
-            &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create(&p))),
-            &OutputArg::FileRef(ref f) => pipe::Handle::dup_file(f),
-            &OutputArg::FileOwned(ref f) => pipe::Handle::dup_file(f),
+            &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create((&**p).borrow()))),
+            &OutputArg::File(ref f) => pipe::Handle::dup_file((&**f).borrow()),
         };
         Ok(handle)
     }
@@ -362,7 +348,6 @@ mod test {
     extern crate tempfile;
 
     use super::*;
-    use std::borrow::Cow;
     use std::io::prelude::*;
     use std::io::SeekFrom;
 
@@ -393,7 +378,7 @@ mod test {
     #[test]
     fn test_input() {
         let mut expr = sh("sed s/f/g/");
-        expr.stdin(InputArg::Bytes(Cow::Borrowed(b"foo")));
+        expr.stdin(InputArg::Bytes(Box::new(b"foo".as_ref())));
         let output = expr.read().unwrap();
         assert_eq!("goo", output);
     }
@@ -416,8 +401,8 @@ mod test {
                  output_file.path());
         input_file.write_all(b"foo").unwrap();
         let mut expr = sh("sed s/o/a/g");
-        expr.stdin(InputArg::Path(Cow::Owned(input_file.path().to_owned())));
-        expr.stdout(OutputArg::Path(Cow::Owned(output_file.path().to_owned())));
+        expr.stdin(InputArg::Path(Box::new(input_file.path().to_owned())));
+        expr.stdout(OutputArg::Path(Box::new(output_file.path().to_owned())));
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
@@ -430,7 +415,7 @@ mod test {
         fn set_input(expr: &mut Expression) {
             let mystr = format!("I own this: {}", "foo");
             // This would be a lifetime error if we tried to use &mystr.
-            expr.stdin(InputArg::Bytes(Cow::Owned(mystr.into_bytes())));
+            expr.stdin(InputArg::Bytes(Box::new(mystr.into_bytes())));
         }
 
         let mut c = cmd(&["cat"]);
@@ -453,7 +438,7 @@ mod test {
         temp.write_all(b"example").unwrap();
         temp.seek(SeekFrom::Start(0)).unwrap();
         let mut expr = cmd(&["cat"]);
-        expr.stdin(InputArg::FileRef(&temp));
+        expr.stdin(InputArg::File(Box::new(&*temp)));
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
