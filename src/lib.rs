@@ -92,13 +92,48 @@ impl<'a> Expression<'a> {
         self
     }
 
+    pub fn stdin_path<T: AsRef<Path> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+        self.ioargs.stdin = InputArg::Path(Box::new(arg));
+        self
+    }
+
+    pub fn stdin_file<T: Borrow<File> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+        self.ioargs.stdin = InputArg::File(Box::new(arg));
+        self
+    }
+
+    pub fn stdin_bytes<T: AsRef<[u8]> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+        self.ioargs.stdin = InputArg::Bytes(Box::new(arg));
+        self
+    }
+
     pub fn stdout(&mut self, arg: OutputArg<'a>) -> &mut Self {
         self.ioargs.stdout = arg;
         self
     }
 
+    pub fn stdout_path<T: AsRef<Path> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+        self.ioargs.stdout = OutputArg::Path(Box::new(arg));
+        self
+    }
+
+    pub fn stdout_file<T: Borrow<File> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+        self.ioargs.stdout = OutputArg::File(Box::new(arg));
+        self
+    }
+
     pub fn stderr(&mut self, arg: OutputArg<'a>) -> &mut Self {
         self.ioargs.stderr = arg;
+        self
+    }
+
+    pub fn stderr_path<T: AsRef<Path> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+        self.ioargs.stderr = OutputArg::Path(Box::new(arg));
+        self
+    }
+
+    pub fn stderr_file<T: Borrow<File> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+        self.ioargs.stderr = OutputArg::File(Box::new(arg));
         self
     }
 }
@@ -378,7 +413,7 @@ mod test {
     #[test]
     fn test_input() {
         let mut expr = sh("sed s/f/g/");
-        expr.stdin(InputArg::Bytes(Box::new(b"foo".as_ref())));
+        expr.stdin_bytes(b"foo");
         let output = expr.read().unwrap();
         assert_eq!("goo", output);
     }
@@ -395,18 +430,18 @@ mod test {
     #[test]
     fn test_path() {
         let mut input_file = tempfile::NamedTempFile::new().unwrap();
-        let mut output_file = tempfile::NamedTempFile::new().unwrap();
+        let output_file = tempfile::NamedTempFile::new().unwrap();
         println!("Here are the paths: {:?} {:?}",
                  input_file.path(),
                  output_file.path());
         input_file.write_all(b"foo").unwrap();
         let mut expr = sh("sed s/o/a/g");
-        expr.stdin(InputArg::Path(Box::new(input_file.path().to_owned())));
-        expr.stdout(OutputArg::Path(Box::new(output_file.path().to_owned())));
+        expr.stdin_path(input_file.path());
+        expr.stdout_path(output_file.path());
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
-        output_file.read_to_string(&mut file_output).unwrap();
+        output_file.as_ref().read_to_string(&mut file_output).unwrap();
         assert_eq!("faa", file_output);
     }
 
@@ -415,7 +450,7 @@ mod test {
         fn set_input(expr: &mut Expression) {
             let mystr = format!("I own this: {}", "foo");
             // This would be a lifetime error if we tried to use &mystr.
-            expr.stdin(InputArg::Bytes(Box::new(mystr.into_bytes())));
+            expr.stdin_bytes(mystr);
         }
 
         let mut c = cmd(&["cat"]);
@@ -438,7 +473,7 @@ mod test {
         temp.write_all(b"example").unwrap();
         temp.seek(SeekFrom::Start(0)).unwrap();
         let mut expr = cmd(&["cat"]);
-        expr.stdin(InputArg::File(Box::new(&*temp)));
+        expr.stdin_file(temp.as_ref());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
