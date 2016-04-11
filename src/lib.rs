@@ -247,9 +247,9 @@ fn apply_swaps(stdout_handle: pipe::Handle,
 pub enum InputArg<'a> {
     Inherit,
     Null,
-    Path(Box<Borrow<Path> + Sync + 'a>),
+    Path(Box<AsRef<Path> + Sync + 'a>),
     File(Box<Borrow<File> + Sync + 'a>),
-    Bytes(Box<Borrow<[u8]> + Sync + 'a>),
+    Bytes(Box<AsRef<[u8]> + Sync + 'a>),
 }
 
 impl<'a> InputArg<'a> {
@@ -261,10 +261,10 @@ impl<'a> InputArg<'a> {
         let handle = match self {
             &InputArg::Inherit => parent_handle,
             &InputArg::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
-            &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open((&**p).borrow()))),
+            &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open(p.as_ref()))),
             &InputArg::File(ref f) => pipe::Handle::dup_file((&**f).borrow()),
             &InputArg::Bytes(ref v) => {
-                let (handle, thread) = pipe_with_writer_thread((&**v).borrow(), scope);
+                let (handle, thread) = pipe_with_writer_thread((**v).as_ref(), scope);
                 maybe_thread = Some(thread);
                 handle
             }
@@ -278,7 +278,7 @@ pub enum OutputArg<'a> {
     Null,
     Stdout,
     Stderr,
-    Path(Box<Borrow<Path> + Sync + 'a>),
+    Path(Box<AsRef<Path> + Sync + 'a>),
     File(Box<Borrow<File> + Sync + 'a>),
 }
 
@@ -290,7 +290,7 @@ impl<'a> OutputArg<'a> {
             // applied, rather than to the parent's.
             &OutputArg::Inherit | &OutputArg::Stdout | &OutputArg::Stderr => parent_handle,
             &OutputArg::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
-            &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create((&**p).borrow()))),
+            &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create(p.as_ref()))),
             &OutputArg::File(ref f) => pipe::Handle::dup_file((&**f).borrow()),
         };
         Ok(handle)
