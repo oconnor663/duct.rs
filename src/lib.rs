@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 
 mod pipe;
 
-pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
+pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static, 'static> {
     let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
     Expression {
         inner: ExpressionInner::ArgvCommand(argv_vec),
@@ -19,40 +19,46 @@ pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
     }
 }
 
-pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
+pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static, 'static> {
     Expression {
         inner: ExpressionInner::ShCommand(command.as_ref().to_owned()),
         ioargs: IoArgs::new(),
     }
 }
 
-pub fn pipe<'a>(left: Expression<'a>, right: Expression<'a>) -> Expression<'a> {
+pub fn pipe<'a, T, U>(left: T, right: U) -> Expression<'a, 'a>
+    where T: Borrow<Expression<'a, 'a>> + Sync + 'a,
+          U: Borrow<Expression<'a, 'a>> + Sync + 'a
+{
     Expression {
         inner: ExpressionInner::Pipe(Box::new(left), Box::new(right)),
         ioargs: IoArgs::new(),
     }
 }
 
-pub fn then<'a>(left: Expression<'a>, right: Expression<'a>) -> Expression<'a> {
+pub fn then<'a, T, U>(left: T, right: U) -> Expression<'a, 'a>
+    where T: Borrow<Expression<'a, 'a>> + Sync + 'a,
+          U: Borrow<Expression<'a, 'a>> + Sync + 'a
+{
     Expression {
         inner: ExpressionInner::Then(Box::new(left), Box::new(right)),
         ioargs: IoArgs::new(),
     }
 }
 
-pub struct Expression<'a> {
+pub struct Expression<'a, 'b> {
     inner: ExpressionInner<'a>,
-    ioargs: IoArgs<'a>,
+    ioargs: IoArgs<'b>,
 }
 
 enum ExpressionInner<'a> {
     ArgvCommand(Vec<OsString>),
     ShCommand(OsString),
-    Pipe(Box<Expression<'a>>, Box<Expression<'a>>),
-    Then(Box<Expression<'a>>, Box<Expression<'a>>),
+    Pipe(Box<Borrow<Expression<'a, 'a>> + Sync + 'a>, Box<Borrow<Expression<'a, 'a>> + Sync + 'a>),
+    Then(Box<Borrow<Expression<'a, 'a>> + Sync + 'a>, Box<Borrow<Expression<'a, 'a>> + Sync + 'a>),
 }
 
-impl<'a> Expression<'a> {
+impl<'a, 'b> Expression<'a, 'b> {
     pub fn run(&self) -> Result<Output, Error> {
         unreachable!();
     }
@@ -81,58 +87,62 @@ impl<'a> Expression<'a> {
             match self.inner {
                 ExpressionInner::ArgvCommand(ref argv) => exec_argv(argv, context),
                 ExpressionInner::ShCommand(ref command) => exec_sh(command, context),
-                ExpressionInner::Pipe(ref left, ref right) => exec_pipe(left, right, context),
-                ExpressionInner::Then(ref left, ref right) => exec_then(left, right, context),
+                ExpressionInner::Pipe(ref left, ref right) => {
+                    exec_pipe(left.as_ref().borrow(), right.as_ref().borrow(), context)
+                }
+                ExpressionInner::Then(ref left, ref right) => {
+                    exec_then(left.as_ref().borrow(), right.as_ref().borrow(), context)
+                }
             }
         })
     }
 
-    pub fn stdin(&mut self, arg: InputArg<'a>) -> &mut Self {
+    pub fn stdin(&mut self, arg: InputArg<'b>) -> &mut Self {
         self.ioargs.stdin = arg;
         self
     }
 
-    pub fn stdin_path<T: AsRef<Path> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+    pub fn stdin_path<T: AsRef<Path> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
         self.ioargs.stdin = InputArg::Path(Box::new(arg));
         self
     }
 
-    pub fn stdin_file<T: Borrow<File> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+    pub fn stdin_file<T: Borrow<File> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
         self.ioargs.stdin = InputArg::File(Box::new(arg));
         self
     }
 
-    pub fn stdin_bytes<T: AsRef<[u8]> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+    pub fn stdin_bytes<T: AsRef<[u8]> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
         self.ioargs.stdin = InputArg::Bytes(Box::new(arg));
         self
     }
 
-    pub fn stdout(&mut self, arg: OutputArg<'a>) -> &mut Self {
+    pub fn stdout(&mut self, arg: OutputArg<'b>) -> &mut Self {
         self.ioargs.stdout = arg;
         self
     }
 
-    pub fn stdout_path<T: AsRef<Path> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+    pub fn stdout_path<T: AsRef<Path> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
         self.ioargs.stdout = OutputArg::Path(Box::new(arg));
         self
     }
 
-    pub fn stdout_file<T: Borrow<File> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+    pub fn stdout_file<T: Borrow<File> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
         self.ioargs.stdout = OutputArg::File(Box::new(arg));
         self
     }
 
-    pub fn stderr(&mut self, arg: OutputArg<'a>) -> &mut Self {
+    pub fn stderr(&mut self, arg: OutputArg<'b>) -> &mut Self {
         self.ioargs.stderr = arg;
         self
     }
 
-    pub fn stderr_path<T: AsRef<Path> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+    pub fn stderr_path<T: AsRef<Path> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
         self.ioargs.stderr = OutputArg::Path(Box::new(arg));
         self
     }
 
-    pub fn stderr_file<T: Borrow<File> + Sync + 'a>(&mut self, arg: T) -> &mut Self {
+    pub fn stderr_file<T: Borrow<File> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
         self.ioargs.stderr = OutputArg::File(Box::new(arg));
         self
     }
