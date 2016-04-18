@@ -297,11 +297,9 @@ enum InputRedirect<'a> {
     Bytes(Box<AsRef<[u8]> + Send + Sync + 'a>),
 }
 
-impl<'a, 'b> InputRedirect<'a>
-    where 'a: 'b
-{
+impl<'a> InputRedirect<'a> {
     fn open_handle_maybe_thread(&'a self,
-                                scope: &crossbeam::Scope<'b>)
+                                scope: &crossbeam::Scope<'a>)
                                 -> io::Result<(pipe::Handle, Option<WriterThreadJoiner>)> {
         let mut maybe_thread = None;
         let handle = match self {
