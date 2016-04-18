@@ -8,66 +8,35 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::process::{Command, Output, ExitStatus};
 use std::thread::JoinHandle;
+use std::sync::Arc;
 
 mod pipe;
 
-pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static, 'static> {
+pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
     let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
     Expression {
-        inner: ExpressionInner::ArgvCommand(argv_vec),
-        ioargs: IoArgs::new(),
+        inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::ArgvCommand(argv_vec))),
     }
 }
 
-pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static, 'static> {
+pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
     Expression {
-        inner: ExpressionInner::ShCommand(command.as_ref().to_owned()),
-        ioargs: IoArgs::new(),
+        inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::ShCommand(command.as_ref()
+                                                                                     .to_owned()))),
     }
 }
 
-pub fn pipe<'a, T, U>(left: T, right: U) -> Expression<'a, 'a>
-    where T: Borrow<Expression<'a, 'a>> + Sync + 'a,
-          U: Borrow<Expression<'a, 'a>> + Sync + 'a
-{
-    Expression {
-        inner: ExpressionInner::Pipe(Box::new(left), Box::new(right)),
-        ioargs: IoArgs::new(),
-    }
+#[derive(Clone)]
+pub struct Expression<'a> {
+    inner: Arc<ExpressionInner<'a>>,
 }
 
-pub fn then<'a, T, U>(left: T, right: U) -> Expression<'a, 'a>
-    where T: Borrow<Expression<'a, 'a>> + Sync + 'a,
-          U: Borrow<Expression<'a, 'a>> + Sync + 'a
-{
-    Expression {
-        inner: ExpressionInner::Then(Box::new(left), Box::new(right)),
-        ioargs: IoArgs::new(),
-    }
-}
-
-pub struct Expression<'a, 'b> {
-    inner: ExpressionInner<'a>,
-    ioargs: IoArgs<'b>,
-}
-
-enum ExpressionInner<'a> {
-    ArgvCommand(Vec<OsString>),
-    ShCommand(OsString),
-    Pipe(Box<Borrow<Expression<'a, 'a>> + Sync + 'a>, Box<Borrow<Expression<'a, 'a>> + Sync + 'a>),
-    Then(Box<Borrow<Expression<'a, 'a>> + Sync + 'a>, Box<Borrow<Expression<'a, 'a>> + Sync + 'a>),
-}
-
-impl<'a, 'b> Expression<'a, 'b> {
-    pub fn run(&self) -> Result<Output, Error> {
-        unreachable!();
-    }
-
+impl<'a> Expression<'a> {
     pub fn read(&self) -> Result<String, Error> {
         let (handle, reader) = pipe_with_reader_thread();
         let mut context = IoContext::new();
         context.stdout = handle;
-        let status = try!(self.exec(context));
+        let status = try!(self.inner.exec(context));
         let stdout_vec = try!(reader.join().unwrap());
         if !status.success() {
             return Err(Error::Status(Output {
@@ -82,73 +51,144 @@ impl<'a, 'b> Expression<'a, 'b> {
         Ok(stdout_string)
     }
 
-    fn exec(&self, parent_context: IoContext) -> io::Result<ExitStatus> {
-        self.ioargs.with_child_context(parent_context, |context| {
-            match self.inner {
-                ExpressionInner::ArgvCommand(ref argv) => exec_argv(argv, context),
-                ExpressionInner::ShCommand(ref command) => exec_sh(command, context),
-                ExpressionInner::Pipe(ref left, ref right) => {
-                    exec_pipe(left.as_ref().borrow(), right.as_ref().borrow(), context)
-                }
-                ExpressionInner::Then(ref left, ref right) => {
-                    exec_then(left.as_ref().borrow(), right.as_ref().borrow(), context)
-                }
-            }
-        })
+    pub fn pipe<T: Borrow<Expression<'a>>>(&self, right: T) -> Expression<'a> {
+        Expression {
+            inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::Pipe(self.clone(),
+                                                                             right.borrow()
+                                                                                  .clone()))),
+        }
     }
 
-    pub fn stdin(&mut self, arg: InputArg<'b>) -> &mut Self {
-        self.ioargs.stdin = arg;
-        self
+    pub fn then<T: Borrow<Expression<'a>>>(&self, right: T) -> Expression<'a> {
+        Expression {
+            inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::Then(self.clone(),
+                                                                             right.borrow()
+                                                                                  .clone()))),
+        }
     }
 
-    pub fn stdin_path<T: AsRef<Path> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
-        self.ioargs.stdin = InputArg::Path(Box::new(arg));
-        self
+    // TODO: Do clever things with custom traits here instead.
+    pub fn stdin_path<T: AsRef<Path> + Send + Sync + 'a>(&self, arg: T) -> Self {
+        Expression {
+            inner:
+                Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::Path(Box::new(arg))),
+                                             self.clone())),
+        }
     }
 
-    pub fn stdin_file<T: Borrow<File> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
-        self.ioargs.stdin = InputArg::File(Box::new(arg));
-        self
+    pub fn stdin_file<T: Borrow<File> + Send + Sync + 'a>(&self, arg: T) -> Self {
+        Expression {
+            inner:
+                Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::File(Box::new(arg))),
+                                             self.clone())),
+        }
     }
 
-    pub fn stdin_bytes<T: AsRef<[u8]> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
-        self.ioargs.stdin = InputArg::Bytes(Box::new(arg));
-        self
+    pub fn stdin_bytes<T: AsRef<[u8]> + Send + Sync + 'a>(&self, arg: T) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::Bytes(Box::new(arg))), self.clone())),
+        }
     }
 
-    pub fn stdout(&mut self, arg: OutputArg<'b>) -> &mut Self {
-        self.ioargs.stdout = arg;
-        self
+    pub fn stdin_null(&self) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::Null),
+                                                self.clone())),
+        }
     }
 
-    pub fn stdout_path<T: AsRef<Path> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
-        self.ioargs.stdout = OutputArg::Path(Box::new(arg));
-        self
+    pub fn stdout_path<T: AsRef<Path> + Send + Sync + 'a>(&self, arg: T) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::Path(Box::new(arg))),
+                                                          self.clone())),
+        }
     }
 
-    pub fn stdout_file<T: Borrow<File> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
-        self.ioargs.stdout = OutputArg::File(Box::new(arg));
-        self
+    pub fn stdout_file<T: Borrow<File> + Send + Sync + 'a>(&self, arg: T) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::File(Box::new(arg))),
+                                                          self.clone())),
+        }
     }
 
-    pub fn stderr(&mut self, arg: OutputArg<'b>) -> &mut Self {
-        self.ioargs.stderr = arg;
-        self
+    pub fn stdout_null(&self) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::Null),
+                                                self.clone())),
+        }
     }
 
-    pub fn stderr_path<T: AsRef<Path> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
-        self.ioargs.stderr = OutputArg::Path(Box::new(arg));
-        self
+    pub fn stdout_to_stderr(&self) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::Stderr),
+                                                self.clone())),
+        }
     }
 
-    pub fn stderr_file<T: Borrow<File> + Sync + 'b>(&mut self, arg: T) -> &mut Self {
-        self.ioargs.stderr = OutputArg::File(Box::new(arg));
-        self
+    pub fn stderr_path<T: AsRef<Path> + Send + Sync + 'a>(&self, arg: T) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::Path(Box::new(arg))),
+                                                          self.clone())),
+        }
+    }
+
+    pub fn stderr_file<T: Borrow<File> + Send + Sync + 'a>(&self, arg: T) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::File(Box::new(arg))),
+                                                          self.clone())),
+        }
+    }
+
+    pub fn stderr_null(&self) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::Null),
+                                                self.clone())),
+        }
+    }
+
+    pub fn stderr_to_stdout(&self) -> Self {
+        Expression {
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::Stdout),
+                                                self.clone())),
+        }
     }
 }
 
-fn exec_argv(argv: &Vec<OsString>, context: IoContext) -> io::Result<ExitStatus> {
+enum ExpressionInner<'a> {
+    Exec(ExecutableExpression<'a>),
+    Io(IoRedirect<'a>, Expression<'a>),
+}
+
+impl<'a> ExpressionInner<'a> {
+    fn exec(&self, parent_context: IoContext) -> io::Result<ExitStatus> {
+        match self {
+            &ExpressionInner::Exec(ref executable) => executable.exec(parent_context),
+            &ExpressionInner::Io(ref ioarg, ref expr) => {
+                ioarg.with_redirected_context(parent_context, |context| expr.inner.exec(context))
+            }
+        }
+    }
+}
+
+enum ExecutableExpression<'a> {
+    ArgvCommand(Vec<OsString>),
+    ShCommand(OsString),
+    Pipe(Expression<'a>, Expression<'a>),
+    Then(Expression<'a>, Expression<'a>),
+}
+
+impl<'a> ExecutableExpression<'a> {
+    fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
+        match self {
+            &ExecutableExpression::ArgvCommand(ref argv) => exec_argv(argv, context),
+            &ExecutableExpression::ShCommand(ref command) => exec_sh(command, context),
+            &ExecutableExpression::Pipe(ref left, ref right) => exec_pipe(left, right, context),
+            &ExecutableExpression::Then(ref left, ref right) => exec_then(left, right, context),
+        }
+    }
+}
+
+fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<ExitStatus> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
     command.stdin(context.stdin.to_stdio());
@@ -157,13 +197,13 @@ fn exec_argv(argv: &Vec<OsString>, context: IoContext) -> io::Result<ExitStatus>
     command.status()
 }
 
-fn exec_sh(command: &OsStr, context: IoContext) -> io::Result<ExitStatus> {
+fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitStatus> {
     // TODO: What shell should we be using here, really?
-    // TODO: Figure out how cmd.exe works on Windows.
+    // TODO: Figure out how cmd.Exec works on Windows.
     let mut argv = Vec::new();
-    argv.push("bash".into());
-    argv.push("-c".into());
-    argv.push(command.to_owned());
+    argv.push("bash".as_ref());
+    argv.push("-c".as_ref());
+    argv.push(command.as_ref());
     exec_argv(&argv, context)
 }
 
@@ -181,8 +221,8 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
     };
 
     let (left_result, right_result) = crossbeam::scope(|scope| {
-        let left_joiner = scope.spawn(|| left.exec(left_context));
-        let right_result = right.exec(right_context);
+        let left_joiner = scope.spawn(|| left.inner.exec(left_context));
+        let right_result = right.inner.exec(right_context);
         let left_result = left_joiner.join();
         (left_result, right_result)
     });
@@ -197,11 +237,103 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
 }
 
 fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
-    let status = try!(left.exec(context.clone()));
+    let status = try!(left.inner.exec(context.clone()));
     if !status.success() {
         Ok(status)
     } else {
-        right.exec(context)
+        right.inner.exec(context)
+    }
+}
+
+enum IoRedirect<'a> {
+    Stdin(InputRedirect<'a>),
+    Stdout(OutputRedirect<'a>),
+    Stderr(OutputRedirect<'a>),
+}
+
+impl<'a> IoRedirect<'a> {
+    fn with_redirected_context<F, T>(&self, parent_context: IoContext, inner: F) -> io::Result<T>
+        where F: FnOnce(IoContext) -> io::Result<T>
+    {
+        crossbeam::scope(|scope| {
+            let mut context = parent_context;  // move it into the closure
+            let mut maybe_stdin_thread = None;
+            // Perform the redirect.
+            match self {
+                &IoRedirect::Stdin(ref redir) => {
+                    let (handle, maybe_thread) = try!(redir.open_handle_maybe_thread(scope));
+                    maybe_stdin_thread = maybe_thread;
+                    context.stdin = handle;
+                }
+                &IoRedirect::Stdout(ref redir) => {
+                    context.stdout = try!(redir.open_handle(&context.stdout, &context.stderr));
+                }
+                &IoRedirect::Stderr(ref redir) => {
+                    context.stderr = try!(redir.open_handle(&context.stdout, &context.stderr));
+                }
+            }
+
+            // Run the inner closure.
+            let ret = try!(inner(context));
+
+            // Join the input thread, if any.
+            if let Some(thread) = maybe_stdin_thread {
+                try!(thread.join());
+            }
+
+            Ok(ret)
+        })
+    }
+}
+
+enum InputRedirect<'a> {
+    Null,
+    Path(Box<AsRef<Path> + Send + Sync + 'a>),
+    File(Box<Borrow<File> + Send + Sync + 'a>),
+    Bytes(Box<AsRef<[u8]> + Send + Sync + 'a>),
+}
+
+impl<'a, 'b> InputRedirect<'a>
+    where 'a: 'b
+{
+    fn open_handle_maybe_thread(&'a self,
+                                scope: &crossbeam::Scope<'b>)
+                                -> io::Result<(pipe::Handle, Option<WriterThreadJoiner>)> {
+        let mut maybe_thread = None;
+        let handle = match self {
+            &InputRedirect::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
+            &InputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::open(p.as_ref()))),
+            &InputRedirect::File(ref f) => pipe::Handle::dup_file((**f).borrow()),
+            &InputRedirect::Bytes(ref v) => {
+                let (handle, thread) = pipe_with_writer_thread(v.as_ref().as_ref(), scope);
+                maybe_thread = Some(thread);
+                handle
+            }
+        };
+        Ok((handle, maybe_thread))
+    }
+}
+
+enum OutputRedirect<'a> {
+    Null,
+    Stdout,
+    Stderr,
+    Path(Box<AsRef<Path> + Send + Sync + 'a>),
+    File(Box<Borrow<File> + Send + Sync + 'a>),
+}
+
+impl<'a> OutputRedirect<'a> {
+    fn open_handle(&self,
+                   inherited_stdout: &pipe::Handle,
+                   inherited_stderr: &pipe::Handle)
+                   -> io::Result<pipe::Handle> {
+        Ok(match self {
+            &OutputRedirect::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
+            &OutputRedirect::Stdout => inherited_stdout.clone(),
+            &OutputRedirect::Stderr => inherited_stderr.clone(),
+            &OutputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::create(p.as_ref()))),
+            &OutputRedirect::File(ref f) => pipe::Handle::dup_file((**f).borrow()),
+        })
     }
 }
 
@@ -224,128 +356,9 @@ impl From<std::str::Utf8Error> for Error {
     }
 }
 
-// IoArgs store the redirections and other settings associated with an expression. At execution
-// time, IoArgs are used to modify an IoContext, which contains the actual pipes that child process
-struct IoArgs<'a> {
-    stdin: InputArg<'a>,
-    stdout: OutputArg<'a>,
-    stderr: OutputArg<'a>,
-}
-
-impl<'a> IoArgs<'a> {
-    fn new() -> IoArgs<'static> {
-        IoArgs {
-            stdin: InputArg::Inherit,
-            stdout: OutputArg::Inherit,
-            stderr: OutputArg::Inherit,
-        }
-    }
-
-    fn with_child_context<F, T>(&self, parent_context: IoContext, inner: F) -> io::Result<T>
-        where F: FnOnce(IoContext) -> io::Result<T>
-    {
-        crossbeam::scope(|scope| {
-            let parent_context = parent_context;  // move it into the closure
-            let (stdin, maybe_stdin_thread) = try!(self.stdin
-                                                       .update_handle(parent_context.stdin, scope));
-            let stdout = try!(self.stdout.update_handle(parent_context.stdout));
-            let stderr = try!(self.stderr.update_handle(parent_context.stderr));
-            let (stdout, stderr) = apply_swaps(stdout, stderr, &self.stdout, &self.stderr);
-
-            let child_context = IoContext {
-                stdin: stdin,
-                stdout: stdout,
-                stderr: stderr,
-            };
-
-            let ret = try!(inner(child_context));
-
-            if let Some(thread) = maybe_stdin_thread {
-                try!(thread.join());
-            }
-
-            Ok(ret)
-        })
-    }
-}
-
-// returns (new_stdout, new_stderr)
-fn apply_swaps(stdout_handle: pipe::Handle,
-               stderr_handle: pipe::Handle,
-               stdout_arg: &OutputArg,
-               stderr_arg: &OutputArg)
-               -> (pipe::Handle, pipe::Handle) {
-    // TODO: These clones are a little excessive.
-    let new_stdout = if let &OutputArg::Stderr = stdout_arg {
-        stderr_handle.clone()
-    } else {
-        stdout_handle.clone()
-    };
-    let new_stderr = if let &OutputArg::Stdout = stderr_arg {
-        stdout_handle.clone()
-    } else {
-        stderr_handle.clone()
-    };
-    (new_stdout, new_stderr)
-}
-
-pub enum InputArg<'a> {
-    Inherit,
-    Null,
-    Path(Box<AsRef<Path> + Sync + 'a>),
-    File(Box<Borrow<File> + Sync + 'a>),
-    Bytes(Box<AsRef<[u8]> + Sync + 'a>),
-}
-
-impl<'a> InputArg<'a> {
-    fn update_handle(&'a self,
-                     parent_handle: pipe::Handle,
-                     scope: &crossbeam::Scope<'a>)
-                     -> io::Result<(pipe::Handle, Option<WriterThreadJoiner>)> {
-        let mut maybe_thread = None;
-        let handle = match self {
-            &InputArg::Inherit => parent_handle,
-            &InputArg::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
-            &InputArg::Path(ref p) => pipe::Handle::from_file(try!(File::open(p.as_ref()))),
-            &InputArg::File(ref f) => pipe::Handle::dup_file((&**f).borrow()),
-            &InputArg::Bytes(ref v) => {
-                let (handle, thread) = pipe_with_writer_thread((**v).as_ref(), scope);
-                maybe_thread = Some(thread);
-                handle
-            }
-        };
-        Ok((handle, maybe_thread))
-    }
-}
-
-pub enum OutputArg<'a> {
-    Inherit,
-    Null,
-    Stdout,
-    Stderr,
-    Path(Box<AsRef<Path> + Sync + 'a>),
-    File(Box<Borrow<File> + Sync + 'a>),
-}
-
-impl<'a> OutputArg<'a> {
-    fn update_handle(&self, parent_handle: pipe::Handle) -> io::Result<pipe::Handle> {
-        let handle = match self {
-            // Stdout and Stderr are no-ops here, but with_child_context interprets them. This is
-            // because they refer to the *child's* stdout/stderr, with other redirections already
-            // applied, rather than to the parent's.
-            &OutputArg::Inherit | &OutputArg::Stdout | &OutputArg::Stderr => parent_handle,
-            &OutputArg::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
-            &OutputArg::Path(ref p) => pipe::Handle::from_file(try!(File::create(p.as_ref()))),
-            &OutputArg::File(ref f) => pipe::Handle::dup_file((&**f).borrow()),
-        };
-        Ok(handle)
-    }
-}
-
 // An IoContext represents the file descriptors child processes are talking to at execution time.
 // It's initialized in run(), with dups of the stdin/stdout/stderr pipes, and then passed down to
-// sub-expressions. Compound expressions will clone() it, and pipes/redirections will modify it
-// according to their IoArgs.
+// sub-expressions. Compound expressions will clone() it, and redirections will modify it.
 #[derive(Clone, Debug)]
 pub struct IoContext {
     stdin: pipe::Handle,
@@ -410,29 +423,26 @@ mod test {
 
     #[test]
     fn test_pipe() {
-        let output = pipe(sh("echo hi"), sh("sed s/i/o/")).read().unwrap();
+        let output = sh("echo hi").pipe(sh("sed s/i/o/")).read().unwrap();
         assert_eq!("ho", output);
     }
 
     #[test]
     fn test_then() {
-        let output = then(sh("echo -n hi"), sh("echo lo")).read().unwrap();
+        let output = sh("echo -n hi").then(sh("echo lo")).read().unwrap();
         assert_eq!("hilo", output);
     }
 
     #[test]
     fn test_input() {
-        let mut expr = sh("sed s/f/g/");
-        expr.stdin_bytes(b"foo");
+        let expr = sh("sed s/f/g/").stdin_bytes(b"foo");
         let output = expr.read().unwrap();
         assert_eq!("goo", output);
     }
 
     #[test]
     fn test_null() {
-        let mut expr = cmd(&["cat"]);
-        expr.stdin(InputArg::Null);
-        expr.stdout(OutputArg::Null);
+        let expr = cmd(&["cat"]).stdin_null().stdout_null().stderr_null();
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
@@ -441,13 +451,8 @@ mod test {
     fn test_path() {
         let mut input_file = tempfile::NamedTempFile::new().unwrap();
         let output_file = tempfile::NamedTempFile::new().unwrap();
-        println!("Here are the paths: {:?} {:?}",
-                 input_file.path(),
-                 output_file.path());
         input_file.write_all(b"foo").unwrap();
-        let mut expr = sh("sed s/o/a/g");
-        expr.stdin_path(input_file.path());
-        expr.stdout_path(output_file.path());
+        let expr = sh("sed s/o/a/g").stdin_path(input_file.path()).stdout_path(output_file.path());
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
@@ -457,22 +462,21 @@ mod test {
 
     #[test]
     fn test_owned_input() {
-        fn set_input(expr: &mut Expression) {
+        fn with_input<'a>(expr: &Expression<'a>) -> Expression<'a> {
             let mystr = format!("I own this: {}", "foo");
             // This would be a lifetime error if we tried to use &mystr.
-            expr.stdin_bytes(mystr);
+            expr.stdin_bytes(mystr)
         }
 
-        let mut c = cmd(&["cat"]);
-        set_input(&mut c);
-        let output = c.read().unwrap();
+        let c = cmd(&["cat"]);
+        let c_with_input = with_input(&c);
+        let output = c_with_input.read().unwrap();
         assert_eq!("I own this: foo", output);
     }
 
     #[test]
     fn test_stderr_to_stdout() {
-        let mut command = sh("echo hi >&2");
-        command.stderr(OutputArg::Stdout);
+        let command = sh("echo hi >&2").stderr_to_stdout();
         let output = command.read().unwrap();
         assert_eq!("hi", output);
     }
@@ -482,8 +486,7 @@ mod test {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
         temp.write_all(b"example").unwrap();
         temp.seek(SeekFrom::Start(0)).unwrap();
-        let mut expr = cmd(&["cat"]);
-        expr.stdin_file(temp.as_ref());
+        let expr = cmd(&["cat"]).stdin_file(temp.as_ref());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
