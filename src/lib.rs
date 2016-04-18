@@ -324,7 +324,15 @@ impl<'a> fmt::Debug for InputRedirect<'a> {
             &InputRedirect::Null => write!(f, "Null"),
             &InputRedirect::Path(ref p) => write!(f, "Path({:?})", p.as_ref().as_ref()),
             &InputRedirect::File(_) => write!(f, "File(<file>)"),
-            &InputRedirect::Bytes(ref b) => write!(f, "Bytes({:?})", b.as_ref().as_ref()),
+            &InputRedirect::Bytes(ref b) => {
+                let bytes = b.as_ref().as_ref();
+                let maybe_str = std::str::from_utf8(bytes);
+                if let Ok(s) = maybe_str {
+                    write!(f, "Bytes({:?})", s)
+                } else {
+                    write!(f, "Bytes({:?})", bytes)
+                }
+            }
         }
     }
 }
