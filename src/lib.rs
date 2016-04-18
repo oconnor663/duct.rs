@@ -2,6 +2,7 @@ extern crate crossbeam;
 
 use std::borrow::Borrow;
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
@@ -26,7 +27,7 @@ pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Expression<'a> {
     inner: Arc<ExpressionInner<'a>>,
 }
@@ -154,6 +155,7 @@ impl<'a> Expression<'a> {
     }
 }
 
+#[derive(Debug)]
 enum ExpressionInner<'a> {
     Exec(ExecutableExpression<'a>),
     Io(IoRedirect<'a>, Expression<'a>),
@@ -170,6 +172,7 @@ impl<'a> ExpressionInner<'a> {
     }
 }
 
+#[derive(Debug)]
 enum ExecutableExpression<'a> {
     ArgvCommand(Vec<OsString>),
     ShCommand(OsString),
@@ -245,6 +248,7 @@ fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::R
     }
 }
 
+#[derive(Debug)]
 enum IoRedirect<'a> {
     Stdin(InputRedirect<'a>),
     Stdout(OutputRedirect<'a>),
@@ -314,6 +318,17 @@ impl<'a, 'b> InputRedirect<'a>
     }
 }
 
+impl<'a> fmt::Debug for InputRedirect<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &InputRedirect::Null => write!(f, "Null"),
+            &InputRedirect::Path(ref p) => write!(f, "Path({:?})", p.as_ref().as_ref()),
+            &InputRedirect::File(_) => write!(f, "File(<file>)"),
+            &InputRedirect::Bytes(ref b) => write!(f, "Bytes({:?})", b.as_ref().as_ref()),
+        }
+    }
+}
+
 enum OutputRedirect<'a> {
     Null,
     Stdout,
@@ -334,6 +349,18 @@ impl<'a> OutputRedirect<'a> {
             &OutputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::create(p.as_ref()))),
             &OutputRedirect::File(ref f) => pipe::Handle::dup_file((**f).borrow()),
         })
+    }
+}
+
+impl<'a> fmt::Debug for OutputRedirect<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &OutputRedirect::Null => write!(f, "Null"),
+            &OutputRedirect::Stdout => write!(f, "Stdout"),
+            &OutputRedirect::Stderr => write!(f, "Stderr"),
+            &OutputRedirect::Path(ref p) => write!(f, "Path({:?})", p.as_ref().as_ref()),
+            &OutputRedirect::File(_) => write!(f, "File(<file>)"),
+        }
     }
 }
 
