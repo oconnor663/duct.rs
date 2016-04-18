@@ -33,11 +33,11 @@ impl Handle {
         dup_or_panic(file.as_raw_fd())
     }
 
-    pub fn to_file(self) -> File {
+    pub fn into_file(self) -> File {
         unsafe { File::from_raw_fd(self.into_raw_fd()) }
     }
 
-    pub fn to_stdio(self) -> Stdio {
+    pub fn into_stdio(self) -> Stdio {
         unsafe { Stdio::from_raw_fd(self.into_raw_fd()) }
     }
 }
@@ -107,8 +107,8 @@ mod test {
     #[test]
     fn test_pipes() {
         let (r, w) = open_pipe();
-        let mut r_file = r.clone().to_file();
-        let mut w_file = w.clone().to_file();
+        let mut r_file = r.clone().into_file();
+        let mut w_file = w.clone().into_file();
         drop(w);
         w_file.write_all(b"some stuff").unwrap();
         drop(w_file);

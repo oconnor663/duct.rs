@@ -194,9 +194,9 @@ impl<'a> ExecutableExpression<'a> {
 fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<ExitStatus> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
-    command.stdin(context.stdin.to_stdio());
-    command.stdout(context.stdout.to_stdio());
-    command.stderr(context.stderr.to_stdio());
+    command.stdin(context.stdin.into_stdio());
+    command.stdout(context.stdout.into_stdio());
+    command.stderr(context.stderr.into_stdio());
     command.status()
 }
 
@@ -414,7 +414,7 @@ impl IoContext {
 fn pipe_with_reader_thread() -> (pipe::Handle, JoinHandle<io::Result<Vec<u8>>>) {
     let (read_pipe, write_pipe) = pipe::open_pipe();
     let thread = std::thread::spawn(move || {
-        let mut read_file = read_pipe.to_file();
+        let mut read_file = read_pipe.into_file();
         let mut output = Vec::new();
         try!(read_file.read_to_end(&mut output));
         Ok(output)
@@ -429,7 +429,7 @@ fn pipe_with_writer_thread<'a>(input: &'a [u8],
                                -> (pipe::Handle, WriterThreadJoiner) {
     let (read_pipe, write_pipe) = pipe::open_pipe();
     let thread = scope.spawn(move || {
-        let mut write_file = write_pipe.to_file();
+        let mut write_file = write_pipe.into_file();
         try!(write_file.write_all(&input));
         Ok(())
     });
