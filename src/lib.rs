@@ -280,6 +280,12 @@ impl<'a> IntoStdinBytes<'a> for &'a [u8] {
     }
 }
 
+impl<'a> IntoStdinBytes<'a> for &'a Vec<u8> {
+    fn into_stdin_bytes(self) -> InputRedirect<'a> {
+        InputRedirect::BytesSlice(self.as_ref())
+    }
+}
+
 impl IntoStdinBytes<'static> for Vec<u8> {
     fn into_stdin_bytes(self) -> InputRedirect<'static> {
         InputRedirect::BytesVec(self)
@@ -287,6 +293,12 @@ impl IntoStdinBytes<'static> for Vec<u8> {
 }
 
 impl<'a> IntoStdinBytes<'a> for &'a str {
+    fn into_stdin_bytes(self) -> InputRedirect<'a> {
+        InputRedirect::BytesSlice(self.as_ref())
+    }
+}
+
+impl<'a> IntoStdinBytes<'a> for &'a String {
     fn into_stdin_bytes(self) -> InputRedirect<'a> {
         InputRedirect::BytesSlice(self.as_ref())
     }
@@ -314,6 +326,12 @@ impl<'a> IntoStdin<'a> for &'a Path {
     }
 }
 
+impl<'a> IntoStdin<'a> for &'a PathBuf {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        InputRedirect::Path(self.as_ref())
+    }
+}
+
 impl IntoStdin<'static> for PathBuf {
     fn into_stdin(self) -> InputRedirect<'static> {
         InputRedirect::PathBuf(self)
@@ -326,6 +344,12 @@ impl<'a> IntoStdin<'a> for &'a str {
     }
 }
 
+impl<'a> IntoStdin<'a> for &'a String {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        InputRedirect::Path(self.as_ref())
+    }
+}
+
 impl IntoStdin<'static> for String {
     fn into_stdin(self) -> InputRedirect<'static> {
         InputRedirect::PathBuf(self.into())
@@ -333,6 +357,12 @@ impl IntoStdin<'static> for String {
 }
 
 impl<'a> IntoStdin<'a> for &'a OsStr {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        InputRedirect::Path(self.as_ref())
+    }
+}
+
+impl<'a> IntoStdin<'a> for &'a OsString {
     fn into_stdin(self) -> InputRedirect<'a> {
         InputRedirect::Path(self.as_ref())
     }
@@ -400,6 +430,12 @@ impl<'a> IntoOutput<'a> for &'a Path {
     }
 }
 
+impl<'a> IntoOutput<'a> for &'a PathBuf {
+    fn into_output(self) -> OutputRedirect<'a> {
+        OutputRedirect::Path(self.as_ref())
+    }
+}
+
 impl IntoOutput<'static> for PathBuf {
     fn into_output(self) -> OutputRedirect<'static> {
         OutputRedirect::PathBuf(self)
@@ -412,6 +448,12 @@ impl<'a> IntoOutput<'a> for &'a str {
     }
 }
 
+impl<'a> IntoOutput<'a> for &'a String {
+    fn into_output(self) -> OutputRedirect<'a> {
+        OutputRedirect::Path(self.as_ref())
+    }
+}
+
 impl IntoOutput<'static> for String {
     fn into_output(self) -> OutputRedirect<'static> {
         OutputRedirect::PathBuf(self.into())
@@ -419,6 +461,12 @@ impl IntoOutput<'static> for String {
 }
 
 impl<'a> IntoOutput<'a> for &'a OsStr {
+    fn into_output(self) -> OutputRedirect<'a> {
+        OutputRedirect::Path(self.as_ref())
+    }
+}
+
+impl<'a> IntoOutput<'a> for &'a OsString {
     fn into_output(self) -> OutputRedirect<'a> {
         OutputRedirect::Path(self.as_ref())
     }
@@ -513,6 +561,7 @@ mod test {
     use super::*;
     use std::io::prelude::*;
     use std::io::SeekFrom;
+    use std::path::Path;
 
     #[test]
     fn test_cmd() {
@@ -599,5 +648,19 @@ mod test {
         let expr = cmd(&["cat"]).stdin(temp.as_ref());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
+    }
+
+    #[test]
+    fn test_ergonomics() {
+        // We don't get automatic Deref when we're matching trait implementations, so in addition
+        // to implementing String and &str, we *also* implement &String.
+        // TODO: See if specialization can clean this up.
+        let mystr = "owned string".to_owned();
+        let mypathbuf = Path::new("a/b/c").to_owned();
+        let myvec = vec![1, 2, 3];
+        // These are nonsense expressions. We just want to make sure they compile.
+        sh("true").stdin(&*mystr).input(&*myvec).stdout(&*mypathbuf);
+        sh("true").stdin(&mystr).input(&myvec).stdout(&mypathbuf);
+        sh("true").stdin(mystr).input(myvec).stdout(mypathbuf);
     }
 }
