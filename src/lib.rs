@@ -2,11 +2,10 @@ extern crate crossbeam;
 
 use std::borrow::Borrow;
 use std::ffi::{OsStr, OsString};
-use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, ExitStatus};
 use std::thread::JoinHandle;
 use std::sync::Arc;
@@ -32,7 +31,9 @@ pub struct Expression<'a> {
     inner: Arc<ExpressionInner<'a>>,
 }
 
-impl<'a> Expression<'a> {
+impl<'a, 'b> Expression<'a>
+    where 'b: 'a
+{
     pub fn read(&self) -> Result<String, Error> {
         let (handle, reader) = pipe_with_reader_thread();
         let mut context = IoContext::new();
@@ -52,7 +53,7 @@ impl<'a> Expression<'a> {
         Ok(stdout_string)
     }
 
-    pub fn pipe<T: Borrow<Expression<'a>>>(&self, right: T) -> Expression<'a> {
+    pub fn pipe<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
         Expression {
             inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::Pipe(self.clone(),
                                                                              right.borrow()
@@ -60,7 +61,7 @@ impl<'a> Expression<'a> {
         }
     }
 
-    pub fn then<T: Borrow<Expression<'a>>>(&self, right: T) -> Expression<'a> {
+    pub fn then<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
         Expression {
             inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::Then(self.clone(),
                                                                              right.borrow()
@@ -68,88 +69,30 @@ impl<'a> Expression<'a> {
         }
     }
 
-    // TODO: Do clever things with custom traits here instead.
-    pub fn stdin_path<T: AsRef<Path> + Send + Sync + 'a>(&self, arg: T) -> Self {
+    pub fn input<T: IntoStdinBytes<'b>>(&self, input: T) -> Self {
         Expression {
-            inner:
-                Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::Path(Box::new(arg))),
-                                             self.clone())),
-        }
-    }
-
-    pub fn stdin_file<T: Borrow<File> + Send + Sync + 'a>(&self, arg: T) -> Self {
-        Expression {
-            inner:
-                Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::File(Box::new(arg))),
-                                             self.clone())),
-        }
-    }
-
-    pub fn stdin_bytes<T: AsRef<[u8]> + Send + Sync + 'a>(&self, arg: T) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::Bytes(Box::new(arg))), self.clone())),
-        }
-    }
-
-    pub fn stdin_null(&self) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(InputRedirect::Null),
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(input.into_stdin_bytes()),
                                                 self.clone())),
         }
     }
 
-    pub fn stdout_path<T: AsRef<Path> + Send + Sync + 'a>(&self, arg: T) -> Self {
+    pub fn stdin<T: IntoStdin<'b>>(&self, stdin: T) -> Self {
         Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::Path(Box::new(arg))),
-                                                          self.clone())),
-        }
-    }
-
-    pub fn stdout_file<T: Borrow<File> + Send + Sync + 'a>(&self, arg: T) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::File(Box::new(arg))),
-                                                          self.clone())),
-        }
-    }
-
-    pub fn stdout_null(&self) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::Null),
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(stdin.into_stdin()),
                                                 self.clone())),
         }
     }
 
-    pub fn stdout_to_stderr(&self) -> Self {
+    pub fn stdout<T: IntoOutput<'b>>(&self, stdout: T) -> Self {
         Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(OutputRedirect::Stderr),
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(stdout.into_output()),
                                                 self.clone())),
         }
     }
 
-    pub fn stderr_path<T: AsRef<Path> + Send + Sync + 'a>(&self, arg: T) -> Self {
+    pub fn stderr<T: IntoOutput<'b>>(&self, stderr: T) -> Self {
         Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::Path(Box::new(arg))),
-                                                          self.clone())),
-        }
-    }
-
-    pub fn stderr_file<T: Borrow<File> + Send + Sync + 'a>(&self, arg: T) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::File(Box::new(arg))),
-                                                          self.clone())),
-        }
-    }
-
-    pub fn stderr_null(&self) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::Null),
-                                                self.clone())),
-        }
-    }
-
-    pub fn stderr_to_stdout(&self) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(OutputRedirect::Stdout),
+            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(stderr.into_output()),
                                                 self.clone())),
         }
     }
@@ -290,11 +233,15 @@ impl<'a> IoRedirect<'a> {
     }
 }
 
-enum InputRedirect<'a> {
+#[derive(Debug)]
+pub enum InputRedirect<'a> {
     Null,
-    Path(Box<AsRef<Path> + Send + Sync + 'a>),
-    File(Box<Borrow<File> + Send + Sync + 'a>),
-    Bytes(Box<AsRef<[u8]> + Send + Sync + 'a>),
+    Path(&'a Path),
+    PathBuf(PathBuf),
+    FileRef(&'a File),
+    File(File),
+    BytesSlice(&'a [u8]),
+    BytesVec(Vec<u8>),
 }
 
 impl<'a> InputRedirect<'a> {
@@ -304,10 +251,17 @@ impl<'a> InputRedirect<'a> {
         let mut maybe_thread = None;
         let handle = match self {
             &InputRedirect::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
-            &InputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::open(p.as_ref()))),
-            &InputRedirect::File(ref f) => pipe::Handle::dup_file((**f).borrow()),
-            &InputRedirect::Bytes(ref v) => {
-                let (handle, thread) = pipe_with_writer_thread(v.as_ref().as_ref(), scope);
+            &InputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::open(p))),
+            &InputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::open(p))),
+            &InputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
+            &InputRedirect::File(ref f) => pipe::Handle::dup_file(f),
+            &InputRedirect::BytesSlice(ref b) => {
+                let (handle, thread) = pipe_with_writer_thread(b, scope);
+                maybe_thread = Some(thread);
+                handle
+            }
+            &InputRedirect::BytesVec(ref b) => {
+                let (handle, thread) = pipe_with_writer_thread(b, scope);
                 maybe_thread = Some(thread);
                 handle
             }
@@ -316,31 +270,101 @@ impl<'a> InputRedirect<'a> {
     }
 }
 
-impl<'a> fmt::Debug for InputRedirect<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &InputRedirect::Null => write!(f, "Null"),
-            &InputRedirect::Path(ref p) => write!(f, "Path({:?})", p.as_ref().as_ref()),
-            &InputRedirect::File(_) => write!(f, "File(<file>)"),
-            &InputRedirect::Bytes(ref b) => {
-                let bytes = b.as_ref().as_ref();
-                let maybe_str = std::str::from_utf8(bytes);
-                if let Ok(s) = maybe_str {
-                    write!(f, "Bytes({:?})", s)
-                } else {
-                    write!(f, "Bytes({:?})", bytes)
-                }
-            }
-        }
+pub trait IntoStdinBytes<'a> {
+    fn into_stdin_bytes(self) -> InputRedirect<'a>;
+}
+
+impl<'a> IntoStdinBytes<'a> for &'a [u8] {
+    fn into_stdin_bytes(self) -> InputRedirect<'a> {
+        InputRedirect::BytesSlice(self)
     }
 }
 
-enum OutputRedirect<'a> {
+impl IntoStdinBytes<'static> for Vec<u8> {
+    fn into_stdin_bytes(self) -> InputRedirect<'static> {
+        InputRedirect::BytesVec(self)
+    }
+}
+
+impl<'a> IntoStdinBytes<'a> for &'a str {
+    fn into_stdin_bytes(self) -> InputRedirect<'a> {
+        InputRedirect::BytesSlice(self.as_ref())
+    }
+}
+
+impl IntoStdinBytes<'static> for String {
+    fn into_stdin_bytes(self) -> InputRedirect<'static> {
+        InputRedirect::BytesVec(self.into_bytes())
+    }
+}
+
+pub trait IntoStdin<'a> {
+    fn into_stdin(self) -> InputRedirect<'a>;
+}
+
+impl<'a> IntoStdin<'a> for InputRedirect<'a> {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        self
+    }
+}
+
+impl<'a> IntoStdin<'a> for &'a Path {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        InputRedirect::Path(self)
+    }
+}
+
+impl IntoStdin<'static> for PathBuf {
+    fn into_stdin(self) -> InputRedirect<'static> {
+        InputRedirect::PathBuf(self)
+    }
+}
+
+impl<'a> IntoStdin<'a> for &'a str {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        InputRedirect::Path(self.as_ref())
+    }
+}
+
+impl IntoStdin<'static> for String {
+    fn into_stdin(self) -> InputRedirect<'static> {
+        InputRedirect::PathBuf(self.into())
+    }
+}
+
+impl<'a> IntoStdin<'a> for &'a OsStr {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        InputRedirect::Path(self.as_ref())
+    }
+}
+
+impl IntoStdin<'static> for OsString {
+    fn into_stdin(self) -> InputRedirect<'static> {
+        InputRedirect::PathBuf(self.into())
+    }
+}
+
+impl<'a> IntoStdin<'a> for &'a File {
+    fn into_stdin(self) -> InputRedirect<'a> {
+        InputRedirect::FileRef(self)
+    }
+}
+
+impl IntoStdin<'static> for File {
+    fn into_stdin(self) -> InputRedirect<'static> {
+        InputRedirect::File(self)
+    }
+}
+
+#[derive(Debug)]
+pub enum OutputRedirect<'a> {
     Null,
     Stdout,
     Stderr,
-    Path(Box<AsRef<Path> + Send + Sync + 'a>),
-    File(Box<Borrow<File> + Send + Sync + 'a>),
+    Path(&'a Path),
+    PathBuf(PathBuf),
+    FileRef(&'a File),
+    File(File),
 }
 
 impl<'a> OutputRedirect<'a> {
@@ -352,21 +376,69 @@ impl<'a> OutputRedirect<'a> {
             &OutputRedirect::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
             &OutputRedirect::Stdout => inherited_stdout.clone(),
             &OutputRedirect::Stderr => inherited_stderr.clone(),
-            &OutputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::create(p.as_ref()))),
-            &OutputRedirect::File(ref f) => pipe::Handle::dup_file((**f).borrow()),
+            &OutputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::create(p))),
+            &OutputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::create(p))),
+            &OutputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
+            &OutputRedirect::File(ref f) => pipe::Handle::dup_file(f),
         })
     }
 }
 
-impl<'a> fmt::Debug for OutputRedirect<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &OutputRedirect::Null => write!(f, "Null"),
-            &OutputRedirect::Stdout => write!(f, "Stdout"),
-            &OutputRedirect::Stderr => write!(f, "Stderr"),
-            &OutputRedirect::Path(ref p) => write!(f, "Path({:?})", p.as_ref().as_ref()),
-            &OutputRedirect::File(_) => write!(f, "File(<file>)"),
-        }
+pub trait IntoOutput<'a> {
+    fn into_output(self) -> OutputRedirect<'a>;
+}
+
+impl<'a> IntoOutput<'a> for OutputRedirect<'a> {
+    fn into_output(self) -> OutputRedirect<'a> {
+        self
+    }
+}
+
+impl<'a> IntoOutput<'a> for &'a Path {
+    fn into_output(self) -> OutputRedirect<'a> {
+        OutputRedirect::Path(self)
+    }
+}
+
+impl IntoOutput<'static> for PathBuf {
+    fn into_output(self) -> OutputRedirect<'static> {
+        OutputRedirect::PathBuf(self)
+    }
+}
+
+impl<'a> IntoOutput<'a> for &'a str {
+    fn into_output(self) -> OutputRedirect<'a> {
+        OutputRedirect::Path(self.as_ref())
+    }
+}
+
+impl IntoOutput<'static> for String {
+    fn into_output(self) -> OutputRedirect<'static> {
+        OutputRedirect::PathBuf(self.into())
+    }
+}
+
+impl<'a> IntoOutput<'a> for &'a OsStr {
+    fn into_output(self) -> OutputRedirect<'a> {
+        OutputRedirect::Path(self.as_ref())
+    }
+}
+
+impl IntoOutput<'static> for OsString {
+    fn into_output(self) -> OutputRedirect<'static> {
+        OutputRedirect::PathBuf(self.into())
+    }
+}
+
+impl<'a> IntoOutput<'a> for &'a File {
+    fn into_output(self) -> OutputRedirect<'a> {
+        OutputRedirect::FileRef(self)
+    }
+}
+
+impl IntoOutput<'static> for File {
+    fn into_output(self) -> OutputRedirect<'static> {
+        OutputRedirect::File(self)
     }
 }
 
@@ -468,14 +540,19 @@ mod test {
 
     #[test]
     fn test_input() {
-        let expr = sh("sed s/f/g/").stdin_bytes(b"foo");
+        // TODO: Fixed-length bytes input like b"foo" works poorly here. Why?
+        let expr = sh("sed s/f/g/").input("foo");
         let output = expr.read().unwrap();
         assert_eq!("goo", output);
     }
 
     #[test]
     fn test_null() {
-        let expr = cmd(&["cat"]).stdin_null().stdout_null().stderr_null();
+        // TODO: The separation between InputRedirect and OutputRedirect here is tedious.
+        let expr = cmd(&["cat"])
+                       .stdin(InputRedirect::Null)
+                       .stdout(OutputRedirect::Null)
+                       .stderr(OutputRedirect::Null);
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
@@ -485,7 +562,7 @@ mod test {
         let mut input_file = tempfile::NamedTempFile::new().unwrap();
         let output_file = tempfile::NamedTempFile::new().unwrap();
         input_file.write_all(b"foo").unwrap();
-        let expr = sh("sed s/o/a/g").stdin_path(input_file.path()).stdout_path(output_file.path());
+        let expr = sh("sed s/o/a/g").stdin(input_file.path()).stdout(output_file.path());
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
@@ -498,7 +575,7 @@ mod test {
         fn with_input<'a>(expr: &Expression<'a>) -> Expression<'a> {
             let mystr = format!("I own this: {}", "foo");
             // This would be a lifetime error if we tried to use &mystr.
-            expr.stdin_bytes(mystr)
+            expr.input(mystr)
         }
 
         let c = cmd(&["cat"]);
@@ -509,7 +586,7 @@ mod test {
 
     #[test]
     fn test_stderr_to_stdout() {
-        let command = sh("echo hi >&2").stderr_to_stdout();
+        let command = sh("echo hi >&2").stderr(OutputRedirect::Stdout);
         let output = command.read().unwrap();
         assert_eq!("hi", output);
     }
@@ -519,7 +596,7 @@ mod test {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
         temp.write_all(b"example").unwrap();
         temp.seek(SeekFrom::Start(0)).unwrap();
-        let expr = cmd(&["cat"]).stdin_file(temp.as_ref());
+        let expr = cmd(&["cat"]).stdin(temp.as_ref());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
