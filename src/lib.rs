@@ -106,9 +106,9 @@ enum ExpressionInner<'a> {
 
 impl<'a> ExpressionInner<'a> {
     fn exec(&self, parent_context: IoContext) -> io::Result<ExitStatus> {
-        match self {
-            &ExpressionInner::Exec(ref executable) => executable.exec(parent_context),
-            &ExpressionInner::Io(ref ioarg, ref expr) => {
+        match *self {
+            ExpressionInner::Exec(ref executable) => executable.exec(parent_context),
+            ExpressionInner::Io(ref ioarg, ref expr) => {
                 ioarg.with_redirected_context(parent_context, |context| expr.inner.exec(context))
             }
         }
@@ -125,11 +125,11 @@ enum ExecutableExpression<'a> {
 
 impl<'a> ExecutableExpression<'a> {
     fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
-        match self {
-            &ExecutableExpression::ArgvCommand(ref argv) => exec_argv(argv, context),
-            &ExecutableExpression::ShCommand(ref command) => exec_sh(command, context),
-            &ExecutableExpression::Pipe(ref left, ref right) => exec_pipe(left, right, context),
-            &ExecutableExpression::Then(ref left, ref right) => exec_then(left, right, context),
+        match *self {
+            ExecutableExpression::ArgvCommand(ref argv) => exec_argv(argv, context),
+            ExecutableExpression::ShCommand(ref command) => exec_sh(command, context),
+            ExecutableExpression::Pipe(ref left, ref right) => exec_pipe(left, right, context),
+            ExecutableExpression::Then(ref left, ref right) => exec_then(left, right, context),
         }
     }
 }
@@ -206,16 +206,16 @@ impl<'a> IoRedirect<'a> {
             let mut context = parent_context;  // move it into the closure
             let mut maybe_stdin_thread = None;
             // Perform the redirect.
-            match self {
-                &IoRedirect::Stdin(ref redir) => {
+            match *self {
+                IoRedirect::Stdin(ref redir) => {
                     let (handle, maybe_thread) = try!(redir.open_handle_maybe_thread(scope));
                     maybe_stdin_thread = maybe_thread;
                     context.stdin = handle;
                 }
-                &IoRedirect::Stdout(ref redir) => {
+                IoRedirect::Stdout(ref redir) => {
                     context.stdout = try!(redir.open_handle(&context.stdout, &context.stderr));
                 }
-                &IoRedirect::Stderr(ref redir) => {
+                IoRedirect::Stderr(ref redir) => {
                     context.stderr = try!(redir.open_handle(&context.stdout, &context.stderr));
                 }
             }
@@ -249,18 +249,18 @@ impl<'a> InputRedirect<'a> {
                                 scope: &crossbeam::Scope<'a>)
                                 -> io::Result<(pipe::Handle, Option<WriterThreadJoiner>)> {
         let mut maybe_thread = None;
-        let handle = match self {
-            &InputRedirect::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
-            &InputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::open(p))),
-            &InputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::open(p))),
-            &InputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
-            &InputRedirect::File(ref f) => pipe::Handle::dup_file(f),
-            &InputRedirect::BytesSlice(ref b) => {
+        let handle = match *self {
+            InputRedirect::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
+            InputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::open(p))),
+            InputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::open(p))),
+            InputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
+            InputRedirect::File(ref f) => pipe::Handle::dup_file(f),
+            InputRedirect::BytesSlice(ref b) => {
                 let (handle, thread) = pipe_with_writer_thread(b, scope);
                 maybe_thread = Some(thread);
                 handle
             }
-            &InputRedirect::BytesVec(ref b) => {
+            InputRedirect::BytesVec(ref b) => {
                 let (handle, thread) = pipe_with_writer_thread(b, scope);
                 maybe_thread = Some(thread);
                 handle
@@ -402,14 +402,14 @@ impl<'a> OutputRedirect<'a> {
                    inherited_stdout: &pipe::Handle,
                    inherited_stderr: &pipe::Handle)
                    -> io::Result<pipe::Handle> {
-        Ok(match self {
-            &OutputRedirect::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
-            &OutputRedirect::Stdout => inherited_stdout.clone(),
-            &OutputRedirect::Stderr => inherited_stderr.clone(),
-            &OutputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::create(p))),
-            &OutputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::create(p))),
-            &OutputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
-            &OutputRedirect::File(ref f) => pipe::Handle::dup_file(f),
+        Ok(match *self {
+            OutputRedirect::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
+            OutputRedirect::Stdout => inherited_stdout.clone(),
+            OutputRedirect::Stderr => inherited_stderr.clone(),
+            OutputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::create(p))),
+            OutputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::create(p))),
+            OutputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
+            OutputRedirect::File(ref f) => pipe::Handle::dup_file(f),
         })
     }
 }
