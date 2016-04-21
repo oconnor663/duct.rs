@@ -59,47 +59,34 @@ impl<'a, 'b> Expression<'a>
     }
 
     pub fn pipe<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
-        Expression {
-            inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::Pipe(self.clone(),
-                                                                             right.borrow()
-                                                                                  .clone()))),
-        }
+        Self::new(ExpressionInner::Exec(ExecutableExpression::Pipe(self.clone(),
+                                                                   right.borrow().clone())))
     }
 
     pub fn then<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
-        Expression {
-            inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::Then(self.clone(),
-                                                                             right.borrow()
-                                                                                  .clone()))),
-        }
+        Self::new(ExpressionInner::Exec(ExecutableExpression::Then(self.clone(),
+                                                                   right.borrow()
+                                                                        .clone())))
     }
 
     pub fn input<T: IntoStdinBytes<'b>>(&self, input: T) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(input.into_stdin_bytes()),
-                                                self.clone())),
-        }
+        Self::new(ExpressionInner::Io(IoRedirect::Stdin(input.into_stdin_bytes()), self.clone()))
     }
 
     pub fn stdin<T: IntoStdin<'b>>(&self, stdin: T) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdin(stdin.into_stdin()),
-                                                self.clone())),
-        }
+        Self::new(ExpressionInner::Io(IoRedirect::Stdin(stdin.into_stdin()), self.clone()))
     }
 
     pub fn stdout<T: IntoOutput<'b>>(&self, stdout: T) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stdout(stdout.into_output()),
-                                                self.clone())),
-        }
+        Self::new(ExpressionInner::Io(IoRedirect::Stdout(stdout.into_output()), self.clone()))
     }
 
     pub fn stderr<T: IntoOutput<'b>>(&self, stderr: T) -> Self {
-        Expression {
-            inner: Arc::new(ExpressionInner::Io(IoRedirect::Stderr(stderr.into_output()),
-                                                self.clone())),
-        }
+        Self::new(ExpressionInner::Io(IoRedirect::Stderr(stderr.into_output()), self.clone()))
+    }
+
+    fn new(inner: ExpressionInner<'a>) -> Self {
+        Expression { inner: Arc::new(inner) }
     }
 }
 
