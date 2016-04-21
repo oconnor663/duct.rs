@@ -589,6 +589,17 @@ mod test {
     }
 
     #[test]
+    fn test_error() {
+        let result = sh("false").run();
+        if let Err(Error::Status(output)) = result {
+            // Check that the status is non-zero.
+            assert!(!output.status.success());
+        } else {
+            panic!("Expected a status error.");
+        }
+    }
+
+    #[test]
     fn test_pipe() {
         let output = sh("echo hi").pipe(sh("sed s/i/o/")).read().unwrap();
         assert_eq!("ho", output);
