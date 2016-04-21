@@ -34,23 +34,28 @@ pub struct Expression<'a> {
 impl<'a, 'b> Expression<'a>
     where 'b: 'a
 {
-    pub fn read(&self) -> Result<String, Error> {
-        let (handle, reader) = pipe_with_reader_thread();
-        let mut context = IoContext::new();
-        context.stdout = handle;
+    pub fn run(&self) -> Result<Output, Error> {
+        let (context, stdout_reader, stderr_reader) = IoContext::new();
         let status = try!(self.inner.exec(context));
-        let stdout_vec = try!(reader.join().unwrap());
-        if !status.success() {
-            return Err(Error::Status(Output {
-                status: status,
-                stdout: stdout_vec,
-                stderr: Vec::new(),
-            }));
+        let stdout_vec = try!(stdout_reader.join().unwrap());
+        let stderr_vec = try!(stderr_reader.join().unwrap());
+        let output = Output {
+            status: status,
+            stdout: stdout_vec,
+            stderr: stderr_vec,
+        };
+        if !output.status.success() {
+            Err(Error::Status(output))
+        } else {
+            Ok(output)
         }
-        let stdout_string = try!(std::str::from_utf8(&stdout_vec))
-                                .trim_right_matches('\n')
-                                .to_owned();
-        Ok(stdout_string)
+    }
+
+    pub fn read(&self) -> Result<String, Error> {
+        let output = try!(self.stdout(OutputRedirect::Capture).run());
+        let output_str = try!(std::str::from_utf8(&output.stdout));
+        // TODO: Handle Windows newlines too.
+        Ok(output_str.trim_right_matches('\n').to_owned())
     }
 
     pub fn pipe<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
@@ -159,11 +164,15 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
         stdin: context.stdin,
         stdout: write_pipe,
         stderr: context.stderr.clone(),
+        stdout_capture: context.stdout_capture.clone(),
+        stderr_capture: context.stderr_capture.clone(),
     };
     let right_context = IoContext {
         stdin: read_pipe,
         stdout: context.stdout,
         stderr: context.stderr,
+        stdout_capture: context.stdout_capture,
+        stderr_capture: context.stderr_capture,
     };
 
     let (left_result, right_result) = crossbeam::scope(|scope| {
@@ -213,10 +222,14 @@ impl<'a> IoRedirect<'a> {
                     context.stdin = handle;
                 }
                 IoRedirect::Stdout(ref redir) => {
-                    context.stdout = try!(redir.open_handle(&context.stdout, &context.stderr));
+                    context.stdout = try!(redir.open_handle(&context.stdout,
+                                                            &context.stderr,
+                                                            &context.stdout_capture));
                 }
                 IoRedirect::Stderr(ref redir) => {
-                    context.stderr = try!(redir.open_handle(&context.stdout, &context.stderr));
+                    context.stderr = try!(redir.open_handle(&context.stdout,
+                                                            &context.stderr,
+                                                            &context.stderr_capture));
                 }
             }
 
@@ -247,7 +260,7 @@ pub enum InputRedirect<'a> {
 impl<'a> InputRedirect<'a> {
     fn open_handle_maybe_thread(&'a self,
                                 scope: &crossbeam::Scope<'a>)
-                                -> io::Result<(pipe::Handle, Option<WriterThreadJoiner>)> {
+                                -> io::Result<(pipe::Handle, Option<WriterThread>)> {
         let mut maybe_thread = None;
         let handle = match *self {
             InputRedirect::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
@@ -388,6 +401,7 @@ impl IntoStdin<'static> for File {
 
 #[derive(Debug)]
 pub enum OutputRedirect<'a> {
+    Capture,
     Null,
     Stdout,
     Stderr,
@@ -400,9 +414,11 @@ pub enum OutputRedirect<'a> {
 impl<'a> OutputRedirect<'a> {
     fn open_handle(&self,
                    inherited_stdout: &pipe::Handle,
-                   inherited_stderr: &pipe::Handle)
+                   inherited_stderr: &pipe::Handle,
+                   capture_handle: &pipe::Handle)
                    -> io::Result<pipe::Handle> {
         Ok(match *self {
+            OutputRedirect::Capture => capture_handle.clone(),
             OutputRedirect::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
             OutputRedirect::Stdout => inherited_stdout.clone(),
             OutputRedirect::Stderr => inherited_stderr.clone(),
@@ -517,19 +533,29 @@ pub struct IoContext {
     stdin: pipe::Handle,
     stdout: pipe::Handle,
     stderr: pipe::Handle,
+    stdout_capture: pipe::Handle,
+    stderr_capture: pipe::Handle,
 }
 
 impl IoContext {
-    fn new() -> IoContext {
-        IoContext {
+    // Returns (context, stdout_reader, stderr_reader).
+    fn new() -> (IoContext, ReaderThread, ReaderThread) {
+        let (stdout_capture, stdout_reader) = pipe_with_reader_thread();
+        let (stderr_capture, stderr_reader) = pipe_with_reader_thread();
+        let context = IoContext {
             stdin: pipe::Handle::stdin(),
             stdout: pipe::Handle::stdout(),
             stderr: pipe::Handle::stderr(),
-        }
+            stdout_capture: stdout_capture,
+            stderr_capture: stderr_capture,
+        };
+        (context, stdout_reader, stderr_reader)
     }
 }
 
-fn pipe_with_reader_thread() -> (pipe::Handle, JoinHandle<io::Result<Vec<u8>>>) {
+type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
+
+fn pipe_with_reader_thread() -> (pipe::Handle, ReaderThread) {
     let (read_pipe, write_pipe) = pipe::open_pipe();
     let thread = std::thread::spawn(move || {
         let mut read_file = read_pipe.into_file();
@@ -540,11 +566,11 @@ fn pipe_with_reader_thread() -> (pipe::Handle, JoinHandle<io::Result<Vec<u8>>>) 
     (write_pipe, thread)
 }
 
-type WriterThreadJoiner = crossbeam::ScopedJoinHandle<io::Result<()>>;
+type WriterThread = crossbeam::ScopedJoinHandle<io::Result<()>>;
 
 fn pipe_with_writer_thread<'a>(input: &'a [u8],
                                scope: &crossbeam::Scope<'a>)
-                               -> (pipe::Handle, WriterThreadJoiner) {
+                               -> (pipe::Handle, WriterThread) {
     let (read_pipe, write_pipe) = pipe::open_pipe();
     let thread = scope.spawn(move || {
         let mut write_file = write_pipe.into_file();
@@ -662,5 +688,16 @@ mod test {
         sh("true").stdin(&*mystr).input(&*myvec).stdout(&*mypathbuf);
         sh("true").stdin(&mystr).input(&myvec).stdout(&mypathbuf);
         sh("true").stdin(mystr).input(myvec).stdout(mypathbuf);
+    }
+
+    #[test]
+    fn test_capture_both() {
+        let output = sh("echo -n hi; echo -n lo >&2")
+                         .stdout(OutputRedirect::Capture)
+                         .stderr(OutputRedirect::Capture)
+                         .run()
+                         .unwrap();
+        assert_eq!(b"hi", &*output.stdout);
+        assert_eq!(b"lo", &*output.stderr);
     }
 }
