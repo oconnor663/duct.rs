@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, ExitStatus};
+use std::process::Command;
 use std::thread::JoinHandle;
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ impl<'a, 'b> Expression<'a>
             stdout: stdout_vec,
             stderr: stderr_vec,
         };
-        if !output.status.success() {
+        if output.status != 0 {
             Err(Error::Status(output))
         } else {
             Ok(output)
@@ -85,6 +85,11 @@ impl<'a, 'b> Expression<'a>
         Self::new(ExpressionInner::Io(IoRedirect::Stderr(stderr.into_output()), self.clone()))
     }
 
+    // TODO: Come up with a reasonable name.
+    pub fn status_thing(&self) -> Self {
+        Self::new(ExpressionInner::StatusThing(self.clone()))
+    }
+
     fn new(inner: ExpressionInner<'a>) -> Self {
         Expression { inner: Arc::new(inner) }
     }
@@ -94,15 +99,17 @@ impl<'a, 'b> Expression<'a>
 enum ExpressionInner<'a> {
     Exec(ExecutableExpression<'a>),
     Io(IoRedirect<'a>, Expression<'a>),
+    StatusThing(Expression<'a>),
 }
 
 impl<'a> ExpressionInner<'a> {
-    fn exec(&self, parent_context: IoContext) -> io::Result<ExitStatus> {
+    fn exec(&self, parent_context: IoContext) -> io::Result<i32> {
         match *self {
             ExpressionInner::Exec(ref executable) => executable.exec(parent_context),
             ExpressionInner::Io(ref ioarg, ref expr) => {
                 ioarg.with_redirected_context(parent_context, |context| expr.inner.exec(context))
             }
+            ExpressionInner::StatusThing(ref expr) => expr.inner.exec(parent_context).map(|_| 0),
         }
     }
 }
@@ -116,7 +123,7 @@ enum ExecutableExpression<'a> {
 }
 
 impl<'a> ExecutableExpression<'a> {
-    fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
+    fn exec(&self, context: IoContext) -> io::Result<i32> {
         match *self {
             ExecutableExpression::ArgvCommand(ref argv) => exec_argv(argv, context),
             ExecutableExpression::ShCommand(ref command) => exec_sh(command, context),
@@ -126,16 +133,16 @@ impl<'a> ExecutableExpression<'a> {
     }
 }
 
-fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<ExitStatus> {
+fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<i32> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
     command.stdin(context.stdin.into_stdio());
     command.stdout(context.stdout.into_stdio());
     command.stderr(context.stderr.into_stdio());
-    command.status()
+    Ok(try!(command.status()).code().unwrap()) // TODO: Handle signals.
 }
 
-fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitStatus> {
+fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<i32> {
     // TODO: What shell should we be using here, really?
     // TODO: Figure out how cmd.Exec works on Windows.
     let mut argv = Vec::new();
@@ -145,7 +152,7 @@ fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitSt
     exec_argv(&argv, context)
 }
 
-fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
+fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<i32> {
     let (read_pipe, write_pipe) = pipe::open_pipe();
     let left_context = IoContext {
         stdin: context.stdin,
@@ -171,16 +178,16 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
 
     let right_status = try!(right_result);
     let left_status = try!(left_result);
-    if !right_status.success() {
+    if right_status != 0 {
         Ok(right_status)
     } else {
         Ok(left_status)
     }
 }
 
-fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
+fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<i32> {
     let status = try!(left.inner.exec(context.clone()));
-    if !status.success() {
+    if status != 0 {
         Ok(status)
     } else {
         right.inner.exec(context)
@@ -493,6 +500,15 @@ impl IntoOutput<'static> for File {
     }
 }
 
+// We can't use std::process::{Output, Status}, because we need to be able to instantiate the
+// success status value ourselves.
+#[derive(Clone, Debug)]
+pub struct Output {
+    pub status: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
@@ -593,10 +609,15 @@ mod test {
         let result = sh("false").run();
         if let Err(Error::Status(output)) = result {
             // Check that the status is non-zero.
-            assert!(!output.status.success());
+            assert!(output.status != 0);
         } else {
             panic!("Expected a status error.");
         }
+    }
+
+    #[test]
+    fn test_status_thing() {
+        sh("false").status_thing().run().unwrap();
     }
 
     #[test]
