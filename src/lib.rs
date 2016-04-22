@@ -10,13 +10,16 @@ use std::process::Command;
 use std::thread::JoinHandle;
 use std::sync::Arc;
 
+// enums defined below
+use ExpressionInner::*;
+use ExecutableExpression::*;
+use IoRedirect::*;
+
 mod pipe;
 
 pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
     let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
-    Expression {
-        inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::ArgvCommand(argv_vec))),
-    }
+    Expression::new(Exec(ArgvCommand(argv_vec)))
 }
 
 #[macro_export]
@@ -36,8 +39,8 @@ macro_rules! cmd {
 
 pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
     Expression {
-        inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::ShCommand(command.as_ref()
-                                                                                     .to_owned()))),
+        inner: Arc::new(Exec(ShCommand(command.as_ref()
+                                              .to_owned()))),
     }
 }
 
@@ -74,34 +77,33 @@ impl<'a, 'b> Expression<'a>
     }
 
     pub fn pipe<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
-        Self::new(ExpressionInner::Exec(ExecutableExpression::Pipe(self.clone(),
-                                                                   right.borrow().clone())))
+        Self::new(Exec(Pipe(self.clone(), right.borrow().clone())))
     }
 
     pub fn then<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
-        Self::new(ExpressionInner::Exec(ExecutableExpression::Then(self.clone(),
-                                                                   right.borrow()
-                                                                        .clone())))
+        Self::new(Exec(Then(self.clone(),
+                            right.borrow()
+                                 .clone())))
     }
 
     pub fn input<T: IntoStdinBytes<'b>>(&self, input: T) -> Self {
-        Self::new(ExpressionInner::Io(IoRedirect::Stdin(input.into_stdin_bytes()), self.clone()))
+        Self::new(Io(Stdin(input.into_stdin_bytes()), self.clone()))
     }
 
     pub fn stdin<T: IntoStdin<'b>>(&self, stdin: T) -> Self {
-        Self::new(ExpressionInner::Io(IoRedirect::Stdin(stdin.into_stdin()), self.clone()))
+        Self::new(Io(Stdin(stdin.into_stdin()), self.clone()))
     }
 
     pub fn stdout<T: IntoOutput<'b>>(&self, stdout: T) -> Self {
-        Self::new(ExpressionInner::Io(IoRedirect::Stdout(stdout.into_output()), self.clone()))
+        Self::new(Io(Stdout(stdout.into_output()), self.clone()))
     }
 
     pub fn stderr<T: IntoOutput<'b>>(&self, stderr: T) -> Self {
-        Self::new(ExpressionInner::Io(IoRedirect::Stderr(stderr.into_output()), self.clone()))
+        Self::new(Io(Stderr(stderr.into_output()), self.clone()))
     }
 
     pub fn ignore(&self) -> Self {
-        Self::new(ExpressionInner::Io(IoRedirect::IgnoreStatus, self.clone()))
+        Self::new(Io(IgnoreStatus, self.clone()))
     }
 
     fn new(inner: ExpressionInner<'a>) -> Self {
@@ -118,8 +120,8 @@ enum ExpressionInner<'a> {
 impl<'a> ExpressionInner<'a> {
     fn exec(&self, parent_context: IoContext) -> io::Result<Status> {
         match *self {
-            ExpressionInner::Exec(ref executable) => executable.exec(parent_context),
-            ExpressionInner::Io(ref ioarg, ref expr) => {
+            Exec(ref executable) => executable.exec(parent_context),
+            Io(ref ioarg, ref expr) => {
                 ioarg.with_redirected_context(parent_context, |context| expr.inner.exec(context))
             }
         }
@@ -137,10 +139,10 @@ enum ExecutableExpression<'a> {
 impl<'a> ExecutableExpression<'a> {
     fn exec(&self, context: IoContext) -> io::Result<Status> {
         match *self {
-            ExecutableExpression::ArgvCommand(ref argv) => exec_argv(argv, context),
-            ExecutableExpression::ShCommand(ref command) => exec_sh(command, context),
-            ExecutableExpression::Pipe(ref left, ref right) => exec_pipe(left, right, context),
-            ExecutableExpression::Then(ref left, ref right) => exec_then(left, right, context),
+            ArgvCommand(ref argv) => exec_argv(argv, context),
+            ShCommand(ref command) => exec_sh(command, context),
+            Pipe(ref left, ref right) => exec_pipe(left, right, context),
+            Then(ref left, ref right) => exec_then(left, right, context),
         }
     }
 }
@@ -225,22 +227,22 @@ impl<'a> IoRedirect<'a> {
 
             // Put together the redirected context.
             match *self {
-                IoRedirect::Stdin(ref redir) => {
+                Stdin(ref redir) => {
                     let (handle, maybe_thread) = try!(redir.open_handle_maybe_thread(scope));
                     maybe_stdin_thread = maybe_thread;
                     context.stdin = handle;
                 }
-                IoRedirect::Stdout(ref redir) => {
+                Stdout(ref redir) => {
                     context.stdout = try!(redir.open_handle(&context.stdout,
                                                             &context.stderr,
                                                             &context.stdout_capture));
                 }
-                IoRedirect::Stderr(ref redir) => {
+                Stderr(ref redir) => {
                     context.stderr = try!(redir.open_handle(&context.stdout,
                                                             &context.stderr,
                                                             &context.stderr_capture));
                 }
-                IoRedirect::IgnoreStatus => {
+                IgnoreStatus => {
                     ignore = true;
                 }
             }
