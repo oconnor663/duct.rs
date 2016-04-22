@@ -19,6 +19,21 @@ pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
     }
 }
 
+#[macro_export]
+macro_rules! cmd {
+    ( $( $x:expr ),* ) => {
+        {
+            use std::ffi::OsStr;
+            let mut temp_vec = Vec::new();
+            $(
+                let temp_osstr: &OsStr = $x.as_ref();
+                temp_vec.push(temp_osstr.to_owned());
+            )*
+            $crate::cmd(&temp_vec)
+        }
+    };
+}
+
 pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
     Expression {
         inner: Arc::new(ExpressionInner::Exec(ExecutableExpression::ShCommand(command.as_ref()
@@ -594,7 +609,7 @@ mod test {
 
     #[test]
     fn test_cmd() {
-        let output = cmd(&["echo", "hi"]).read().unwrap();
+        let output = cmd!("echo", "hi").read().unwrap();
         assert_eq!("hi", output);
     }
 
@@ -643,7 +658,7 @@ mod test {
     #[test]
     fn test_null() {
         // TODO: The separation between InputRedirect and OutputRedirect here is tedious.
-        let expr = cmd(&["cat"])
+        let expr = cmd!("cat")
                        .stdin(InputRedirect::Null)
                        .stdout(OutputRedirect::Null)
                        .stderr(OutputRedirect::Null);
@@ -672,7 +687,7 @@ mod test {
             expr.input(mystr)
         }
 
-        let c = cmd(&["cat"]);
+        let c = cmd!("cat");
         let c_with_input = with_input(&c);
         let output = c_with_input.read().unwrap();
         assert_eq!("I own this: foo", output);
@@ -690,7 +705,7 @@ mod test {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
         temp.write_all(b"example").unwrap();
         temp.seek(SeekFrom::Start(0)).unwrap();
-        let expr = cmd(&["cat"]).stdin(temp.as_ref());
+        let expr = cmd!("cat").stdin(temp.as_ref());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
