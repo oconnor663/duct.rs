@@ -100,9 +100,8 @@ impl<'a, 'b> Expression<'a>
         Self::new(ExpressionInner::Io(IoRedirect::Stderr(stderr.into_output()), self.clone()))
     }
 
-    // TODO: Come up with a reasonable name.
-    pub fn status_thing(&self) -> Self {
-        Self::new(ExpressionInner::StatusThing(self.clone()))
+    pub fn ignore(&self) -> Self {
+        Self::new(ExpressionInner::Io(IoRedirect::IgnoreStatus, self.clone()))
     }
 
     fn new(inner: ExpressionInner<'a>) -> Self {
@@ -114,17 +113,15 @@ impl<'a, 'b> Expression<'a>
 enum ExpressionInner<'a> {
     Exec(ExecutableExpression<'a>),
     Io(IoRedirect<'a>, Expression<'a>),
-    StatusThing(Expression<'a>),
 }
 
 impl<'a> ExpressionInner<'a> {
-    fn exec(&self, parent_context: IoContext) -> io::Result<i32> {
+    fn exec(&self, parent_context: IoContext) -> io::Result<Status> {
         match *self {
             ExpressionInner::Exec(ref executable) => executable.exec(parent_context),
             ExpressionInner::Io(ref ioarg, ref expr) => {
                 ioarg.with_redirected_context(parent_context, |context| expr.inner.exec(context))
             }
-            ExpressionInner::StatusThing(ref expr) => expr.inner.exec(parent_context).map(|_| 0),
         }
     }
 }
@@ -138,7 +135,7 @@ enum ExecutableExpression<'a> {
 }
 
 impl<'a> ExecutableExpression<'a> {
-    fn exec(&self, context: IoContext) -> io::Result<i32> {
+    fn exec(&self, context: IoContext) -> io::Result<Status> {
         match *self {
             ExecutableExpression::ArgvCommand(ref argv) => exec_argv(argv, context),
             ExecutableExpression::ShCommand(ref command) => exec_sh(command, context),
@@ -148,7 +145,7 @@ impl<'a> ExecutableExpression<'a> {
     }
 }
 
-fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<i32> {
+fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Status> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
     command.stdin(context.stdin.into_stdio());
@@ -157,7 +154,7 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<i32>
     Ok(try!(command.status()).code().unwrap()) // TODO: Handle signals.
 }
 
-fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<i32> {
+fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<Status> {
     // TODO: What shell should we be using here, really?
     // TODO: Figure out how cmd.Exec works on Windows.
     let mut argv = Vec::new();
@@ -167,7 +164,7 @@ fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<i32> {
     exec_argv(&argv, context)
 }
 
-fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<i32> {
+fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
     let (read_pipe, write_pipe) = pipe::open_pipe();
     let left_context = IoContext {
         stdin: context.stdin,
@@ -200,7 +197,7 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
     }
 }
 
-fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<i32> {
+fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
     let status = try!(left.inner.exec(context.clone()));
     if status != 0 {
         Ok(status)
@@ -214,16 +211,19 @@ enum IoRedirect<'a> {
     Stdin(InputRedirect<'a>),
     Stdout(OutputRedirect<'a>),
     Stderr(OutputRedirect<'a>),
+    IgnoreStatus,
 }
 
 impl<'a> IoRedirect<'a> {
-    fn with_redirected_context<F, T>(&self, parent_context: IoContext, inner: F) -> io::Result<T>
-        where F: FnOnce(IoContext) -> io::Result<T>
+    fn with_redirected_context<F>(&self, parent_context: IoContext, inner: F) -> io::Result<Status>
+        where F: FnOnce(IoContext) -> io::Result<Status>
     {
         crossbeam::scope(|scope| {
             let mut context = parent_context;  // move it into the closure
             let mut maybe_stdin_thread = None;
-            // Perform the redirect.
+            let mut ignore = false;
+
+            // Put together the redirected context.
             match *self {
                 IoRedirect::Stdin(ref redir) => {
                     let (handle, maybe_thread) = try!(redir.open_handle_maybe_thread(scope));
@@ -240,17 +240,26 @@ impl<'a> IoRedirect<'a> {
                                                             &context.stderr,
                                                             &context.stderr_capture));
                 }
+                IoRedirect::IgnoreStatus => {
+                    ignore = true;
+                }
             }
 
             // Run the inner closure.
-            let ret = try!(inner(context));
+            let status = try!(inner(context));
 
             // Join the input thread, if any.
             if let Some(thread) = maybe_stdin_thread {
                 try!(thread.join());
             }
 
-            Ok(ret)
+            if ignore {
+                // Return status 0 (success) for ignored expressions.
+                Ok(0)
+            } else {
+                // Otherwise return the real status.
+                Ok(status)
+            }
         })
     }
 }
@@ -517,9 +526,11 @@ impl IntoOutput<'static> for File {
 
 // We can't use std::process::{Output, Status}, because we need to be able to instantiate the
 // success status value ourselves.
+pub type Status = i32;
+
 #[derive(Clone, Debug)]
 pub struct Output {
-    pub status: i32,
+    pub status: Status,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
@@ -621,7 +632,7 @@ mod test {
 
     #[test]
     fn test_error() {
-        let result = sh("false").run();
+        let result = cmd!("false").run();
         if let Err(Error::Status(output)) = result {
             // Check that the status is non-zero.
             assert!(output.status != 0);
@@ -631,8 +642,10 @@ mod test {
     }
 
     #[test]
-    fn test_status_thing() {
-        sh("false").status_thing().run().unwrap();
+    fn test_ignore() {
+        let ignored_false = cmd!("false").ignore();
+        let output = ignored_false.then(cmd!("echo", "waa")).then(ignored_false).read().unwrap();
+        assert_eq!("waa", output);
     }
 
     #[test]
