@@ -102,6 +102,10 @@ impl<'a, 'b> Expression<'a>
         Self::new(Io(Stderr(stderr.into_output()), self.clone()))
     }
 
+    pub fn cwd<T: AsRef<Path>>(&self, path: T) -> Self {
+        Self::new(Io(Cwd(path.as_ref().to_owned()), self.clone()))
+    }
+
     pub fn ignore(&self) -> Self {
         Self::new(Io(IgnoreStatus, self.clone()))
     }
@@ -153,6 +157,9 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Stat
     command.stdin(context.stdin.into_stdio());
     command.stdout(context.stdout.into_stdio());
     command.stderr(context.stderr.into_stdio());
+    if let Some(path) = context.cwd {
+        command.current_dir(path);
+    }
     Ok(try!(command.status()).code().unwrap()) // TODO: Handle signals.
 }
 
@@ -168,20 +175,10 @@ fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<Status
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
     let (read_pipe, write_pipe) = pipe::open_pipe();
-    let left_context = IoContext {
-        stdin: context.stdin,
-        stdout: write_pipe,
-        stderr: context.stderr.clone(),
-        stdout_capture: context.stdout_capture.clone(),
-        stderr_capture: context.stderr_capture.clone(),
-    };
-    let right_context = IoContext {
-        stdin: read_pipe,
-        stdout: context.stdout,
-        stderr: context.stderr,
-        stdout_capture: context.stdout_capture,
-        stderr_capture: context.stderr_capture,
-    };
+    let mut left_context = context.clone();  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+    left_context.stdout = write_pipe;
+    let mut right_context = context;
+    right_context.stdin = read_pipe;
 
     let (left_result, right_result) = crossbeam::scope(|scope| {
         let left_joiner = scope.spawn(|| left.inner.exec(left_context));
@@ -213,6 +210,7 @@ enum IoRedirect<'a> {
     Stdin(InputRedirect<'a>),
     Stdout(OutputRedirect<'a>),
     Stderr(OutputRedirect<'a>),
+    Cwd(PathBuf),
     IgnoreStatus,
 }
 
@@ -241,6 +239,9 @@ impl<'a> IoRedirect<'a> {
                     context.stderr = try!(redir.open_handle(&context.stdout,
                                                             &context.stderr,
                                                             &context.stderr_capture));
+                }
+                Cwd(ref path) => {
+                    context.cwd = Some(path.to_owned());
                 }
                 IgnoreStatus => {
                     ignore = true;
@@ -566,6 +567,7 @@ pub struct IoContext {
     stderr: pipe::Handle,
     stdout_capture: pipe::Handle,
     stderr_capture: pipe::Handle,
+    cwd: Option<PathBuf>,
 }
 
 impl IoContext {
@@ -579,6 +581,7 @@ impl IoContext {
             stderr: pipe::Handle::stderr(),
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
+            cwd: None,
         };
         (context, stdout_reader, stderr_reader)
     }
@@ -614,8 +617,10 @@ fn pipe_with_writer_thread<'a>(input: &'a [u8],
 #[cfg(test)]
 mod test {
     extern crate tempfile;
+    extern crate tempdir;
 
     use super::*;
+    use std::env;
     use std::io::prelude::*;
     use std::io::SeekFrom;
     use std::path::Path;
@@ -748,5 +753,19 @@ mod test {
                          .unwrap();
         assert_eq!(b"hi", &*output.stdout);
         assert_eq!(b"lo", &*output.stderr);
+    }
+
+    #[test]
+    fn test_cwd() {
+        // First assert that ordinary commands happen in the parent's cwd.
+        let pwd_output = cmd!("pwd").read().unwrap();
+        let pwd_path = Path::new(&pwd_output);
+        assert_eq!(pwd_path, env::current_dir().unwrap());
+
+        // Now create a temp dir and make sure we can set cwd to it.
+        let dir = tempdir::TempDir::new("duct_test").unwrap();
+        let pwd_output = cmd!("pwd").cwd(dir.path()).read().unwrap();
+        let pwd_path = Path::new(&pwd_output);
+        assert_eq!(pwd_path, dir.path());
     }
 }
