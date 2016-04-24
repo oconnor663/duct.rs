@@ -14,7 +14,7 @@ use std::sync::Arc;
 // enums defined below
 use ExpressionInner::*;
 use ExecutableExpression::*;
-use IoRedirect::*;
+use IoArg::*;
 
 mod pipe;
 
@@ -82,9 +82,7 @@ impl<'a, 'b> Expression<'a>
     }
 
     pub fn then<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
-        Self::new(Exec(Then(self.clone(),
-                            right.borrow()
-                                 .clone())))
+        Self::new(Exec(Then(self.clone(), right.borrow().clone())))
     }
 
     pub fn input<T: IntoStdinBytes<'b>>(&self, input: T) -> Self {
@@ -124,7 +122,7 @@ impl<'a, 'b> Expression<'a>
 #[derive(Debug)]
 enum ExpressionInner<'a> {
     Exec(ExecutableExpression<'a>),
-    Io(IoRedirect<'a>, Expression<'a>),
+    Io(IoArg<'a>, Expression<'a>),
 }
 
 impl<'a> ExpressionInner<'a> {
@@ -215,7 +213,7 @@ fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::R
 }
 
 #[derive(Debug)]
-enum IoRedirect<'a> {
+enum IoArg<'a> {
     Stdin(InputRedirect<'a>),
     Stdout(OutputRedirect<'a>),
     Stderr(OutputRedirect<'a>),
@@ -224,7 +222,7 @@ enum IoRedirect<'a> {
     IgnoreStatus,
 }
 
-impl<'a> IoRedirect<'a> {
+impl<'a> IoArg<'a> {
     fn with_redirected_context<F>(&self, parent_context: IoContext, inner: F) -> io::Result<Status>
         where F: FnOnce(IoContext) -> io::Result<Status>
     {
