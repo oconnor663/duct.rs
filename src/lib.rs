@@ -1,6 +1,7 @@
 extern crate crossbeam;
 
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -106,6 +107,11 @@ impl<'a, 'b> Expression<'a>
         Self::new(Io(Cwd(path.as_ref().to_owned()), self.clone()))
     }
 
+    pub fn env<T: AsRef<OsStr>, U: AsRef<OsStr>>(&self, name: T, val: U) -> Self {
+        Self::new(Io(Env(name.as_ref().to_owned(), val.as_ref().to_owned()),
+                     self.clone()))
+    }
+
     pub fn ignore(&self) -> Self {
         Self::new(Io(IgnoreStatus, self.clone()))
     }
@@ -160,6 +166,9 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Stat
     if let Some(path) = context.cwd {
         command.current_dir(path);
     }
+    for (name, val) in context.env {
+        command.env(name, val);
+    }
     Ok(try!(command.status()).code().unwrap()) // TODO: Handle signals.
 }
 
@@ -211,6 +220,7 @@ enum IoRedirect<'a> {
     Stdout(OutputRedirect<'a>),
     Stderr(OutputRedirect<'a>),
     Cwd(PathBuf),
+    Env(OsString, OsString),
     IgnoreStatus,
 }
 
@@ -242,6 +252,9 @@ impl<'a> IoRedirect<'a> {
                 }
                 Cwd(ref path) => {
                     context.cwd = Some(path.to_owned());
+                }
+                Env(ref name, ref val) => {
+                    context.env.insert(name.to_owned(), val.to_owned());
                 }
                 IgnoreStatus => {
                     ignore = true;
@@ -568,6 +581,7 @@ pub struct IoContext {
     stdout_capture: pipe::Handle,
     stderr_capture: pipe::Handle,
     cwd: Option<PathBuf>,
+    env: HashMap<OsString, OsString>,
 }
 
 impl IoContext {
@@ -582,6 +596,7 @@ impl IoContext {
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
             cwd: None,
+            env: HashMap::new(),
         };
         (context, stdout_reader, stderr_reader)
     }
@@ -767,5 +782,11 @@ mod test {
         let pwd_output = cmd!("pwd").cwd(dir.path()).read().unwrap();
         let pwd_path = Path::new(&pwd_output);
         assert_eq!(pwd_path, dir.path());
+    }
+
+    #[test]
+    fn test_env() {
+        let output = sh("echo $foo").env("foo", "bar").read().unwrap();
+        assert_eq!("bar", output);
     }
 }
