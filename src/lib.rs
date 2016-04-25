@@ -54,7 +54,7 @@ impl<'a, 'b> Expression<'a>
     where 'b: 'a
 {
     pub fn run(&self) -> Result<Output, Error> {
-        let (context, stdout_reader, stderr_reader) = IoContext::new();
+        let (context, stdout_reader, stderr_reader) = try!(IoContext::new());
         let status = try!(self.inner.exec(context));
         let stdout_vec = try!(stdout_reader.join().unwrap());
         let stderr_vec = try!(stderr_reader.join().unwrap());
@@ -110,6 +110,14 @@ impl<'a, 'b> Expression<'a>
                      self.clone()))
     }
 
+    pub fn env_remove<T: AsRef<OsStr>>(&self, name: T) -> Self {
+        Self::new(Io(EnvRemoveThing(name.as_ref().to_owned()), self.clone()))
+    }
+
+    pub fn env_clear(&self) -> Self {
+        Self::new(Io(EnvClearThing, self.clone()))
+    }
+
     pub fn ignore(&self) -> Self {
         Self::new(Io(IgnoreStatus, self.clone()))
     }
@@ -130,7 +138,7 @@ impl<'a> ExpressionInner<'a> {
         match *self {
             Exec(ref executable) => executable.exec(parent_context),
             Io(ref ioarg, ref expr) => {
-                ioarg.with_redirected_context(parent_context, |context| expr.inner.exec(context))
+                ioarg.with_child_context(parent_context, |context| expr.inner.exec(context))
             }
         }
     }
@@ -161,9 +169,8 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Stat
     command.stdin(context.stdin.into_stdio());
     command.stdout(context.stdout.into_stdio());
     command.stderr(context.stderr.into_stdio());
-    if let Some(path) = context.cwd {
-        command.current_dir(path);
-    }
+    command.current_dir(context.cwd);
+    command.env_clear();
     for (name, val) in context.env {
         command.env(name, val);
     }
@@ -219,11 +226,13 @@ enum IoArg<'a> {
     Stderr(OutputRedirect<'a>),
     Cwd(PathBuf),
     Env(OsString, OsString),
+    EnvRemoveThing(OsString),
+    EnvClearThing,
     IgnoreStatus,
 }
 
 impl<'a> IoArg<'a> {
-    fn with_redirected_context<F>(&self, parent_context: IoContext, inner: F) -> io::Result<Status>
+    fn with_child_context<F>(&self, parent_context: IoContext, inner: F) -> io::Result<Status>
         where F: FnOnce(IoContext) -> io::Result<Status>
     {
         crossbeam::scope(|scope| {
@@ -249,10 +258,16 @@ impl<'a> IoArg<'a> {
                                                             &context.stderr_capture));
                 }
                 Cwd(ref path) => {
-                    context.cwd = Some(path.to_owned());
+                    context.cwd = path.to_owned();
                 }
                 Env(ref name, ref val) => {
                     context.env.insert(name.to_owned(), val.to_owned());
+                }
+                EnvRemoveThing(ref name) => {
+                    context.env.remove(name);
+                }
+                EnvClearThing => {
+                    context.env.clear();
                 }
                 IgnoreStatus => {
                     ignore = true;
@@ -578,25 +593,29 @@ pub struct IoContext {
     stderr: pipe::Handle,
     stdout_capture: pipe::Handle,
     stderr_capture: pipe::Handle,
-    cwd: Option<PathBuf>,
+    cwd: PathBuf,
     env: HashMap<OsString, OsString>,
 }
 
 impl IoContext {
     // Returns (context, stdout_reader, stderr_reader).
-    fn new() -> (IoContext, ReaderThread, ReaderThread) {
+    fn new() -> io::Result<(IoContext, ReaderThread, ReaderThread)> {
         let (stdout_capture, stdout_reader) = pipe_with_reader_thread();
         let (stderr_capture, stderr_reader) = pipe_with_reader_thread();
+        let mut env = HashMap::new();
+        for (name, val) in std::env::vars_os() {
+            env.insert(name, val);
+        }
         let context = IoContext {
             stdin: pipe::Handle::stdin(),
             stdout: pipe::Handle::stdout(),
             stderr: pipe::Handle::stderr(),
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
-            cwd: None,
-            env: HashMap::new(),
+            cwd: try!(std::env::current_dir()),
+            env: env,
         };
-        (context, stdout_reader, stderr_reader)
+        Ok((context, stdout_reader, stderr_reader))
     }
 }
 
@@ -786,5 +805,26 @@ mod test {
     fn test_env() {
         let output = sh("echo $foo").env("foo", "bar").read().unwrap();
         assert_eq!("bar", output);
+    }
+
+    #[test]
+    fn test_env_remove() {
+        // Set a var twice, both in the parent process and with an env() call. Make sure a single
+        // env_remove() call clears both.
+        let var_name = "test_env_remove_var";
+        env::set_var(var_name, "junk1");
+        let command = format!("echo ${}", var_name);
+        let output = sh(command).env_remove(var_name).env(var_name, "junk2").read().unwrap();
+        assert_eq!("", output);
+    }
+
+    #[test]
+    fn test_env_clear() {
+        // As test_env_remove, but with env_clear().
+        let var_name = "test_env_remove_var";
+        env::set_var(var_name, "junk1");
+        let command = format!("echo ${}", var_name);
+        let output = sh(command).env_clear().env(var_name, "junk2").read().unwrap();
+        assert_eq!("", output);
     }
 }
