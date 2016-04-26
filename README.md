@@ -2,3 +2,5 @@
 
 A Rust port of [duct.py](https://github.com/oconnor663/duct.py). Work in
 progress!
+
+[crates.io](https://crates.io/crates/duct)
