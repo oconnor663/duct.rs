@@ -278,7 +278,14 @@ impl<'a> IoArg<'a> {
 
             // Join the input thread, if any.
             if let Some(thread) = maybe_stdin_thread {
-                try!(thread.join());
+                if let Err(writer_error) = thread.join() {
+                    // A broken pipe error happens if the process on the other end exits before
+                    // we're done writing. We ignore those but return any other errors to the
+                    // caller.
+                    if writer_error.kind() != io::ErrorKind::BrokenPipe {
+                        return Err(writer_error);
+                    }
+                }
             }
 
             if ignore {
@@ -825,5 +832,14 @@ mod test {
         let command = format!("echo ${}", var_name);
         let output = sh(command).env_clear().env(var_name, "junk2").read().unwrap();
         assert_eq!("", output);
+    }
+
+    #[test]
+    fn test_broken_pipe() {
+        // If the input writing thread fills up its pipe buffer, writing will block. If the process
+        // on the other end of the pipe exits while writer is waiting, the write will return an
+        // error. We need to swallow that error, rather than returning it.
+        let myvec = vec![0; 1_000_000];
+        cmd!("true").input(myvec).run().unwrap();
     }
 }
