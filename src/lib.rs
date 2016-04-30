@@ -111,11 +111,11 @@ impl<'a, 'b> Expression<'a>
     }
 
     pub fn env_remove<T: AsRef<OsStr>>(&self, name: T) -> Self {
-        Self::new(Io(EnvRemoveThing(name.as_ref().to_owned()), self.clone()))
+        Self::new(Io(EnvRemove(name.as_ref().to_owned()), self.clone()))
     }
 
     pub fn env_clear(&self) -> Self {
-        Self::new(Io(EnvClearThing, self.clone()))
+        Self::new(Io(EnvClear, self.clone()))
     }
 
     pub fn ignore(&self) -> Self {
@@ -226,8 +226,8 @@ enum IoArg<'a> {
     Stderr(OutputRedirect<'a>),
     Cwd(PathBuf),
     Env(OsString, OsString),
-    EnvRemoveThing(OsString),
-    EnvClearThing,
+    EnvRemove(OsString),
+    EnvClear,
     IgnoreStatus,
 }
 
@@ -263,10 +263,10 @@ impl<'a> IoArg<'a> {
                 Env(ref name, ref val) => {
                     context.env.insert(name.to_owned(), val.to_owned());
                 }
-                EnvRemoveThing(ref name) => {
+                EnvRemove(ref name) => {
                     context.env.remove(name);
                 }
-                EnvClearThing => {
+                EnvClear => {
                     context.env.clear();
                 }
                 IgnoreStatus => {
