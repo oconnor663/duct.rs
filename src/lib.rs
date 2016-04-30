@@ -178,10 +178,9 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Stat
 }
 
 fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<Status> {
-    // TODO: What shell should we be using here, really?
-    // TODO: Figure out how cmd.Exec works on Windows.
+    // TODO: Use COMSPEC on Windows, as Python does. https://docs.python.org/3/library/subprocess.html
     let mut argv = Vec::new();
-    argv.push("bash".as_ref());
+    argv.push("/bin/sh".as_ref());
     argv.push("-c".as_ref());
     argv.push(command.as_ref());
     exec_argv(&argv, context)
