@@ -41,7 +41,7 @@ macro_rules! cmd {
 pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
     Expression {
         inner: Arc::new(Exec(ShCommand(command.as_ref()
-                                              .to_owned()))),
+            .to_owned()))),
     }
 }
 
@@ -118,8 +118,8 @@ impl<'a, 'b> Expression<'a>
         Self::new(Io(EnvClear, self.clone()))
     }
 
-    pub fn ignore(&self) -> Self {
-        Self::new(Io(IgnoreStatus, self.clone()))
+    pub fn unchecked(&self) -> Self {
+        Self::new(Io(Unchecked, self.clone()))
     }
 
     fn new(inner: ExpressionInner<'a>) -> Self {
@@ -227,7 +227,7 @@ enum IoArg<'a> {
     Env(OsString, OsString),
     EnvRemove(OsString),
     EnvClear,
-    IgnoreStatus,
+    Unchecked,
 }
 
 impl<'a> IoArg<'a> {
@@ -237,7 +237,7 @@ impl<'a> IoArg<'a> {
         crossbeam::scope(|scope| {
             let mut context = parent_context;  // move it into the closure
             let mut maybe_stdin_thread = None;
-            let mut ignore = false;
+            let mut unchecked = false;
 
             // Put together the redirected context.
             match *self {
@@ -268,8 +268,8 @@ impl<'a> IoArg<'a> {
                 EnvClear => {
                     context.env.clear();
                 }
-                IgnoreStatus => {
-                    ignore = true;
+                Unchecked => {
+                    unchecked = true;
                 }
             }
 
@@ -288,7 +288,7 @@ impl<'a> IoArg<'a> {
                 }
             }
 
-            if ignore {
+            if unchecked {
                 // Return status 0 (success) for ignored expressions.
                 Ok(0)
             } else {
@@ -688,7 +688,7 @@ mod test {
 
     #[test]
     fn test_ignore() {
-        let ignored_false = cmd!("false").ignore();
+        let ignored_false = cmd!("false").unchecked();
         let output = ignored_false.then(cmd!("echo", "waa")).then(ignored_false).read().unwrap();
         assert_eq!("waa", output);
     }
@@ -717,9 +717,9 @@ mod test {
     fn test_null() {
         // TODO: The separation between InputRedirect and OutputRedirect here is tedious.
         let expr = cmd!("cat")
-                       .stdin(InputRedirect::Null)
-                       .stdout(OutputRedirect::Null)
-                       .stderr(OutputRedirect::Null);
+            .stdin(InputRedirect::Null)
+            .stdout(OutputRedirect::Null)
+            .stderr(OutputRedirect::Null);
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
@@ -785,10 +785,10 @@ mod test {
     #[test]
     fn test_capture_both() {
         let output = sh("echo -n hi; echo -n lo >&2")
-                         .stdout(OutputRedirect::Capture)
-                         .stderr(OutputRedirect::Capture)
-                         .run()
-                         .unwrap();
+            .stdout(OutputRedirect::Capture)
+            .stderr(OutputRedirect::Capture)
+            .run()
+            .unwrap();
         assert_eq!(b"hi", &*output.stdout);
         assert_eq!(b"lo", &*output.stderr);
     }
