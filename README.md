@@ -1,4 +1,4 @@
-# duct.rs [![Build Status](https://travis-ci.org/oconnor663/duct.rs.svg?branch=master)](https://travis-ci.org/oconnor663/duct.rs) [![Coverage Status](https://coveralls.io/repos/github/oconnor663/duct.rs/badge.svg?branch=master)](https://coveralls.io/github/oconnor663/duct.rs?branch=master)
+# duct.rs [![Build Status](https://travis-ci.org/oconnor663/duct.rs.svg?branch=master)](https://travis-ci.org/oconnor663/duct.rs) [![Build status](https://ci.appveyor.com/api/projects/status/w3g0fplnx234bxji/branch/master?svg=true)](https://ci.appveyor.com/project/oconnor663/duct-rs/branch/master) [![Coverage Status](https://coveralls.io/repos/github/oconnor663/duct.rs/badge.svg?branch=master)](https://coveralls.io/github/oconnor663/duct.rs?branch=master)
 
 A Rust port of [duct.py](https://github.com/oconnor663/duct.py). Here's
 the [crates.io package](https://crates.io/crates/duct). A work in
