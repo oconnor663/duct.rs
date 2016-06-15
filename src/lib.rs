@@ -102,8 +102,8 @@ impl<'a, 'b> Expression<'a>
         Self::new(Io(Stderr(stderr.into_output()), self.clone()))
     }
 
-    pub fn cwd<T: AsRef<Path>>(&self, path: T) -> Self {
-        Self::new(Io(Cwd(path.as_ref().to_owned()), self.clone()))
+    pub fn dir<T: AsRef<Path>>(&self, path: T) -> Self {
+        Self::new(Io(Dir(path.as_ref().to_owned()), self.clone()))
     }
 
     pub fn env<T: AsRef<OsStr>, U: AsRef<OsStr>>(&self, name: T, val: U) -> Self {
@@ -170,7 +170,7 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Stat
     command.stdin(context.stdin.into_stdio());
     command.stdout(context.stdout.into_stdio());
     command.stderr(context.stderr.into_stdio());
-    command.current_dir(context.cwd);
+    command.current_dir(context.dir);
     command.env_clear();
     for (name, val) in context.env {
         command.env(name, val);
@@ -224,7 +224,7 @@ enum IoArg<'a> {
     Stdin(InputRedirect<'a>),
     Stdout(OutputRedirect<'a>),
     Stderr(OutputRedirect<'a>),
-    Cwd(PathBuf),
+    Dir(PathBuf),
     Env(OsString, OsString),
     EnvRemove(OsString),
     EnvClear,
@@ -257,8 +257,8 @@ impl<'a> IoArg<'a> {
                                                             &context.stderr,
                                                             &context.stderr_capture));
                 }
-                Cwd(ref path) => {
-                    context.cwd = path.to_owned();
+                Dir(ref path) => {
+                    context.dir = path.to_owned();
                 }
                 Env(ref name, ref val) => {
                     context.env.insert(name.to_owned(), val.to_owned());
@@ -600,7 +600,7 @@ pub struct IoContext {
     stderr: pipe::Handle,
     stdout_capture: pipe::Handle,
     stderr_capture: pipe::Handle,
-    cwd: PathBuf,
+    dir: PathBuf,
     env: HashMap<OsString, OsString>,
 }
 
@@ -619,7 +619,7 @@ impl IoContext {
             stderr: pipe::Handle::stderr(),
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
-            cwd: try!(std::env::current_dir()),
+            dir: try!(std::env::current_dir()),
             env: env,
         };
         Ok((context, stdout_reader, stderr_reader))
@@ -796,14 +796,14 @@ mod test {
 
     #[test]
     fn test_cwd() {
-        // First assert that ordinary commands happen in the parent's cwd.
+        // First assert that ordinary commands happen in the parent's dir.
         let pwd_output = cmd!("pwd").read().unwrap();
         let pwd_path = Path::new(&pwd_output);
         assert_eq!(pwd_path, env::current_dir().unwrap());
 
-        // Now create a temp dir and make sure we can set cwd to it.
+        // Now create a temp dir and make sure we can set dir to it.
         let dir = tempdir::TempDir::new("duct_test").unwrap();
-        let pwd_output = cmd!("pwd").cwd(dir.path()).read().unwrap();
+        let pwd_output = cmd!("pwd").dir(dir.path()).read().unwrap();
         let pwd_path = Path::new(&pwd_output);
         assert_eq!(pwd_path, dir.path());
     }
