@@ -94,12 +94,24 @@ impl<'a, 'b> Expression<'a>
         Self::new(Io(Stdin(stdin.into_stdin()), self.clone()))
     }
 
+    pub fn null_stdin(&self) -> Self {
+        Self::new(Io(Stdin(InputRedirect::Null), self.clone()))
+    }
+
     pub fn stdout<T: IntoOutput<'b>>(&self, stdout: T) -> Self {
         Self::new(Io(Stdout(stdout.into_output()), self.clone()))
     }
 
+    pub fn null_stdout(&self) -> Self {
+        Self::new(Io(Stdout(OutputRedirect::Null), self.clone()))
+    }
+
     pub fn stderr<T: IntoOutput<'b>>(&self, stderr: T) -> Self {
         Self::new(Io(Stderr(stderr.into_output()), self.clone()))
+    }
+
+    pub fn null_stderr(&self) -> Self {
+        Self::new(Io(Stderr(OutputRedirect::Null), self.clone()))
     }
 
     pub fn dir<T: AsRef<Path>>(&self, path: T) -> Self {
@@ -718,9 +730,9 @@ mod test {
     fn test_null() {
         // TODO: The separation between InputRedirect and OutputRedirect here is tedious.
         let expr = cmd!("cat")
-            .stdin(InputRedirect::Null)
-            .stdout(OutputRedirect::Null)
-            .stderr(OutputRedirect::Null);
+            .null_stdin()
+            .null_stdout()
+            .null_stderr();
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
