@@ -72,7 +72,7 @@ impl<'a, 'b> Expression<'a>
     }
 
     pub fn read(&self) -> Result<String, Error> {
-        let output = try!(self.stdout(OutputRedirect::Capture).run());
+        let output = try!(self.capture_stdout().run());
         let output_str = try!(std::str::from_utf8(&output.stdout));
         // TODO: Handle Windows newlines too.
         Ok(output_str.trim_right_matches('\n').to_owned())
@@ -106,12 +106,28 @@ impl<'a, 'b> Expression<'a>
         Self::new(Io(Stdout(OutputRedirect::Null), self.clone()))
     }
 
+    pub fn capture_stdout(&self) -> Self {
+        Self::new(Io(Stdout(OutputRedirect::Capture), self.clone()))
+    }
+
+    pub fn stdout_to_stderr(&self) -> Self {
+        Self::new(Io(Stdout(OutputRedirect::Stderr), self.clone()))
+    }
+
     pub fn stderr<T: IntoOutput<'b>>(&self, stderr: T) -> Self {
         Self::new(Io(Stderr(stderr.into_output()), self.clone()))
     }
 
     pub fn null_stderr(&self) -> Self {
         Self::new(Io(Stderr(OutputRedirect::Null), self.clone()))
+    }
+
+    pub fn capture_stderr(&self) -> Self {
+        Self::new(Io(Stderr(OutputRedirect::Capture), self.clone()))
+    }
+
+    pub fn stderr_to_stdout(&self) -> Self {
+        Self::new(Io(Stderr(OutputRedirect::Stdout), self.clone()))
     }
 
     pub fn dir<T: AsRef<Path>>(&self, path: T) -> Self {
@@ -393,12 +409,6 @@ pub trait IntoStdin<'a> {
     fn into_stdin(self) -> InputRedirect<'a>;
 }
 
-impl<'a> IntoStdin<'a> for InputRedirect<'a> {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        self
-    }
-}
-
 impl<'a> IntoStdin<'a> for &'a Path {
     fn into_stdin(self) -> InputRedirect<'a> {
         InputRedirect::Path(self)
@@ -498,12 +508,6 @@ impl<'a> OutputRedirect<'a> {
 
 pub trait IntoOutput<'a> {
     fn into_output(self) -> OutputRedirect<'a>;
-}
-
-impl<'a> IntoOutput<'a> for OutputRedirect<'a> {
-    fn into_output(self) -> OutputRedirect<'a> {
-        self
-    }
 }
 
 impl<'a> IntoOutput<'a> for &'a Path {
@@ -728,11 +732,7 @@ mod test {
 
     #[test]
     fn test_null() {
-        // TODO: The separation between InputRedirect and OutputRedirect here is tedious.
-        let expr = cmd!("cat")
-            .null_stdin()
-            .null_stdout()
-            .null_stderr();
+        let expr = cmd!("cat").null_stdin().null_stdout().null_stderr();
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
@@ -766,7 +766,7 @@ mod test {
 
     #[test]
     fn test_stderr_to_stdout() {
-        let command = sh("echo hi >&2").stderr(OutputRedirect::Stdout);
+        let command = sh("echo hi >&2").stderr_to_stdout();
         let output = command.read().unwrap();
         assert_eq!("hi", output);
     }
@@ -798,8 +798,8 @@ mod test {
     #[test]
     fn test_capture_both() {
         let output = sh("echo -n hi; echo -n lo >&2")
-            .stdout(OutputRedirect::Capture)
-            .stderr(OutputRedirect::Capture)
+            .capture_stdout()
+            .capture_stderr()
             .run()
             .unwrap();
         assert_eq!(b"hi", &*output.stdout);
