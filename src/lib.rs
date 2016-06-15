@@ -46,6 +46,7 @@ pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
 }
 
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct Expression<'a> {
     inner: Arc<ExpressionInner<'a>>,
 }
@@ -777,9 +778,9 @@ mod test {
         let mypathbuf = Path::new("a/b/c").to_owned();
         let myvec = vec![1, 2, 3];
         // These are nonsense expressions. We just want to make sure they compile.
-        sh("true").stdin(&*mystr).input(&*myvec).stdout(&*mypathbuf);
-        sh("true").stdin(&mystr).input(&myvec).stdout(&mypathbuf);
-        sh("true").stdin(mystr).input(myvec).stdout(mypathbuf);
+        let _ = sh("true").stdin(&*mystr).input(&*myvec).stdout(&*mypathbuf);
+        let _ = sh("true").stdin(&mystr).input(&myvec).stdout(&mypathbuf);
+        let _ = sh("true").stdin(mystr).input(myvec).stdout(mypathbuf);
     }
 
     #[test]
