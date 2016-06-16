@@ -195,9 +195,9 @@ impl<'a> ExecutableExpression<'a> {
 fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Status> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
-    command.stdin(context.stdin.into_stdio());
-    command.stdout(context.stdout.into_stdio());
-    command.stderr(context.stderr.into_stdio());
+    command.stdin(pipe::stdio_from_file(context.stdin));
+    command.stdout(pipe::stdio_from_file(context.stdout));
+    command.stderr(pipe::stdio_from_file(context.stderr));
     command.current_dir(context.dir);
     command.env_clear();
     for (name, val) in context.env {
@@ -217,7 +217,7 @@ fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<Status
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
     let (read_pipe, write_pipe) = pipe::open_pipe();
-    let mut left_context = context.clone();  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+    let mut left_context = try!(context.try_clone());  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
     left_context.stdout = write_pipe;
     let mut right_context = context;
     right_context.stdin = read_pipe;
@@ -239,7 +239,7 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
 }
 
 fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
-    let status = try!(left.inner.exec(context.clone()));
+    let status = try!(left.inner.exec(try!(context.try_clone())));
     if status != 0 {
         Ok(status)
     } else {
@@ -342,14 +342,14 @@ pub enum InputRedirect<'a> {
 impl<'a> InputRedirect<'a> {
     fn open_handle_maybe_thread(&'a self,
                                 scope: &crossbeam::Scope<'a>)
-                                -> io::Result<(pipe::Handle, Option<WriterThread>)> {
+                                -> io::Result<(File, Option<WriterThread>)> {
         let mut maybe_thread = None;
         let handle = match *self {
-            InputRedirect::Null => pipe::Handle::from_file(try!(File::open("/dev/null"))),  // TODO: Windows
-            InputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::open(p))),
-            InputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::open(p))),
-            InputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
-            InputRedirect::File(ref f) => pipe::Handle::dup_file(f),
+            InputRedirect::Null => try!(File::open("/dev/null")),  // TODO: Windows
+            InputRedirect::Path(ref p) => try!(File::open(p)),
+            InputRedirect::PathBuf(ref p) => try!(File::open(p)),
+            InputRedirect::FileRef(ref f) => try!(f.try_clone()),
+            InputRedirect::File(ref f) => try!(f.try_clone()),
             InputRedirect::BytesSlice(ref b) => {
                 let (handle, thread) = pipe_with_writer_thread(b, scope);
                 maybe_thread = Some(thread);
@@ -489,20 +489,20 @@ pub enum OutputRedirect<'a> {
 
 impl<'a> OutputRedirect<'a> {
     fn open_handle(&self,
-                   inherited_stdout: &pipe::Handle,
-                   inherited_stderr: &pipe::Handle,
-                   capture_handle: &pipe::Handle)
-                   -> io::Result<pipe::Handle> {
-        Ok(match *self {
-            OutputRedirect::Capture => capture_handle.clone(),
-            OutputRedirect::Null => pipe::Handle::from_file(try!(File::create("/dev/null"))),  // TODO: Windows
-            OutputRedirect::Stdout => inherited_stdout.clone(),
-            OutputRedirect::Stderr => inherited_stderr.clone(),
-            OutputRedirect::Path(ref p) => pipe::Handle::from_file(try!(File::create(p))),
-            OutputRedirect::PathBuf(ref p) => pipe::Handle::from_file(try!(File::create(p))),
-            OutputRedirect::FileRef(ref f) => pipe::Handle::dup_file(f),
-            OutputRedirect::File(ref f) => pipe::Handle::dup_file(f),
-        })
+                   inherited_stdout: &File,
+                   inherited_stderr: &File,
+                   capture_handle: &File)
+                   -> io::Result<File> {
+        match *self {
+            OutputRedirect::Capture => capture_handle.try_clone(),
+            OutputRedirect::Null => File::create("/dev/null"),  // TODO: Windows
+            OutputRedirect::Stdout => inherited_stdout.try_clone(),
+            OutputRedirect::Stderr => inherited_stderr.try_clone(),
+            OutputRedirect::Path(ref p) => File::create(p),
+            OutputRedirect::PathBuf(ref p) => File::create(p),
+            OutputRedirect::FileRef(ref f) => f.try_clone(),
+            OutputRedirect::File(ref f) => f.try_clone(),
+        }
     }
 }
 
@@ -609,13 +609,13 @@ impl From<std::str::Utf8Error> for Error {
 // An IoContext represents the file descriptors child processes are talking to at execution time.
 // It's initialized in run(), with dups of the stdin/stdout/stderr pipes, and then passed down to
 // sub-expressions. Compound expressions will clone() it, and redirections will modify it.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct IoContext {
-    stdin: pipe::Handle,
-    stdout: pipe::Handle,
-    stderr: pipe::Handle,
-    stdout_capture: pipe::Handle,
-    stderr_capture: pipe::Handle,
+    stdin: File,
+    stdout: File,
+    stderr: File,
+    stdout_capture: File,
+    stderr_capture: File,
     dir: PathBuf,
     env: HashMap<OsString, OsString>,
 }
@@ -630,9 +630,9 @@ impl IoContext {
             env.insert(name, val);
         }
         let context = IoContext {
-            stdin: pipe::Handle::stdin(),
-            stdout: pipe::Handle::stdout(),
-            stderr: pipe::Handle::stderr(),
+            stdin: pipe::stdin(),
+            stdout: pipe::stdout(),
+            stderr: pipe::stderr(),
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
             dir: try!(std::env::current_dir()),
@@ -640,16 +640,27 @@ impl IoContext {
         };
         Ok((context, stdout_reader, stderr_reader))
     }
+
+    fn try_clone(&self) -> io::Result<IoContext> {
+        Ok(IoContext{
+            stdin: try!(self.stdin.try_clone()),
+            stdout: try!(self.stdout.try_clone()),
+            stderr: try!(self.stderr.try_clone()),
+            stdout_capture: try!(self.stdout_capture.try_clone()),
+            stderr_capture: try!(self.stderr_capture.try_clone()),
+            dir: self.dir.clone(),
+            env: self.env.clone(),
+        })
+    }
 }
 
 type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 
-fn pipe_with_reader_thread() -> (pipe::Handle, ReaderThread) {
-    let (read_pipe, write_pipe) = pipe::open_pipe();
+fn pipe_with_reader_thread() -> (File, ReaderThread) {
+    let (mut read_pipe, write_pipe) = pipe::open_pipe();
     let thread = std::thread::spawn(move || {
-        let mut read_file = read_pipe.into_file();
         let mut output = Vec::new();
-        try!(read_file.read_to_end(&mut output));
+        try!(read_pipe.read_to_end(&mut output));
         Ok(output)
     });
     (write_pipe, thread)
@@ -659,11 +670,10 @@ type WriterThread = crossbeam::ScopedJoinHandle<io::Result<()>>;
 
 fn pipe_with_writer_thread<'a>(input: &'a [u8],
                                scope: &crossbeam::Scope<'a>)
-                               -> (pipe::Handle, WriterThread) {
-    let (read_pipe, write_pipe) = pipe::open_pipe();
+                               -> (File, WriterThread) {
+    let (read_pipe, mut write_pipe) = pipe::open_pipe();
     let thread = scope.spawn(move || {
-        let mut write_file = write_pipe.into_file();
-        try!(write_file.write_all(&input));
+        try!(write_pipe.write_all(&input));
         Ok(())
     });
     (read_pipe, thread)
