@@ -8,7 +8,7 @@ progress.
 #[macro_use(cmd)]
 extern crate duct;
 
-use duct::{sh, OutputRedirect};
+use duct::sh;
 
 fn main() {
     // Read the name of the current git branch.
@@ -22,9 +22,9 @@ fn main() {
     let result = sh("echo -n The future")
         .then(sh("echo $HORRIFYING_ERROR >&2"))
         .env("HORRIFYING_ERROR", "was then!")
-        .stderr(OutputRedirect::Stdout)
+        .stderr_to_stdout()
         .pipe(cmd!("sed", "s/was then/ is now/"))
-        .stdout(OutputRedirect::Capture)
+        .capture_stdout()
         .run()
         .unwrap();
     assert_eq!(result.status, 0);
