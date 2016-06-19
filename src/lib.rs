@@ -139,12 +139,15 @@ impl<'a, 'b> Expression<'a>
                      self.clone()))
     }
 
-    pub fn env_remove<T: AsRef<OsStr>>(&self, name: T) -> Self {
-        Self::new(Io(EnvRemove(name.as_ref().to_owned()), self.clone()))
-    }
-
-    pub fn env_clear(&self) -> Self {
-        Self::new(Io(EnvClear, self.clone()))
+    pub fn full_env<T, U, V>(&self, name_vals: T) -> Self
+        where T: IntoIterator<Item=(U, V)>,
+              U: AsRef<OsStr>,
+              V: AsRef<OsStr>
+    {
+        let env_map = name_vals.into_iter().map(|(k, v)| {
+            (k.as_ref().to_owned(), v.as_ref().to_owned())
+        }).collect();
+        Self::new(Io(FullEnv(env_map), self.clone()))
     }
 
     pub fn unchecked(&self) -> Self {
@@ -254,8 +257,7 @@ enum IoArg<'a> {
     Stderr(OutputRedirect<'a>),
     Dir(PathBuf),
     Env(OsString, OsString),
-    EnvRemove(OsString),
-    EnvClear,
+    FullEnv(HashMap<OsString, OsString>),
     Unchecked,
 }
 
@@ -291,11 +293,8 @@ impl<'a> IoArg<'a> {
                 Env(ref name, ref val) => {
                     context.env.insert(name.to_owned(), val.to_owned());
                 }
-                EnvRemove(ref name) => {
-                    context.env.remove(name);
-                }
-                EnvClear => {
-                    context.env.clear();
+                FullEnv(ref env_map) => {
+                    context.env = env_map.clone();
                 }
                 Unchecked => {
                     unchecked = true;
@@ -689,6 +688,7 @@ mod test {
     use std::io::prelude::*;
     use std::io::SeekFrom;
     use std::path::Path;
+    use std::collections::HashMap;
 
     #[test]
     fn test_cmd() {
@@ -837,23 +837,13 @@ mod test {
     }
 
     #[test]
-    fn test_env_remove() {
+    fn test_full_env() {
         // Set a var twice, both in the parent process and with an env() call. Make sure a single
-        // env_remove() call clears both.
+        // full_env() call clears both.
         let var_name = "test_env_remove_var";
         env::set_var(var_name, "junk1");
         let command = format!("echo ${}", var_name);
-        let output = sh(command).env_remove(var_name).env(var_name, "junk2").read().unwrap();
-        assert_eq!("", output);
-    }
-
-    #[test]
-    fn test_env_clear() {
-        // As test_env_remove, but with env_clear().
-        let var_name = "test_env_remove_var";
-        env::set_var(var_name, "junk1");
-        let command = format!("echo ${}", var_name);
-        let output = sh(command).env_clear().env(var_name, "junk2").read().unwrap();
+        let output = sh(command).full_env(HashMap::<String, String>::new()).env(var_name, "junk2").read().unwrap();
         assert_eq!("", output);
     }
 
