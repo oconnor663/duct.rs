@@ -140,13 +140,13 @@ impl<'a, 'b> Expression<'a>
     }
 
     pub fn full_env<T, U, V>(&self, name_vals: T) -> Self
-        where T: IntoIterator<Item=(U, V)>,
+        where T: IntoIterator<Item = (U, V)>,
               U: AsRef<OsStr>,
               V: AsRef<OsStr>
     {
-        let env_map = name_vals.into_iter().map(|(k, v)| {
-            (k.as_ref().to_owned(), v.as_ref().to_owned())
-        }).collect();
+        let env_map = name_vals.into_iter()
+            .map(|(k, v)| (k.as_ref().to_owned(), v.as_ref().to_owned()))
+            .collect();
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
 
@@ -641,7 +641,7 @@ impl IoContext {
     }
 
     fn try_clone(&self) -> io::Result<IoContext> {
-        Ok(IoContext{
+        Ok(IoContext {
             stdin: try!(self.stdin.try_clone()),
             stdout: try!(self.stdout.try_clone()),
             stderr: try!(self.stderr.try_clone()),
@@ -843,7 +843,11 @@ mod test {
         let var_name = "test_env_remove_var";
         env::set_var(var_name, "junk1");
         let command = format!("echo ${}", var_name);
-        let output = sh(command).full_env(HashMap::<String, String>::new()).env(var_name, "junk2").read().unwrap();
+        let output = sh(command)
+            .full_env(HashMap::<String, String>::new())
+            .env(var_name, "junk2")
+            .read()
+            .unwrap();
         assert_eq!("", output);
     }
 
