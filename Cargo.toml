@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 libc = ">=0.2.8"
 crossbeam = ">=0.2.8"
+os_pipe = ">=0.1.0"
 
 [dev-dependencies]
 tempfile = ">=2.1.1"

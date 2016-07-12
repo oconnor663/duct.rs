@@ -1,13 +1,17 @@
 extern crate crossbeam;
+extern crate os_pipe;
 
+use os_pipe::PipePair;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
+use std::mem::forget;
+use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread::JoinHandle;
 use std::sync::Arc;
 
@@ -15,8 +19,6 @@ use std::sync::Arc;
 use ExpressionInner::*;
 use ExecutableExpression::*;
 use IoArg::*;
-
-mod pipe;
 
 pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
     let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
@@ -198,9 +200,9 @@ impl<'a> ExecutableExpression<'a> {
 fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Status> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
-    command.stdin(pipe::stdio_from_file(context.stdin));
-    command.stdout(pipe::stdio_from_file(context.stdout));
-    command.stderr(pipe::stdio_from_file(context.stderr));
+    command.stdin(stdio_from_file(context.stdin));
+    command.stdout(stdio_from_file(context.stdout));
+    command.stderr(stdio_from_file(context.stderr));
     command.current_dir(context.dir);
     command.env_clear();
     for (name, val) in context.env {
@@ -219,11 +221,11 @@ fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<Status
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
-    let (read_pipe, write_pipe) = pipe::open_pipe();
+    let pair = try!(os_pipe::pipe());
     let mut left_context = try!(context.try_clone());  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-    left_context.stdout = write_pipe;
+    left_context.stdout = pair.write;
     let mut right_context = context;
-    right_context.stdin = read_pipe;
+    right_context.stdin = pair.read;
 
     let (left_result, right_result) = crossbeam::scope(|scope| {
         let left_joiner = scope.spawn(|| left.inner.exec(left_context));
@@ -350,12 +352,12 @@ impl<'a> InputRedirect<'a> {
             InputRedirect::FileRef(ref f) => try!(f.try_clone()),
             InputRedirect::File(ref f) => try!(f.try_clone()),
             InputRedirect::BytesSlice(ref b) => {
-                let (handle, thread) = pipe_with_writer_thread(b, scope);
+                let (handle, thread) = try!(pipe_with_writer_thread(b, scope));
                 maybe_thread = Some(thread);
                 handle
             }
             InputRedirect::BytesVec(ref b) => {
-                let (handle, thread) = pipe_with_writer_thread(b, scope);
+                let (handle, thread) = try!(pipe_with_writer_thread(b, scope));
                 maybe_thread = Some(thread);
                 handle
             }
@@ -622,16 +624,16 @@ pub struct IoContext {
 impl IoContext {
     // Returns (context, stdout_reader, stderr_reader).
     fn new() -> io::Result<(IoContext, ReaderThread, ReaderThread)> {
-        let (stdout_capture, stdout_reader) = pipe_with_reader_thread();
-        let (stderr_capture, stderr_reader) = pipe_with_reader_thread();
+        let (stdout_capture, stdout_reader) = try!(pipe_with_reader_thread());
+        let (stderr_capture, stderr_reader) = try!(pipe_with_reader_thread());
         let mut env = HashMap::new();
         for (name, val) in std::env::vars_os() {
             env.insert(name, val);
         }
         let context = IoContext {
-            stdin: pipe::stdin(),
-            stdout: pipe::stdout(),
-            stderr: pipe::stderr(),
+            stdin: try!(dup_fd(0)),
+            stdout: try!(dup_fd(1)),
+            stderr: try!(dup_fd(2)),
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
             dir: try!(std::env::current_dir()),
@@ -655,27 +657,41 @@ impl IoContext {
 
 type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 
-fn pipe_with_reader_thread() -> (File, ReaderThread) {
-    let (mut read_pipe, write_pipe) = pipe::open_pipe();
+fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
+    let PipePair { mut read, write } = try!(os_pipe::pipe());
     let thread = std::thread::spawn(move || {
         let mut output = Vec::new();
-        try!(read_pipe.read_to_end(&mut output));
+        try!(read.read_to_end(&mut output));
         Ok(output)
     });
-    (write_pipe, thread)
+    Ok((write, thread))
 }
 
 type WriterThread = crossbeam::ScopedJoinHandle<io::Result<()>>;
 
 fn pipe_with_writer_thread<'a>(input: &'a [u8],
                                scope: &crossbeam::Scope<'a>)
-                               -> (File, WriterThread) {
-    let (read_pipe, mut write_pipe) = pipe::open_pipe();
+                               -> io::Result<(File, WriterThread)> {
+    let PipePair { read, mut write } = try!(os_pipe::pipe());
     let thread = scope.spawn(move || {
-        try!(write_pipe.write_all(&input));
+        try!(write.write_all(&input));
         Ok(())
     });
-    (read_pipe, thread)
+    Ok((read, thread))
+}
+
+fn dup_fd(fd: RawFd) -> io::Result<File> {
+    // Running the destructor for this file will close the fd. We don't want that. (For example, it
+    // could be the whole process's stdout.) So we need to make sure we always forget() the file
+    // object, even in the case where try_clone() returns an error.
+    let file = unsafe { File::from_raw_fd(fd) };
+    let result = file.try_clone();
+    forget(file);
+    result
+}
+
+fn stdio_from_file(file: File) -> Stdio {
+    unsafe { Stdio::from_raw_fd(file.into_raw_fd()) }
 }
 
 #[cfg(test)]
