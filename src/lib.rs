@@ -8,18 +8,17 @@ use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread::JoinHandle;
 use std::sync::Arc;
 
 // enums defined below
 use ExpressionInner::*;
-use ExecutableExpression::*;
-use IoArg::*;
+use IoExpressionInner::*;
 
-pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression<'static> {
+pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression {
     let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
-    Expression::new(Exec(ArgvCommand(argv_vec)))
+    Expression::new(Cmd(argv_vec))
 }
 
 #[macro_export]
@@ -37,22 +36,17 @@ macro_rules! cmd {
     };
 }
 
-pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression<'static> {
-    Expression {
-        inner: Arc::new(Exec(ShCommand(command.as_ref()
-            .to_owned()))),
-    }
+pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression {
+    Expression::new(Sh(command.as_ref().to_owned()))
 }
 
 #[derive(Clone, Debug)]
 #[must_use]
-pub struct Expression<'a> {
-    inner: Arc<ExpressionInner<'a>>,
+pub struct Expression {
+    inner: Arc<ExpressionInner>,
 }
 
-impl<'a, 'b> Expression<'a>
-    where 'b: 'a
-{
+impl Expression {
     pub fn run(&self) -> Result<Output, Error> {
         let (context, stdout_reader, stderr_reader) = try!(IoContext::new());
         let status = try!(self.inner.exec(context));
@@ -77,56 +71,56 @@ impl<'a, 'b> Expression<'a>
         Ok(output_str.trim_right_matches('\n').to_owned())
     }
 
-    pub fn pipe<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
-        Self::new(Exec(Pipe(self.clone(), right.borrow().clone())))
+    pub fn pipe<T: Borrow<Expression>>(&self, right: T) -> Expression {
+        Self::new(Pipe(self.clone(), right.borrow().clone()))
     }
 
-    pub fn then<T: Borrow<Expression<'b>>>(&self, right: T) -> Expression<'a> {
-        Self::new(Exec(Then(self.clone(), right.borrow().clone())))
+    pub fn then<T: Borrow<Expression>>(&self, right: T) -> Expression {
+        Self::new(Then(self.clone(), right.borrow().clone()))
     }
 
-    pub fn input<T: IntoStdinBytes<'b>>(&self, input: T) -> Self {
-        Self::new(Io(Stdin(input.into_stdin_bytes()), self.clone()))
+    pub fn input<T: AsRef<[u8]>>(&self, input: T) -> Self {
+        Self::new(Io(Input(input.as_ref().to_vec()), self.clone()))
     }
 
-    pub fn stdin<T: IntoStdin<'b>>(&self, stdin: T) -> Self {
-        Self::new(Io(Stdin(stdin.into_stdin()), self.clone()))
+    pub fn stdin<T: Into<FileOpener>>(&self, stdin: T) -> Self {
+        Self::new(Io(Stdin(stdin.into()), self.clone()))
     }
 
     pub fn null_stdin(&self) -> Self {
-        Self::new(Io(Stdin(InputRedirect::Null), self.clone()))
+        Self::new(Io(StdinNull, self.clone()))
     }
 
-    pub fn stdout<T: IntoOutput<'b>>(&self, stdout: T) -> Self {
-        Self::new(Io(Stdout(stdout.into_output()), self.clone()))
+    pub fn stdout<T: Into<FileOpener>>(&self, stdout: T) -> Self {
+        Self::new(Io(Stdout(stdout.into()), self.clone()))
     }
 
     pub fn null_stdout(&self) -> Self {
-        Self::new(Io(Stdout(OutputRedirect::Null), self.clone()))
+        Self::new(Io(StdoutNull, self.clone()))
     }
 
     pub fn capture_stdout(&self) -> Self {
-        Self::new(Io(Stdout(OutputRedirect::Capture), self.clone()))
+        Self::new(Io(StdoutCapture, self.clone()))
     }
 
     pub fn stdout_to_stderr(&self) -> Self {
-        Self::new(Io(Stdout(OutputRedirect::Stderr), self.clone()))
+        Self::new(Io(StdoutToStderr, self.clone()))
     }
 
-    pub fn stderr<T: IntoOutput<'b>>(&self, stderr: T) -> Self {
-        Self::new(Io(Stderr(stderr.into_output()), self.clone()))
+    pub fn stderr<T: Into<FileOpener>>(&self, stderr: T) -> Self {
+        Self::new(Io(Stderr(stderr.into()), self.clone()))
     }
 
     pub fn null_stderr(&self) -> Self {
-        Self::new(Io(Stderr(OutputRedirect::Null), self.clone()))
+        Self::new(Io(StderrNull, self.clone()))
     }
 
     pub fn capture_stderr(&self) -> Self {
-        Self::new(Io(Stderr(OutputRedirect::Capture), self.clone()))
+        Self::new(Io(StderrCapture, self.clone()))
     }
 
     pub fn stderr_to_stdout(&self) -> Self {
-        Self::new(Io(Stderr(OutputRedirect::Stdout), self.clone()))
+        Self::new(Io(StderrToStdout, self.clone()))
     }
 
     pub fn dir<T: AsRef<Path>>(&self, path: T) -> Self {
@@ -153,53 +147,39 @@ impl<'a, 'b> Expression<'a>
         Self::new(Io(Unchecked, self.clone()))
     }
 
-    fn new(inner: ExpressionInner<'a>) -> Self {
+    fn new(inner: ExpressionInner) -> Self {
         Expression { inner: Arc::new(inner) }
     }
 }
 
 #[derive(Debug)]
-enum ExpressionInner<'a> {
-    Exec(ExecutableExpression<'a>),
-    Io(IoArg<'a>, Expression<'a>),
+enum ExpressionInner {
+    Cmd(Vec<OsString>),
+    Sh(OsString),
+    Pipe(Expression, Expression),
+    Then(Expression, Expression),
+    Io(IoExpressionInner, Expression),
 }
 
-impl<'a> ExpressionInner<'a> {
-    fn exec(&self, parent_context: IoContext) -> io::Result<Status> {
-        match *self {
-            Exec(ref executable) => executable.exec(parent_context),
-            Io(ref ioarg, ref expr) => {
-                ioarg.with_child_context(parent_context, |context| expr.inner.exec(context))
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum ExecutableExpression<'a> {
-    ArgvCommand(Vec<OsString>),
-    ShCommand(OsString),
-    Pipe(Expression<'a>, Expression<'a>),
-    Then(Expression<'a>, Expression<'a>),
-}
-
-impl<'a> ExecutableExpression<'a> {
+impl ExpressionInner {
     fn exec(&self, context: IoContext) -> io::Result<Status> {
         match *self {
-            ArgvCommand(ref argv) => exec_argv(argv, context),
-            ShCommand(ref command) => exec_sh(command, context),
+            Cmd(ref argv) => exec_argv(argv, context),
+            Sh(ref command) => exec_sh(command, context),
             Pipe(ref left, ref right) => exec_pipe(left, right, context),
             Then(ref left, ref right) => exec_then(left, right, context),
+            Io(ref io_inner, ref expr) => exec_io(io_inner, expr, context),
         }
     }
 }
 
-fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Status> {
+fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<Status> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
-    command.stdin(os_pipe::stdio_from_file(context.stdin));
-    command.stdout(os_pipe::stdio_from_file(context.stdout));
-    command.stderr(os_pipe::stdio_from_file(context.stderr));
+    // TODO: Avoid unnecessary dup'ing here.
+    command.stdin(try!(context.stdin.into_stdio()));
+    command.stdout(try!(context.stdout.into_stdio()));
+    command.stderr(try!(context.stderr.into_stdio()));
     command.current_dir(context.dir);
     command.env_clear();
     for (name, val) in context.env {
@@ -208,21 +188,21 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Stat
     Ok(try!(command.status()).code().unwrap()) // TODO: Handle signals.
 }
 
-fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<Status> {
+fn exec_sh(command: &OsString, context: IoContext) -> io::Result<Status> {
     // TODO: Use COMSPEC on Windows, as Python does. https://docs.python.org/3/library/subprocess.html
-    let mut argv = Vec::new();
-    argv.push("/bin/sh".as_ref());
-    argv.push("-c".as_ref());
-    argv.push(command.as_ref());
+    let mut argv: Vec<OsString> = Vec::new();
+    argv.push(AsRef::<OsStr>::as_ref("/bin/sh").to_owned());
+    argv.push(AsRef::<OsStr>::as_ref("-c").to_owned());
+    argv.push(command.to_owned());
     exec_argv(&argv, context)
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
     let pair = try!(os_pipe::pipe());
     let mut left_context = try!(context.try_clone());  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-    left_context.stdout = pair.write;
+    left_context.stdout = IoValue::File(pair.write);
     let mut right_context = context;
-    right_context.stdin = pair.read;
+    right_context.stdin = IoValue::File(pair.read);
 
     let (left_result, right_result) = crossbeam::scope(|scope| {
         let left_joiner = scope.spawn(|| left.inner.exec(left_context));
@@ -249,328 +229,186 @@ fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::R
     }
 }
 
-#[derive(Debug)]
-enum IoArg<'a> {
-    Stdin(InputRedirect<'a>),
-    Stdout(OutputRedirect<'a>),
-    Stderr(OutputRedirect<'a>),
-    Dir(PathBuf),
-    Env(OsString, OsString),
-    FullEnv(HashMap<OsString, OsString>),
-    Unchecked,
-}
-
-impl<'a> IoArg<'a> {
-    fn with_child_context<F>(&self, parent_context: IoContext, inner: F) -> io::Result<Status>
-        where F: FnOnce(IoContext) -> io::Result<Status>
+fn exec_io(io_inner: &IoExpressionInner,
+           expr: &Expression,
+           context: IoContext)
+           -> io::Result<Status> {
     {
         crossbeam::scope(|scope| {
-            let mut context = parent_context;  // move it into the closure
-            let mut maybe_stdin_thread = None;
-            let mut unchecked = false;
-
-            // Put together the redirected context.
-            match *self {
-                Stdin(ref redir) => {
-                    let (handle, maybe_thread) = try!(redir.open_handle_maybe_thread(scope));
-                    maybe_stdin_thread = maybe_thread;
-                    context.stdin = handle;
-                }
-                Stdout(ref redir) => {
-                    context.stdout = try!(redir.open_handle(&context.stdout,
-                                                            &context.stderr,
-                                                            &context.stdout_capture));
-                }
-                Stderr(ref redir) => {
-                    context.stderr = try!(redir.open_handle(&context.stdout,
-                                                            &context.stderr,
-                                                            &context.stderr_capture));
-                }
-                Dir(ref path) => {
-                    context.dir = path.to_owned();
-                }
-                Env(ref name, ref val) => {
-                    context.env.insert(name.to_owned(), val.to_owned());
-                }
-                FullEnv(ref env_map) => {
-                    context.env = env_map.clone();
-                }
-                Unchecked => {
-                    unchecked = true;
-                }
-            }
-
-            // Run the inner closure.
-            let status = try!(inner(context));
-
-            // Join the input thread, if any.
-            if let Some(thread) = maybe_stdin_thread {
-                if let Err(writer_error) = thread.join() {
-                    // A broken pipe error happens if the process on the other end exits before
-                    // we're done writing. We ignore those but return any other errors to the
-                    // caller.
-                    if writer_error.kind() != io::ErrorKind::BrokenPipe {
-                        return Err(writer_error);
-                    }
-                }
-            }
-
-            if unchecked {
-                // Return status 0 (success) for ignored expressions.
+            let (new_context, maybe_writer_thread) = try!(io_inner.update_context(context, scope));
+            let exec_result = expr.inner.exec(new_context);
+            let writer_result = join_maybe_writer_thread(maybe_writer_thread);
+            // Propagate any exec errors first.
+            let exec_status = try!(exec_result);
+            // Then propagate any writer thread errors.
+            try!(writer_result);
+            // Finally, implement unchecked() status suppression here.
+            if let &Unchecked = io_inner {
                 Ok(0)
             } else {
-                // Otherwise return the real status.
-                Ok(status)
+                Ok(exec_status)
             }
         })
     }
 }
 
 #[derive(Debug)]
-pub enum InputRedirect<'a> {
-    Null,
-    Path(&'a Path),
-    PathBuf(PathBuf),
-    FileRef(&'a File),
-    File(File),
-    BytesSlice(&'a [u8]),
-    BytesVec(Vec<u8>),
+enum IoExpressionInner {
+    Input(Vec<u8>),
+    Stdin(FileOpener),
+    StdinNull,
+    Stdout(FileOpener),
+    StdoutNull,
+    StdoutCapture,
+    StdoutToStderr,
+    Stderr(FileOpener),
+    StderrNull,
+    StderrCapture,
+    StderrToStdout,
+    Dir(PathBuf),
+    Env(OsString, OsString),
+    FullEnv(HashMap<OsString, OsString>),
+    Unchecked,
 }
 
-impl<'a> InputRedirect<'a> {
-    fn open_handle_maybe_thread(&'a self,
-                                scope: &crossbeam::Scope<'a>)
-                                -> io::Result<(File, Option<WriterThread>)> {
+impl IoExpressionInner {
+    fn update_context<'a>(&'a self,
+                          mut context: IoContext,
+                          scope: &crossbeam::Scope<'a>)
+                          -> io::Result<(IoContext, Option<WriterThread>)> {
         let mut maybe_thread = None;
-        let handle = match *self {
-            InputRedirect::Null => try!(File::open("/dev/null")),  // TODO: Windows
-            InputRedirect::Path(ref p) => try!(File::open(p)),
-            InputRedirect::PathBuf(ref p) => try!(File::open(p)),
-            InputRedirect::FileRef(ref f) => try!(f.try_clone()),
-            InputRedirect::File(ref f) => try!(f.try_clone()),
-            InputRedirect::BytesSlice(ref b) => {
-                let (handle, thread) = try!(pipe_with_writer_thread(b, scope));
-                maybe_thread = Some(thread);
-                handle
+        match *self {
+            Input(ref v) => {
+                let (reader, thread) = try!(pipe_with_writer_thread(v, scope));
+                context.stdin = IoValue::File(reader);
+                maybe_thread = Some(thread)
             }
-            InputRedirect::BytesVec(ref b) => {
-                let (handle, thread) = try!(pipe_with_writer_thread(b, scope));
-                maybe_thread = Some(thread);
-                handle
+            Stdin(ref f) => {
+                context.stdin = IoValue::File(try!(f.open_for_reading()));
             }
-        };
-        Ok((handle, maybe_thread))
-    }
-}
-
-pub trait IntoStdinBytes<'a> {
-    fn into_stdin_bytes(self) -> InputRedirect<'a>;
-}
-
-impl<'a> IntoStdinBytes<'a> for &'a [u8] {
-    fn into_stdin_bytes(self) -> InputRedirect<'a> {
-        InputRedirect::BytesSlice(self)
-    }
-}
-
-impl<'a> IntoStdinBytes<'a> for &'a Vec<u8> {
-    fn into_stdin_bytes(self) -> InputRedirect<'a> {
-        InputRedirect::BytesSlice(self.as_ref())
-    }
-}
-
-impl IntoStdinBytes<'static> for Vec<u8> {
-    fn into_stdin_bytes(self) -> InputRedirect<'static> {
-        InputRedirect::BytesVec(self)
-    }
-}
-
-impl<'a> IntoStdinBytes<'a> for &'a str {
-    fn into_stdin_bytes(self) -> InputRedirect<'a> {
-        InputRedirect::BytesSlice(self.as_ref())
-    }
-}
-
-impl<'a> IntoStdinBytes<'a> for &'a String {
-    fn into_stdin_bytes(self) -> InputRedirect<'a> {
-        InputRedirect::BytesSlice(self.as_ref())
-    }
-}
-
-impl IntoStdinBytes<'static> for String {
-    fn into_stdin_bytes(self) -> InputRedirect<'static> {
-        InputRedirect::BytesVec(self.into_bytes())
-    }
-}
-
-pub trait IntoStdin<'a> {
-    fn into_stdin(self) -> InputRedirect<'a>;
-}
-
-impl<'a> IntoStdin<'a> for &'a Path {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        InputRedirect::Path(self)
-    }
-}
-
-impl<'a> IntoStdin<'a> for &'a PathBuf {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        InputRedirect::Path(self.as_ref())
-    }
-}
-
-impl IntoStdin<'static> for PathBuf {
-    fn into_stdin(self) -> InputRedirect<'static> {
-        InputRedirect::PathBuf(self)
-    }
-}
-
-impl<'a> IntoStdin<'a> for &'a str {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        InputRedirect::Path(self.as_ref())
-    }
-}
-
-impl<'a> IntoStdin<'a> for &'a String {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        InputRedirect::Path(self.as_ref())
-    }
-}
-
-impl IntoStdin<'static> for String {
-    fn into_stdin(self) -> InputRedirect<'static> {
-        InputRedirect::PathBuf(self.into())
-    }
-}
-
-impl<'a> IntoStdin<'a> for &'a OsStr {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        InputRedirect::Path(self.as_ref())
-    }
-}
-
-impl<'a> IntoStdin<'a> for &'a OsString {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        InputRedirect::Path(self.as_ref())
-    }
-}
-
-impl IntoStdin<'static> for OsString {
-    fn into_stdin(self) -> InputRedirect<'static> {
-        InputRedirect::PathBuf(self.into())
-    }
-}
-
-impl<'a> IntoStdin<'a> for &'a File {
-    fn into_stdin(self) -> InputRedirect<'a> {
-        InputRedirect::FileRef(self)
-    }
-}
-
-impl IntoStdin<'static> for File {
-    fn into_stdin(self) -> InputRedirect<'static> {
-        InputRedirect::File(self)
+            StdinNull => {
+                context.stdin = IoValue::Null;
+            }
+            Stdout(ref f) => {
+                context.stdout = IoValue::File(try!(f.open_for_writing()));
+            }
+            StdoutNull => {
+                context.stdout = IoValue::Null;
+            }
+            StdoutCapture => {
+                context.stdout = IoValue::File(try!(context.stdout_capture.try_clone()))
+            }
+            StdoutToStderr => {
+                context.stdout = try!(context.stderr.try_clone());
+            }
+            Stderr(ref f) => {
+                context.stderr = IoValue::File(try!(f.open_for_writing()));
+            }
+            StderrNull => {
+                context.stderr = IoValue::Null;
+            }
+            StderrCapture => {
+                context.stderr = IoValue::File(try!(context.stderr_capture.try_clone()))
+            }
+            StderrToStdout => {
+                context.stderr = try!(context.stdout.try_clone());
+            }
+            Dir(ref p) => {
+                context.dir = p.clone();
+            }
+            Env(ref name, ref val) => {
+                context.env.insert(name.clone(), val.clone());
+            }
+            FullEnv(ref map) => {
+                context.env = map.clone();
+            }
+            Unchecked => {
+                // No-op. Unchecked is handled in exec_io().
+            }
+        }
+        Ok((context, maybe_thread))
     }
 }
 
 #[derive(Debug)]
-pub enum OutputRedirect<'a> {
-    Capture,
-    Null,
-    Stdout,
-    Stderr,
-    Path(&'a Path),
+pub enum FileOpener {
     PathBuf(PathBuf),
-    FileRef(&'a File),
     File(File),
 }
 
-impl<'a> OutputRedirect<'a> {
-    fn open_handle(&self,
-                   inherited_stdout: &File,
-                   inherited_stderr: &File,
-                   capture_handle: &File)
-                   -> io::Result<File> {
+impl FileOpener {
+    fn open_for_reading(&self) -> io::Result<File> {
         match *self {
-            OutputRedirect::Capture => capture_handle.try_clone(),
-            OutputRedirect::Null => File::create("/dev/null"),  // TODO: Windows
-            OutputRedirect::Stdout => inherited_stdout.try_clone(),
-            OutputRedirect::Stderr => inherited_stderr.try_clone(),
-            OutputRedirect::Path(ref p) => File::create(p),
-            OutputRedirect::PathBuf(ref p) => File::create(p),
-            OutputRedirect::FileRef(ref f) => f.try_clone(),
-            OutputRedirect::File(ref f) => f.try_clone(),
+            FileOpener::PathBuf(ref p) => File::open(p),
+            FileOpener::File(ref f) => f.try_clone(),
+        }
+    }
+
+    fn open_for_writing(&self) -> io::Result<File> {
+        match *self {
+            FileOpener::PathBuf(ref p) => File::create(p),
+            FileOpener::File(ref f) => f.try_clone(),
         }
     }
 }
 
-pub trait IntoOutput<'a> {
-    fn into_output(self) -> OutputRedirect<'a>;
-}
-
-impl<'a> IntoOutput<'a> for &'a Path {
-    fn into_output(self) -> OutputRedirect<'a> {
-        OutputRedirect::Path(self)
+impl From<File> for FileOpener {
+    fn from(f: File) -> FileOpener {
+        FileOpener::File(f)
     }
 }
 
-impl<'a> IntoOutput<'a> for &'a PathBuf {
-    fn into_output(self) -> OutputRedirect<'a> {
-        OutputRedirect::Path(self.as_ref())
+impl<'a> From<&'a str> for FileOpener {
+    fn from(s: &str) -> FileOpener {
+        FileOpener::PathBuf(AsRef::<Path>::as_ref(s).to_owned())
     }
 }
 
-impl IntoOutput<'static> for PathBuf {
-    fn into_output(self) -> OutputRedirect<'static> {
-        OutputRedirect::PathBuf(self)
+impl<'a> From<&'a String> for FileOpener {
+    fn from(s: &String) -> FileOpener {
+        FileOpener::PathBuf(s.clone().into())
     }
 }
 
-impl<'a> IntoOutput<'a> for &'a str {
-    fn into_output(self) -> OutputRedirect<'a> {
-        OutputRedirect::Path(self.as_ref())
+impl From<String> for FileOpener {
+    fn from(s: String) -> FileOpener {
+        FileOpener::PathBuf(s.into())
     }
 }
 
-impl<'a> IntoOutput<'a> for &'a String {
-    fn into_output(self) -> OutputRedirect<'a> {
-        OutputRedirect::Path(self.as_ref())
+impl<'a> From<&'a Path> for FileOpener {
+    fn from(p: &Path) -> FileOpener {
+        FileOpener::PathBuf(p.to_owned())
     }
 }
 
-impl IntoOutput<'static> for String {
-    fn into_output(self) -> OutputRedirect<'static> {
-        OutputRedirect::PathBuf(self.into())
+impl<'a> From<&'a PathBuf> for FileOpener {
+    fn from(p: &PathBuf) -> FileOpener {
+        FileOpener::PathBuf(p.clone())
     }
 }
 
-impl<'a> IntoOutput<'a> for &'a OsStr {
-    fn into_output(self) -> OutputRedirect<'a> {
-        OutputRedirect::Path(self.as_ref())
+impl From<PathBuf> for FileOpener {
+    fn from(p: PathBuf) -> FileOpener {
+        FileOpener::PathBuf(p)
     }
 }
 
-impl<'a> IntoOutput<'a> for &'a OsString {
-    fn into_output(self) -> OutputRedirect<'a> {
-        OutputRedirect::Path(self.as_ref())
+impl<'a> From<&'a OsStr> for FileOpener {
+    fn from(s: &OsStr) -> FileOpener {
+        FileOpener::PathBuf(s.clone().into())
     }
 }
 
-impl IntoOutput<'static> for OsString {
-    fn into_output(self) -> OutputRedirect<'static> {
-        OutputRedirect::PathBuf(self.into())
+impl<'a> From<&'a OsString> for FileOpener {
+    fn from(s: &OsString) -> FileOpener {
+        FileOpener::PathBuf(AsRef::<Path>::as_ref(s).to_owned())
     }
 }
 
-impl<'a> IntoOutput<'a> for &'a File {
-    fn into_output(self) -> OutputRedirect<'a> {
-        OutputRedirect::FileRef(self)
-    }
-}
-
-impl IntoOutput<'static> for File {
-    fn into_output(self) -> OutputRedirect<'static> {
-        OutputRedirect::File(self)
+impl From<OsString> for FileOpener {
+    fn from(s: OsString) -> FileOpener {
+        FileOpener::PathBuf(s.into())
     }
 }
 
@@ -609,9 +447,9 @@ impl From<std::str::Utf8Error> for Error {
 // sub-expressions. Compound expressions will clone() it, and redirections will modify it.
 #[derive(Debug)]
 pub struct IoContext {
-    stdin: File,
-    stdout: File,
-    stderr: File,
+    stdin: IoValue,
+    stdout: IoValue,
+    stderr: IoValue,
     stdout_capture: File,
     stderr_capture: File,
     dir: PathBuf,
@@ -628,9 +466,9 @@ impl IoContext {
             env.insert(name, val);
         }
         let context = IoContext {
-            stdin: try!(os_pipe::dup_stdin()),
-            stdout: try!(os_pipe::dup_stdout()),
-            stderr: try!(os_pipe::dup_stderr()),
+            stdin: IoValue::ParentStdin,
+            stdout: IoValue::ParentStdout,
+            stderr: IoValue::ParentStderr,
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
             dir: try!(std::env::current_dir()),
@@ -649,6 +487,37 @@ impl IoContext {
             dir: self.dir.clone(),
             env: self.env.clone(),
         })
+    }
+}
+
+#[derive(Debug)]
+enum IoValue {
+    ParentStdin,
+    ParentStdout,
+    ParentStderr,
+    Null,
+    File(File),
+}
+
+impl IoValue {
+    fn try_clone(&self) -> io::Result<IoValue> {
+        Ok(match self {
+            &IoValue::ParentStdin => IoValue::ParentStdin,
+            &IoValue::ParentStdout => IoValue::ParentStdout,
+            &IoValue::ParentStderr => IoValue::ParentStderr,
+            &IoValue::Null => IoValue::Null,
+            &IoValue::File(ref f) => IoValue::File(try!(f.try_clone())),
+        })
+    }
+
+    fn into_stdio(self) -> io::Result<Stdio> {
+        match self {
+            IoValue::ParentStdin => os_pipe::parent_stdin(),
+            IoValue::ParentStdout => os_pipe::parent_stdout(),
+            IoValue::ParentStderr => os_pipe::parent_stderr(),
+            IoValue::Null => Ok(Stdio::null()),
+            IoValue::File(f) => Ok(os_pipe::stdio_from_file(f)),
+        }
     }
 }
 
@@ -675,6 +544,20 @@ fn pipe_with_writer_thread<'a>(input: &'a [u8],
         Ok(())
     });
     Ok((read, thread))
+}
+
+fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Result<()> {
+    if let Some(thread) = maybe_writer_thread {
+        if let Err(thread_error) = thread.join() {
+            // A broken pipe error happens if the process on the other end exits before
+            // we're done writing. We ignore those but return any other errors to the
+            // caller.
+            if thread_error.kind() != io::ErrorKind::BrokenPipe {
+                return Err(thread_error);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -760,20 +643,6 @@ mod test {
     }
 
     #[test]
-    fn test_owned_input() {
-        fn with_input<'a>(expr: &Expression<'a>) -> Expression<'a> {
-            let mystr = format!("I own this: {}", "foo");
-            // This would be a lifetime error if we tried to use &mystr.
-            expr.input(mystr)
-        }
-
-        let c = cmd!("cat");
-        let c_with_input = with_input(&c);
-        let output = c_with_input.read().unwrap();
-        assert_eq!("I own this: foo", output);
-    }
-
-    #[test]
     fn test_stderr_to_stdout() {
         let command = sh("echo hi >&2").stderr_to_stdout();
         let output = command.read().unwrap();
@@ -785,16 +654,13 @@ mod test {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
         temp.write_all(b"example").unwrap();
         temp.seek(SeekFrom::Start(0)).unwrap();
-        let expr = cmd!("cat").stdin(temp.as_ref());
+        let expr = cmd!("cat").stdin(temp.as_ref().try_clone().unwrap());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
 
     #[test]
     fn test_ergonomics() {
-        // We don't get automatic Deref when we're matching trait implementations, so in addition
-        // to implementing String and &str, we *also* implement &String.
-        // TODO: See if specialization can clean this up.
         let mystr = "owned string".to_owned();
         let mypathbuf = Path::new("a/b/c").to_owned();
         let myvec = vec![1, 2, 3];
