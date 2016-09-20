@@ -72,8 +72,7 @@ impl Expression {
     pub fn read(&self) -> Result<String, Error> {
         let output = try!(self.capture_stdout().run());
         let output_str = try!(std::str::from_utf8(&output.stdout));
-        // TODO: Handle Windows newlines too.
-        Ok(output_str.trim_right_matches('\n').to_owned())
+        Ok(trim_right_newlines(output_str).to_owned())
     }
 
     pub fn pipe<T: Borrow<Expression>>(&self, right: T) -> Expression {
@@ -554,6 +553,10 @@ fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Re
         }
     }
     Ok(())
+}
+
+fn trim_right_newlines(s: &str) -> &str {
+    s.trim_right_matches(|c| c == '\n' || c == '\r')
 }
 
 #[cfg(test)]
