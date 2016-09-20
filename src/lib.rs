@@ -362,6 +362,8 @@ impl From<File> for FileOpener {
     }
 }
 
+// TODO: Get rid of most of these impl's once specialization lands.
+
 impl<'a> From<&'a str> for FileOpener {
     fn from(s: &str) -> FileOpener {
         FileOpener::PathBuf(AsRef::<Path>::as_ref(s).to_owned())
