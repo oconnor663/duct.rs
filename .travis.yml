@@ -1,6 +1,7 @@
 language: rust
 rust:
-  - stable
+  # Reenable stable after 1.12 is released.
+  # - stable
   - beta
   - nightly
 # code coverage

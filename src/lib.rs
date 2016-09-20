@@ -7,8 +7,12 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, Output, ExitStatus};
 use std::thread::JoinHandle;
 use std::sync::Arc;
 
@@ -57,7 +61,7 @@ impl Expression {
             stdout: stdout_vec,
             stderr: stderr_vec,
         };
-        if output.status != 0 {
+        if !output.status.success() {
             Err(Error::Status(output))
         } else {
             Ok(output)
@@ -162,7 +166,7 @@ enum ExpressionInner {
 }
 
 impl ExpressionInner {
-    fn exec(&self, context: IoContext) -> io::Result<Status> {
+    fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
         match *self {
             Cmd(ref argv) => exec_argv(argv, context),
             Sh(ref command) => exec_sh(command, context),
@@ -173,7 +177,7 @@ impl ExpressionInner {
     }
 }
 
-fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<Status> {
+fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
     // TODO: Avoid unnecessary dup'ing here.
@@ -185,10 +189,10 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<Status> {
     for (name, val) in context.env {
         command.env(name, val);
     }
-    Ok(try!(command.status()).code().unwrap()) // TODO: Handle signals.
+    Ok(try!(command.status()))
 }
 
-fn exec_sh(command: &OsString, context: IoContext) -> io::Result<Status> {
+fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExitStatus> {
     // TODO: Use COMSPEC on Windows, as Python does. https://docs.python.org/3/library/subprocess.html
     let mut argv: Vec<OsString> = Vec::new();
     argv.push(AsRef::<OsStr>::as_ref("/bin/sh").to_owned());
@@ -197,7 +201,7 @@ fn exec_sh(command: &OsString, context: IoContext) -> io::Result<Status> {
     exec_argv(&argv, context)
 }
 
-fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
+fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
     let pair = try!(os_pipe::pipe());
     let mut left_context = try!(context.try_clone());  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
     left_context.stdout = IoValue::File(pair.write);
@@ -213,16 +217,16 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
 
     let right_status = try!(right_result);
     let left_status = try!(left_result);
-    if right_status != 0 {
+    if !right_status.success() {
         Ok(right_status)
     } else {
         Ok(left_status)
     }
 }
 
-fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<Status> {
+fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
     let status = try!(left.inner.exec(try!(context.try_clone())));
-    if status != 0 {
+    if !status.success() {
         Ok(status)
     } else {
         right.inner.exec(context)
@@ -232,7 +236,7 @@ fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::R
 fn exec_io(io_inner: &IoExpressionInner,
            expr: &Expression,
            context: IoContext)
-           -> io::Result<Status> {
+           -> io::Result<ExitStatus> {
     {
         crossbeam::scope(|scope| {
             let (new_context, maybe_writer_thread) = try!(io_inner.update_context(context, scope));
@@ -244,7 +248,7 @@ fn exec_io(io_inner: &IoExpressionInner,
             try!(writer_result);
             // Finally, implement unchecked() status suppression here.
             if let &Unchecked = io_inner {
-                Ok(0)
+                Ok(ExitStatus::from_raw(0))
             } else {
                 Ok(exec_status)
             }
@@ -410,17 +414,6 @@ impl From<OsString> for FileOpener {
     fn from(s: OsString) -> FileOpener {
         FileOpener::PathBuf(s.into())
     }
-}
-
-// We can't use std::process::{Output, Status}, because we need to be able to instantiate the
-// success status value ourselves.
-pub type Status = i32;
-
-#[derive(Clone, Debug)]
-pub struct Output {
-    pub status: Status,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -589,7 +582,7 @@ mod test {
         let result = cmd!("false").run();
         if let Err(Error::Status(output)) = result {
             // Check that the status is non-zero.
-            assert!(output.status != 0);
+            assert!(!output.status.success());
         } else {
             panic!("Expected a status error.");
         }
