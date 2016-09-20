@@ -32,7 +32,8 @@ macro_rules! cmd {
             use std::ffi::OsStr;
             let mut temp_vec = Vec::new();
             $(
-                let temp_osstr: &OsStr = $x.as_ref();
+                let temp_arg = $x;
+                let temp_osstr: &OsStr = temp_arg.as_ref();
                 temp_vec.push(temp_osstr.to_owned());
             )*
             $crate::cmd(&temp_vec)
@@ -564,24 +565,37 @@ mod test {
     use std::env;
     use std::io::prelude::*;
     use std::io::SeekFrom;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::collections::HashMap;
+
+    fn path_to_test_binary(name: &str) -> PathBuf {
+        let test_project = Path::new(".").join("test").join(name);
+        // Build the test command.
+        sh("cargo build --quiet")
+            .dir(&test_project)
+            .run()
+            .expect(&format!("building test command '{}' returned an error", name));
+        // Return the path to the built binary.
+        test_project.join("target").join("debug").join(name)
+    }
 
     #[test]
     fn test_cmd() {
+        // Windows compatible.
         let output = cmd!("echo", "hi").read().unwrap();
         assert_eq!("hi", output);
     }
 
     #[test]
     fn test_sh() {
+        // Windows compatible.
         let output = sh("echo hi").read().unwrap();
         assert_eq!("hi", output);
     }
 
     #[test]
     fn test_error() {
-        let result = cmd!("false").run();
+        let result = cmd!(path_to_test_binary("status"), "1").run();
         if let Err(Error::Status(output)) = result {
             // Check that the status is non-zero.
             assert!(!output.status.success());
@@ -592,7 +606,7 @@ mod test {
 
     #[test]
     fn test_ignore() {
-        let ignored_false = cmd!("false").unchecked();
+        let ignored_false = cmd!(path_to_test_binary("status"), "1").unchecked();
         let output = ignored_false.then(cmd!("echo", "waa")).then(ignored_false).read().unwrap();
         assert_eq!("waa", output);
     }
