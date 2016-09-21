@@ -11,5 +11,4 @@ os_pipe = "^0.2"
 crossbeam = ">=0.2.8"
 
 [dev-dependencies]
-tempfile = ">=2.1.1"
 tempdir = ">=0.3.4"

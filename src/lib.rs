@@ -561,13 +561,13 @@ fn trim_right_newlines(s: &str) -> &str {
 
 #[cfg(test)]
 mod test {
-    extern crate tempfile;
     extern crate tempdir;
+    use self::tempdir::TempDir;
 
     use super::*;
     use std::env;
+    use std::fs::File;
     use std::io::prelude::*;
-    use std::io::SeekFrom;
     use std::path::{Path, PathBuf};
     use std::collections::HashMap;
 
@@ -643,16 +643,17 @@ mod test {
 
     #[test]
     fn test_path() {
-        let mut input_file = tempfile::NamedTempFile::new().unwrap();
-        let output_file = tempfile::NamedTempFile::new().unwrap();
-        input_file.write_all(b"xxx").unwrap();
+        let dir = TempDir::new("test_path").unwrap();
+        let input_file = dir.path().join("input_file");
+        let output_file = dir.path().join("output_file");
+        File::create(&input_file).unwrap().write_all(b"xxx").unwrap();
         let expr = cmd!(path_to_test_binary("x_to_y"))
-            .stdin(input_file.path())
-            .stdout(output_file.path());
+            .stdin(&input_file)
+            .stdout(&output_file);
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
-        output_file.as_ref().read_to_string(&mut file_output).unwrap();
+        File::open(&output_file).unwrap().read_to_string(&mut file_output).unwrap();
         assert_eq!("yyy", file_output);
     }
 
@@ -666,10 +667,10 @@ mod test {
 
     #[test]
     fn test_file() {
-        let mut temp = tempfile::NamedTempFile::new().unwrap();
-        temp.write_all(b"example").unwrap();
-        temp.seek(SeekFrom::Start(0)).unwrap();
-        let expr = cmd!("cat").stdin(temp.as_ref().try_clone().unwrap());
+        let dir = TempDir::new("test_file").unwrap();
+        let file = dir.path().join("file");
+        File::create(&file).unwrap().write_all(b"example").unwrap();
+        let expr = cmd!("cat").stdin(File::open(&file).unwrap());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
@@ -704,7 +705,7 @@ mod test {
         assert_eq!(pwd_path, env::current_dir().unwrap());
 
         // Now create a temp dir and make sure we can set dir to it.
-        let dir = tempdir::TempDir::new("duct_test").unwrap();
+        let dir = TempDir::new("duct_test").unwrap();
         let pwd_output = cmd!("pwd").dir(dir.path()).read().unwrap();
         let pwd_path = Path::new(&pwd_output);
         assert_eq!(pwd_path, dir.path());
