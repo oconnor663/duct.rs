@@ -565,11 +565,12 @@ mod test {
     use self::tempdir::TempDir;
 
     use super::*;
+    use std::collections::HashMap;
     use std::env;
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::{Path, PathBuf};
-    use std::collections::HashMap;
+    use std::str;
 
     fn path_to_test_binary(name: &str) -> PathBuf {
         let test_project = Path::new(".").join("test").join(name);
@@ -688,13 +689,16 @@ mod test {
 
     #[test]
     fn test_capture_both() {
-        let output = sh("echo -n hi; echo -n lo >&2")
+        // Windows compatible, no space before ">", and we trim newlines at the end to avoid
+        // dealing with the different kinds.
+        let output = sh("echo hi")
+            .then(sh("echo lo>&2"))
             .capture_stdout()
             .capture_stderr()
             .run()
             .unwrap();
-        assert_eq!(b"hi", &*output.stdout);
-        assert_eq!(b"lo", &*output.stderr);
+        assert_eq!("hi", str::from_utf8(&output.stdout).unwrap().trim());
+        assert_eq!("lo", str::from_utf8(&output.stderr).unwrap().trim());
     }
 
     #[test]
