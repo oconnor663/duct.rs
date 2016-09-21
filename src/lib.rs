@@ -622,16 +622,16 @@ mod test {
 
     #[test]
     fn test_then() {
-        let output = sh("echo -n hi").then(sh("echo lo")).read().unwrap();
-        assert_eq!("hilo", output);
+        let output = cmd!(path_to_test_binary("status"), "0").then(sh("echo lo")).read().unwrap();
+        assert_eq!("lo", output);
     }
 
     #[test]
     fn test_input() {
         // TODO: Fixed-length bytes input like b"foo" works poorly here. Why?
-        let expr = sh("sed s/f/g/").input("foo");
+        let expr = cmd!(path_to_test_binary("x_to_y")).input("xxx");
         let output = expr.read().unwrap();
-        assert_eq!("goo", output);
+        assert_eq!("yyy", output);
     }
 
     #[test]
