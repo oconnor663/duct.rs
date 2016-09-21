@@ -1,0 +1,2 @@
+A test program that just reads stdin, substitutes `y` for `x`, and
+prints the result to stdout.

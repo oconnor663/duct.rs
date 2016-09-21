@@ -616,8 +616,8 @@ mod test {
 
     #[test]
     fn test_pipe() {
-        let output = sh("echo hi").pipe(sh("sed s/i/o/")).read().unwrap();
-        assert_eq!("ho", output);
+        let output = sh("echo xxx").pipe(cmd!(path_to_test_binary("x_to_y"))).read().unwrap();
+        assert_eq!("yyy", output);
     }
 
     #[test]
