@@ -645,18 +645,21 @@ mod test {
     fn test_path() {
         let mut input_file = tempfile::NamedTempFile::new().unwrap();
         let output_file = tempfile::NamedTempFile::new().unwrap();
-        input_file.write_all(b"foo").unwrap();
-        let expr = sh("sed s/o/a/g").stdin(input_file.path()).stdout(output_file.path());
+        input_file.write_all(b"xxx").unwrap();
+        let expr = cmd!(path_to_test_binary("x_to_y"))
+            .stdin(input_file.path())
+            .stdout(output_file.path());
         let output = expr.read().unwrap();
         assert_eq!("", output);
         let mut file_output = String::new();
         output_file.as_ref().read_to_string(&mut file_output).unwrap();
-        assert_eq!("faa", file_output);
+        assert_eq!("yyy", file_output);
     }
 
     #[test]
     fn test_stderr_to_stdout() {
-        let command = sh("echo hi >&2").stderr_to_stdout();
+        // Windows compatible. (Requires no space before the ">".)
+        let command = sh("echo hi>&2").stderr_to_stdout();
         let output = command.read().unwrap();
         assert_eq!("hi", output);
     }
