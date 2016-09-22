@@ -587,7 +587,7 @@ mod test {
             .run()
             .expect(&format!("building test command '{}' returned an error", name));
         // Return the path to the built binary.
-        test_project.join("target").join("debug").join(name)
+        test_project.join("target").join("debug").join(name).canonicalize().unwrap()
     }
 
     fn true_cmd() -> Expression {
@@ -717,15 +717,17 @@ mod test {
     }
 
     #[test]
-    fn test_cwd() {
+    fn test_dir() {
+        let pwd = cmd!(path_to_test_binary("pwd"));
+
         // First assert that ordinary commands happen in the parent's dir.
-        let pwd_output = cmd!("pwd").read().unwrap();
+        let pwd_output = pwd.read().unwrap();
         let pwd_path = Path::new(&pwd_output);
         assert_eq!(pwd_path, env::current_dir().unwrap());
 
         // Now create a temp dir and make sure we can set dir to it.
         let dir = TempDir::new("duct_test").unwrap();
-        let pwd_output = cmd!("pwd").dir(dir.path()).read().unwrap();
+        let pwd_output = pwd.dir(dir.path()).read().unwrap();
         let pwd_path = Path::new(&pwd_output);
         assert_eq!(pwd_path, dir.path());
     }
