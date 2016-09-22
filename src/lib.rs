@@ -730,7 +730,7 @@ mod test {
     }
 
     #[cfg(windows)]
-    fn echo_var_command() -> String {
+    fn echo_var_command(name: &str) -> String {
         format!("echo %{}%", name)
     }
 
