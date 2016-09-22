@@ -193,19 +193,18 @@ fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<Exit
 }
 
 #[cfg(unix)]
-fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitStatus> {
-    let argv = [OsStr::new("/bin/sh"), OsStr::new("-c"), command.as_ref()];
-    exec_argv(&argv, context)
+fn shell_command_argv(command: OsString) -> [OsString; 3] {
+    [OsStr::new("/bin/sh").to_owned(), OsStr::new("-c").to_owned(), command]
 }
 
 #[cfg(windows)]
+fn shell_command_argv(command: OsString) -> [OsString; 3] {
+    let comspec = std::env::var_os("COMSPEC").unwrap_or(OsStr::new("cmd.exe").to_owned());
+    [comspec, OsStr::new("/C").to_owned(), command]
+}
+
 fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitStatus> {
-    if let Some(comspec) = std::env::var_os("COMSPEC") {
-        let argv = [&comspec, command.as_ref()];
-        exec_argv(&argv, context)
-    } else {
-        Err(io::Error::new(io::ErrorKind::NotFound, "COMSPEC is not defined"))
-    }
+    exec_argv(&shell_command_argv(command.as_ref().to_owned()), context)
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
