@@ -567,6 +567,7 @@ mod test {
     use super::*;
     use std::collections::HashMap;
     use std::env;
+    use std::ffi::{OsStr, OsString};
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::{Path, PathBuf};
@@ -581,6 +582,14 @@ mod test {
             .expect(&format!("building test command '{}' returned an error", name));
         // Return the path to the built binary.
         test_project.join("target").join("debug").join(name)
+    }
+
+    fn true_cmd() -> Expression {
+        cmd!(path_to_test_binary("status"), "0")
+    }
+
+    fn false_cmd() -> Expression {
+        cmd!(path_to_test_binary("status"), "1")
     }
 
     #[test]
@@ -599,7 +608,7 @@ mod test {
 
     #[test]
     fn test_error() {
-        let result = cmd!(path_to_test_binary("status"), "1").run();
+        let result = false_cmd().run();
         if let Err(Error::Status(output)) = result {
             // Check that the status is non-zero.
             assert!(!output.status.success());
@@ -610,7 +619,7 @@ mod test {
 
     #[test]
     fn test_ignore() {
-        let ignored_false = cmd!(path_to_test_binary("status"), "1").unchecked();
+        let ignored_false = false_cmd().unchecked();
         let output = ignored_false.then(cmd!("echo", "waa")).then(ignored_false).read().unwrap();
         assert_eq!("waa", output);
     }
@@ -623,7 +632,7 @@ mod test {
 
     #[test]
     fn test_then() {
-        let output = cmd!(path_to_test_binary("status"), "0").then(sh("echo lo")).read().unwrap();
+        let output = true_cmd().then(sh("echo lo")).read().unwrap();
         assert_eq!("lo", output);
     }
 
@@ -715,24 +724,41 @@ mod test {
         assert_eq!(pwd_path, dir.path());
     }
 
+    #[cfg(unix)]
+    fn echo_var_command(name: &str) -> String {
+        format!("echo ${}", name)
+    }
+
+    #[cfg(windows)]
+    fn echo_var_command() -> String {
+        format!("echo %{}%", name)
+    }
+
     #[test]
     fn test_env() {
-        let output = sh("echo $foo").env("foo", "bar").read().unwrap();
+        let output = sh(echo_var_command("foo")).env("foo", "bar").read().unwrap();
         assert_eq!("bar", output);
     }
 
     #[test]
     fn test_full_env() {
-        // Set a var twice, both in the parent process and with an env() call. Make sure a single
-        // full_env() call clears both.
         let var_name = "test_env_remove_var";
+
+        // Capture the parent env, and make sure it does *not* contain our variable.
+        let mut clean_env: HashMap<OsString, OsString> = env::vars_os().collect();
+        clean_env.remove(AsRef::<OsStr>::as_ref(var_name));
+
+        // Run a child process with that map passed to full_env(). It should be guaranteed not to
+        // see our variable, regardless of any outer env() calls or changes in the parent.
+        let clean_child = sh(echo_var_command(var_name)).full_env(clean_env);
+
+        // Dirty the parent env. Should be suppressed.
         env::set_var(var_name, "junk1");
-        let command = format!("echo ${}", var_name);
-        let output = sh(command)
-            .full_env(HashMap::<String, String>::new())
-            .env(var_name, "junk2")
-            .read()
-            .unwrap();
+        // And make an outer env() call. Should also be suppressed.
+        let dirty_child = clean_child.env(var_name, "junk2");
+
+        // Check that neither of those have any effect.
+        let output = dirty_child.read().unwrap();
         assert_eq!("", output);
     }
 
@@ -742,6 +768,6 @@ mod test {
         // on the other end of the pipe exits while writer is waiting, the write will return an
         // error. We need to swallow that error, rather than returning it.
         let myvec = vec![0; 1_000_000];
-        cmd!("true").input(myvec).run().unwrap();
+        true_cmd().input(myvec).run().unwrap();
     }
 }
