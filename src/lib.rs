@@ -601,7 +601,7 @@ mod test {
     #[test]
     fn test_cmd() {
         // Windows compatible.
-        let output = cmd!("echo", "hi").read().unwrap();
+        let output = cmd!(path_to_test_binary("echo"), "hi").read().unwrap();
         assert_eq!("hi", output);
     }
 
@@ -624,9 +624,12 @@ mod test {
     }
 
     #[test]
-    fn test_ignore() {
-        let ignored_false = false_cmd().unchecked();
-        let output = ignored_false.then(cmd!("echo", "waa")).then(ignored_false).read().unwrap();
+    fn test_unchecked() {
+        let unchecked_false = false_cmd().unchecked();
+        let output = unchecked_false.then(cmd!(path_to_test_binary("echo"), "waa"))
+            .then(unchecked_false)
+            .read()
+            .unwrap();
         assert_eq!("waa", output);
     }
 
@@ -652,7 +655,10 @@ mod test {
 
     #[test]
     fn test_null() {
-        let expr = cmd!("cat").null_stdin().null_stdout().null_stderr();
+        let expr = cmd!(path_to_test_binary("cat"))
+            .null_stdin()
+            .null_stdout()
+            .null_stderr();
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
@@ -686,7 +692,7 @@ mod test {
         let dir = TempDir::new("test_file").unwrap();
         let file = dir.path().join("file");
         File::create(&file).unwrap().write_all(b"example").unwrap();
-        let expr = cmd!("cat").stdin(File::open(&file).unwrap());
+        let expr = cmd!(path_to_test_binary("cat")).stdin(File::open(&file).unwrap());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
