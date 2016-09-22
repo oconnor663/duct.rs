@@ -177,7 +177,7 @@ impl ExpressionInner {
     }
 }
 
-fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
+fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<ExitStatus> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
     // TODO: Avoid unnecessary dup'ing here.
@@ -192,13 +192,20 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
     Ok(try!(command.status()))
 }
 
-fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExitStatus> {
-    // TODO: Use COMSPEC on Windows, as Python does. https://docs.python.org/3/library/subprocess.html
-    let mut argv: Vec<OsString> = Vec::new();
-    argv.push(AsRef::<OsStr>::as_ref("/bin/sh").to_owned());
-    argv.push(AsRef::<OsStr>::as_ref("-c").to_owned());
-    argv.push(command.to_owned());
+#[cfg(unix)]
+fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitStatus> {
+    let argv = [OsStr::new("/bin/sh"), OsStr::new("-c"), command.as_ref()];
     exec_argv(&argv, context)
+}
+
+#[cfg(windows)]
+fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitStatus> {
+    if let Some(comspec) = std::env::var_os("COMSPEC") {
+        let argv = [&comspec, command.as_ref()];
+        exec_argv(&argv, context)
+    } else {
+        Err(io::Error::new(io::ErrorKind::NotFound, "COMSPEC is not defined"))
+    }
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
@@ -725,18 +732,18 @@ mod test {
     }
 
     #[cfg(unix)]
-    fn echo_var_command(name: &str) -> String {
+    fn echo_var_shell_command(name: &str) -> String {
         format!("echo ${}", name)
     }
 
     #[cfg(windows)]
-    fn echo_var_command(name: &str) -> String {
+    fn echo_var_shell_command(name: &str) -> String {
         format!("echo %{}%", name)
     }
 
     #[test]
     fn test_env() {
-        let output = sh(echo_var_command("foo")).env("foo", "bar").read().unwrap();
+        let output = sh(echo_var_shell_command("foo")).env("foo", "bar").read().unwrap();
         assert_eq!("bar", output);
     }
 
@@ -750,7 +757,7 @@ mod test {
 
         // Run a child process with that map passed to full_env(). It should be guaranteed not to
         // see our variable, regardless of any outer env() calls or changes in the parent.
-        let clean_child = sh(echo_var_command(var_name)).full_env(clean_env);
+        let clean_child = sh(echo_var_shell_command(var_name)).full_env(clean_env);
 
         // Dirty the parent env. Should be suppressed.
         env::set_var(var_name, "junk1");
