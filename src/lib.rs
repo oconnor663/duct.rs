@@ -702,6 +702,15 @@ mod test {
     }
 
     #[test]
+    fn test_stderr() {
+        let mut pipe = ::os_pipe::pipe().unwrap();
+        sh("echo hi>&2").stderr(pipe.write).run().unwrap();
+        let mut s = String::new();
+        pipe.read.read_to_string(&mut s).unwrap();
+        assert_eq!(s.trim(), "hi");
+    }
+
+    #[test]
     fn test_null() {
         let expr = cmd!(path_to_test_binary("cat"))
             .null_stdin()
