@@ -30,3 +30,9 @@ after_success:
   # argument mitigates kcov crashes due to malformed debuginfo, at the
   # cost of some speed <https://github.com/huonw/travis-cargo/issues/12>)
   - travis-cargo coveralls --no-sudo --verify
+
+# See https://github.com/huonw/travis-cargo/issues/23.
+env:
+  global:
+    # override the default `--features unstable` used for the nightly branch (optional)
+    - TRAVIS_CARGO_NIGHTLY_FEATURE=nightly
