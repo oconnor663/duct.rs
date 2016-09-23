@@ -651,6 +651,23 @@ mod test {
     fn test_pipe() {
         let output = sh("echo xxx").pipe(cmd!(path_to_test_binary("x_to_y"))).read().unwrap();
         assert_eq!("yyy", output);
+
+        // Check that errors on either side are propagated.
+        let result = true_cmd().pipe(false_cmd()).run();
+        match result {
+            Err(Error::Status(output)) => {
+                assert!(output.status.code().unwrap() == 1);
+            }
+            _ => panic!("should never get here"),
+        }
+
+        let result = false_cmd().pipe(true_cmd()).run();
+        match result {
+            Err(Error::Status(output)) => {
+                assert!(output.status.code().unwrap() == 1);
+            }
+            _ => panic!("should never get here"),
+        }
     }
 
     #[test]
