@@ -841,4 +841,10 @@ mod test {
         let myvec = vec![0; 1_000_000];
         true_cmd().input(myvec).run().unwrap();
     }
+
+    #[test]
+    fn test_silly() {
+        // A silly test, purely for coverage.
+        ::IoValue::Null.try_clone().unwrap();
+    }
 }
