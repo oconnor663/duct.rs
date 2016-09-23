@@ -728,10 +728,17 @@ mod test {
     }
 
     #[test]
-    fn test_stderr_to_stdout() {
+    fn test_swapping() {
+        let output = sh("echo hi")
+            .stdout_to_stderr()
+            .capture_stderr()
+            .run()
+            .unwrap();
+        let stderr = str::from_utf8(&output.stderr).unwrap().trim();
+        assert_eq!("hi", stderr);
+
         // Windows compatible. (Requires no space before the ">".)
-        let command = sh("echo hi>&2").stderr_to_stdout();
-        let output = command.read().unwrap();
+        let output = sh("echo hi>&2").stderr_to_stdout().read().unwrap();
         assert_eq!("hi", output);
     }
 
