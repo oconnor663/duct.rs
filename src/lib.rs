@@ -657,6 +657,23 @@ mod test {
     fn test_then() {
         let output = true_cmd().then(sh("echo lo")).read().unwrap();
         assert_eq!("lo", output);
+
+        // Check that errors on either side are propagated.
+        let result = true_cmd().then(false_cmd()).run();
+        match result {
+            Err(Error::Status(output)) => {
+                assert!(output.status.code().unwrap() == 1);
+            }
+            _ => panic!("should never get here"),
+        }
+
+        let result = false_cmd().then(true_cmd()).run();
+        match result {
+            Err(Error::Status(output)) => {
+                assert!(output.status.code().unwrap() == 1);
+            }
+            _ => panic!("should never get here"),
+        }
     }
 
     #[test]
