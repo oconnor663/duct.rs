@@ -695,7 +695,6 @@ mod test {
 
     #[test]
     fn test_input() {
-        // TODO: Fixed-length bytes input like b"foo" works poorly here. Why?
         let expr = cmd!(path_to_test_binary("x_to_y")).input("xxx");
         let output = expr.read().unwrap();
         assert_eq!("yyy", output);
