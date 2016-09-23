@@ -579,6 +579,16 @@ mod test {
     use std::path::{Path, PathBuf};
     use std::str;
 
+    #[cfg(unix)]
+    fn exe_filename(name: &str) -> String {
+        name.to_owned()
+    }
+
+    #[cfg(windows)]
+    fn exe_filename(name: &str) -> String {
+        format!("{}.exe", name)
+    }
+
     fn path_to_test_binary(name: &str) -> PathBuf {
         let test_project = Path::new(".").join("test").join(name);
         // Build the test command.
@@ -587,7 +597,11 @@ mod test {
             .run()
             .expect(&format!("building test command '{}' returned an error", name));
         // Return the path to the built binary.
-        test_project.join("target").join("debug").join(name).canonicalize().unwrap()
+        test_project.join("target")
+            .join("debug")
+            .join(exe_filename(name))
+            .canonicalize()
+            .unwrap()
     }
 
     fn true_cmd() -> Expression {
