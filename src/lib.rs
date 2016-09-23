@@ -738,19 +738,12 @@ mod test {
         assert_eq!(pwd_path, dir.path());
     }
 
-    #[cfg(unix)]
-    fn echo_var_shell_command(name: &str) -> String {
-        format!("echo ${}", name)
-    }
-
-    #[cfg(windows)]
-    fn echo_var_shell_command(name: &str) -> String {
-        format!("echo %{}%", name)
-    }
-
     #[test]
     fn test_env() {
-        let output = sh(echo_var_shell_command("foo")).env("foo", "bar").read().unwrap();
+        let output = cmd!(path_to_test_binary("print_env"), "foo")
+            .env("foo", "bar")
+            .read()
+            .unwrap();
         assert_eq!("bar", output);
     }
 
@@ -764,7 +757,7 @@ mod test {
 
         // Run a child process with that map passed to full_env(). It should be guaranteed not to
         // see our variable, regardless of any outer env() calls or changes in the parent.
-        let clean_child = sh(echo_var_shell_command(var_name)).full_env(clean_env);
+        let clean_child = cmd!(path_to_test_binary("print_env"), var_name).full_env(clean_env);
 
         // Dirty the parent env. Should be suppressed.
         env::set_var(var_name, "junk1");
