@@ -549,16 +549,23 @@ fn pipe_with_writer_thread<'a>(input: &'a [u8],
 
 fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Result<()> {
     if let Some(thread) = maybe_writer_thread {
-        if let Err(thread_error) = thread.join() {
-            // A broken pipe error happens if the process on the other end exits before
-            // we're done writing. We ignore those but return any other errors to the
-            // caller.
-            if thread_error.kind() != io::ErrorKind::BrokenPipe {
-                return Err(thread_error);
-            }
+        // A broken pipe error happens if the process on the other end exits before
+        // we're done writing. We ignore those but return any other errors to the
+        // caller.
+        suppress_broken_pipe_errors(thread.join())
+    } else {
+        Ok(())
+    }
+}
+
+// This is split out to make it easier to get test coverage.
+fn suppress_broken_pipe_errors(r: io::Result<()>) -> io::Result<()> {
+    if let &Err(ref io_error) = &r {
+        if io_error.kind() == io::ErrorKind::BrokenPipe {
+            return Ok(());
         }
     }
-    Ok(())
+    r
 }
 
 fn trim_right_newlines(s: &str) -> &str {
@@ -575,6 +582,7 @@ mod test {
     use std::env;
     use std::ffi::{OsStr, OsString};
     use std::fs::File;
+    use std::io;
     use std::io::prelude::*;
     use std::path::{Path, PathBuf};
     use std::str;
@@ -839,6 +847,15 @@ mod test {
         // error. We need to swallow that error, rather than returning it.
         let myvec = vec![0; 1_000_000];
         true_cmd().input(myvec).run().unwrap();
+    }
+
+    #[test]
+    fn test_suppress_broken_pipe() {
+        let broken_pipe_error = Err(io::Error::new(io::ErrorKind::BrokenPipe, ""));
+        assert!(::suppress_broken_pipe_errors(broken_pipe_error).is_ok());
+
+        let other_error = Err(io::Error::new(io::ErrorKind::Other, ""));
+        assert!(::suppress_broken_pipe_errors(other_error).is_err());
     }
 
     #[test]
