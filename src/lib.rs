@@ -1,7 +1,7 @@
 extern crate crossbeam;
 extern crate os_pipe;
 
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -20,29 +20,38 @@ use std::sync::Arc;
 use ExpressionInner::*;
 use IoExpressionInner::*;
 
-pub fn cmd<T: AsRef<OsStr>>(argv: &[T]) -> Expression {
-    let argv_vec = argv.iter().map(|arg| arg.as_ref().to_owned()).collect();
+pub fn cmd<T, U, V>(program: T, args: U) -> Expression
+    where T: ToExecutable,
+          U: IntoIterator<Item = V>,
+          V: Into<OsString>
+{
+    let mut argv_vec = Vec::new();
+    argv_vec.push(program.to_executable());
+    argv_vec.extend(args.into_iter().map(Into::<OsString>::into));
     Expression::new(Cmd(argv_vec))
 }
 
 #[macro_export]
 macro_rules! cmd {
-    ( $( $x:expr ),* ) => {
+    ( $program:expr ) => {
         {
-            use std::ffi::OsStr;
-            let mut temp_vec = Vec::new();
+            use std::iter::empty;
+            $crate::cmd($program, empty::<OsString>())
+        }
+    };
+    ( $program:expr $(, $arg:expr )* ) => {
+        {
+            let mut args: Vec<OsString> = Vec::new();
             $(
-                let temp_arg = $x;
-                let temp_osstr: &OsStr = temp_arg.as_ref();
-                temp_vec.push(temp_osstr.to_owned());
+                args.push(Into::<OsString>::into($arg));
             )*
-            $crate::cmd(&temp_vec)
+            $crate::cmd($program, args)
         }
     };
 }
 
-pub fn sh<T: AsRef<OsStr>>(command: T) -> Expression {
-    Expression::new(Sh(command.as_ref().to_owned()))
+pub fn sh<T: ToExecutable>(command: T) -> Expression {
+    Expression::new(Sh(command.to_executable()))
 }
 
 #[derive(Clone, Debug)]
@@ -337,6 +346,84 @@ impl IoExpressionInner {
             }
         }
         Ok((context, maybe_thread))
+    }
+}
+
+// We want to allow Path("foo") to refer to the local file "./foo" on
+// Unix, and we want to *prevent* Path("echo") from referring to the
+// global "echo" command on either Unix or Windows. Prepend a dot to all
+// relative paths to accomplish both of those.
+fn sanitize_exe_path<'a, T: Into<Cow<'a, Path>>>(path: T) -> Cow<'a, Path> {
+    let path_cow = path.into();
+    // Don't try to be too clever with checking parent(). The parent of "foo" is
+    // Some(""). See https://github.com/rust-lang/rust/issues/36861. Also we
+    // don't strictly need the has_root check, because joining a leading dot is
+    // a no-op in that case, but explicitly checking it is less tricky and
+    // happens to avoid an allocation.
+    if path_cow.is_absolute() || path_cow.has_root() {
+        path_cow
+    } else {
+        Path::new(".").join(path_cow).into()
+    }
+}
+
+pub trait ToExecutable {
+    fn to_executable(self) -> OsString;
+}
+
+// TODO: Get rid of most of these impls once specialization lands.
+
+impl<'a> ToExecutable for &'a Path {
+    fn to_executable(self) -> OsString {
+        sanitize_exe_path(self).into_owned().into()
+    }
+}
+
+impl ToExecutable for PathBuf {
+    fn to_executable(self) -> OsString {
+        sanitize_exe_path(self).into_owned().into()
+    }
+}
+
+impl<'a> ToExecutable for &'a PathBuf {
+    fn to_executable(self) -> OsString {
+        sanitize_exe_path(&**self).into_owned().into()
+    }
+}
+
+impl<'a> ToExecutable for &'a str {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl ToExecutable for String {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl<'a> ToExecutable for &'a String {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl<'a> ToExecutable for &'a OsStr {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl ToExecutable for OsString {
+    fn to_executable(self) -> OsString {
+        self
+    }
+}
+
+impl<'a> ToExecutable for &'a OsString {
+    fn to_executable(self) -> OsString {
+        self.into()
     }
 }
 
@@ -832,5 +919,17 @@ mod test {
     fn test_silly() {
         // A silly test, purely for coverage.
         ::IoValue::Null.try_clone().unwrap();
+    }
+
+    #[test]
+    fn test_path_sanitization() {
+        // We don't do any chdir'ing in this process, because the tests runner is multithreaded,
+        // and we don't want to screw up anyone else's relative paths. Instead, we shell out to a
+        // small test process that does that for us.
+        cmd!(path_to_test_binary("exe_in_dir"),
+             path_to_test_binary("status"),
+             "0")
+            .run()
+            .unwrap();
     }
 }
