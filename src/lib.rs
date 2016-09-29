@@ -138,11 +138,11 @@ impl Expression {
 
     pub fn full_env<T, U, V>(&self, name_vals: T) -> Self
         where T: IntoIterator<Item = (U, V)>,
-              U: AsRef<OsStr>,
-              V: AsRef<OsStr>
+              U: Into<OsString>,
+              V: Into<OsString>
     {
         let env_map = name_vals.into_iter()
-            .map(|(k, v)| (k.as_ref().to_owned(), v.as_ref().to_owned()))
+            .map(|(k, v)| (k.into(), v.into()))
             .collect();
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
