@@ -368,19 +368,13 @@ impl From<File> for FileOpener {
     }
 }
 
-// TODO: Get rid of most of these impl's once specialization lands.
-
-impl<'a> From<&'a str> for FileOpener {
-    fn from(s: &str) -> FileOpener {
-        FileOpener::PathBuf(AsRef::<Path>::as_ref(s).to_owned())
+impl<'a, T: AsRef<Path> + ?Sized> From<&'a T> for FileOpener {
+    fn from(p: &'a T) -> FileOpener {
+        FileOpener::PathBuf(p.as_ref().into())
     }
 }
 
-impl<'a> From<&'a String> for FileOpener {
-    fn from(s: &String) -> FileOpener {
-        FileOpener::PathBuf(s.clone().into())
-    }
-}
+// TODO: Get rid of these impl's too.
 
 impl From<String> for FileOpener {
     fn from(s: String) -> FileOpener {
@@ -388,33 +382,9 @@ impl From<String> for FileOpener {
     }
 }
 
-impl<'a> From<&'a Path> for FileOpener {
-    fn from(p: &Path) -> FileOpener {
-        FileOpener::PathBuf(p.to_owned())
-    }
-}
-
-impl<'a> From<&'a PathBuf> for FileOpener {
-    fn from(p: &PathBuf) -> FileOpener {
-        FileOpener::PathBuf(p.clone())
-    }
-}
-
 impl From<PathBuf> for FileOpener {
     fn from(p: PathBuf) -> FileOpener {
         FileOpener::PathBuf(p)
-    }
-}
-
-impl<'a> From<&'a OsStr> for FileOpener {
-    fn from(s: &OsStr) -> FileOpener {
-        FileOpener::PathBuf(s.clone().into())
-    }
-}
-
-impl<'a> From<&'a OsString> for FileOpener {
-    fn from(s: &OsString) -> FileOpener {
-        FileOpener::PathBuf(AsRef::<Path>::as_ref(s).to_owned())
     }
 }
 
