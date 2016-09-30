@@ -1,12 +1,11 @@
 environment:
   matrix:
-  # TOOD: Reenable stable after 1.12.
-  # - TARGET: x86_64-pc-windows-msvc
-  #   VERSION: 1.12.0
-  # - TARGET: i686-pc-windows-msvc
-  #   VERSION: 1.12.0
-  # - TARGET: i686-pc-windows-gnu
-  #   VERSION: 1.12.0
+  - TARGET: x86_64-pc-windows-msvc
+    VERSION: 1.12.0
+  - TARGET: i686-pc-windows-msvc
+    VERSION: 1.12.0
+  - TARGET: i686-pc-windows-gnu
+    VERSION: 1.12.0
   - TARGET: x86_64-pc-windows-msvc
     VERSION: beta
   - TARGET: i686-pc-windows-msvc
