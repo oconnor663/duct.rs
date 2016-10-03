@@ -1,7 +1,7 @@
 extern crate crossbeam;
 extern crate os_pipe;
 
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -84,12 +84,12 @@ impl Expression {
         Ok(trim_right_newlines(output_str).to_owned())
     }
 
-    pub fn pipe<T: Borrow<Expression>>(&self, right: T) -> Expression {
-        Self::new(Pipe(self.clone(), right.borrow().clone()))
+    pub fn pipe(&self, right: Expression) -> Expression {
+        Self::new(Pipe(self.clone(), right.clone()))
     }
 
-    pub fn then<T: Borrow<Expression>>(&self, right: T) -> Expression {
-        Self::new(Then(self.clone(), right.borrow().clone()))
+    pub fn then(&self, right: Expression) -> Expression {
+        Self::new(Then(self.clone(), right.clone()))
     }
 
     pub fn input<T: AsRef<[u8]>>(&self, input: T) -> Self {
