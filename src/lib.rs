@@ -92,8 +92,8 @@ impl Expression {
         Self::new(Then(self.clone(), right.clone()))
     }
 
-    pub fn input<T: AsRef<[u8]>>(&self, input: T) -> Self {
-        Self::new(Io(Input(input.as_ref().to_vec()), self.clone()))
+    pub fn input<T: Into<Vec<u8>>>(&self, input: T) -> Self {
+        Self::new(Io(Input(input.into()), self.clone()))
     }
 
     pub fn stdin<T: Into<FileOpener>>(&self, stdin: T) -> Self {
@@ -136,13 +136,15 @@ impl Expression {
         Self::new(Io(StderrToStdout, self.clone()))
     }
 
-    pub fn dir<T: AsRef<Path>>(&self, path: T) -> Self {
-        Self::new(Io(Dir(path.as_ref().to_owned()), self.clone()))
+    pub fn dir<T: Into<PathBuf>>(&self, path: T) -> Self {
+        Self::new(Io(Dir(path.into()), self.clone()))
     }
 
-    pub fn env<T: AsRef<OsStr>, U: AsRef<OsStr>>(&self, name: T, val: U) -> Self {
-        Self::new(Io(Env(name.as_ref().to_owned(), val.as_ref().to_owned()),
-                     self.clone()))
+    pub fn env<T, U>(&self, name: T, val: U) -> Self
+        where T: Into<OsString>,
+              U: Into<OsString>
+    {
+        Self::new(Io(Env(name.into(), val.into()), self.clone()))
     }
 
     pub fn full_env<T, U, V>(&self, name_vals: T) -> Self
@@ -186,7 +188,7 @@ impl ExpressionInner {
     }
 }
 
-fn exec_argv<T: AsRef<OsStr>>(argv: &[T], context: IoContext) -> io::Result<ExitStatus> {
+fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
     // TODO: Avoid unnecessary dup'ing here.
@@ -212,8 +214,8 @@ fn shell_command_argv(command: OsString) -> [OsString; 3] {
     [comspec, OsStr::new("/C").to_owned(), command]
 }
 
-fn exec_sh<T: AsRef<OsStr>>(command: T, context: IoContext) -> io::Result<ExitStatus> {
-    exec_argv(&shell_command_argv(command.as_ref().to_owned()), context)
+fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExitStatus> {
+    exec_argv(&shell_command_argv(command.clone()), context)
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
@@ -832,8 +834,11 @@ mod test {
         let myvec = vec![1, 2, 3];
         // These are nonsense expressions. We just want to make sure they compile.
         let _ = sh("true").stdin(&*mystr).input(&*myvec).stdout(&*mypathbuf);
-        let _ = sh("true").stdin(&mystr).input(&myvec).stdout(&mypathbuf);
         let _ = sh("true").stdin(mystr).input(myvec).stdout(mypathbuf);
+
+        // Unfortunately, this one doesn't work with our Into<Vec<u8>> bound on input().
+        // TODO: Is it worth having these impls for &Vec in other cases?
+        // let _ = sh("true").stdin(&mystr).input(&myvec).stdout(&mypathbuf);
     }
 
     #[test]
