@@ -22,7 +22,7 @@ fn check_executable(path: &Path) {
 }
 
 #[cfg(windows)]
-fn check_executable(path: &Path) {
+fn check_executable(_: &Path) {
     // no-op
 }
 
