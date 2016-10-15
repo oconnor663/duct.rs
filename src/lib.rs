@@ -96,16 +96,24 @@ impl Expression {
         Self::new(Io(Input(input.into()), self.clone()))
     }
 
-    pub fn stdin<T: Into<FileOpener>>(&self, stdin: T) -> Self {
+    pub fn stdin<T: Into<PathBuf>>(&self, stdin: T) -> Self {
         Self::new(Io(Stdin(stdin.into()), self.clone()))
+    }
+
+    pub fn stdin_file(&self, file: File) -> Self {
+        Self::new(Io(StdinFile(file), self.clone()))
     }
 
     pub fn null_stdin(&self) -> Self {
         Self::new(Io(StdinNull, self.clone()))
     }
 
-    pub fn stdout<T: Into<FileOpener>>(&self, stdout: T) -> Self {
+    pub fn stdout<T: Into<PathBuf>>(&self, stdout: T) -> Self {
         Self::new(Io(Stdout(stdout.into()), self.clone()))
+    }
+
+    pub fn stdout_file(&self, file: File) -> Self {
+        Self::new(Io(StdoutFile(file), self.clone()))
     }
 
     pub fn null_stdout(&self) -> Self {
@@ -120,8 +128,12 @@ impl Expression {
         Self::new(Io(StdoutToStderr, self.clone()))
     }
 
-    pub fn stderr<T: Into<FileOpener>>(&self, stderr: T) -> Self {
+    pub fn stderr<T: Into<PathBuf>>(&self, stderr: T) -> Self {
         Self::new(Io(Stderr(stderr.into()), self.clone()))
+    }
+
+    pub fn stderr_file(&self, file: File) -> Self {
+        Self::new(Io(StderrFile(file.into()), self.clone()))
     }
 
     pub fn null_stderr(&self) -> Self {
@@ -276,13 +288,16 @@ fn exec_io(io_inner: &IoExpressionInner,
 #[derive(Debug)]
 enum IoExpressionInner {
     Input(Vec<u8>),
-    Stdin(FileOpener),
+    Stdin(PathBuf),
+    StdinFile(File),
     StdinNull,
-    Stdout(FileOpener),
+    Stdout(PathBuf),
+    StdoutFile(File),
     StdoutNull,
     StdoutCapture,
     StdoutToStderr,
-    Stderr(FileOpener),
+    Stderr(PathBuf),
+    StderrFile(File),
     StderrNull,
     StderrCapture,
     StderrToStdout,
@@ -304,14 +319,20 @@ impl IoExpressionInner {
                 context.stdin = IoValue::File(reader);
                 maybe_thread = Some(thread)
             }
-            Stdin(ref f) => {
-                context.stdin = IoValue::File(try!(f.open_for_reading()));
+            Stdin(ref p) => {
+                context.stdin = IoValue::File(try!(File::open(p)));
+            }
+            StdinFile(ref f) => {
+                context.stdin = IoValue::File(try!(f.try_clone()));
             }
             StdinNull => {
                 context.stdin = IoValue::Null;
             }
-            Stdout(ref f) => {
-                context.stdout = IoValue::File(try!(f.open_for_writing()));
+            Stdout(ref p) => {
+                context.stdout = IoValue::File(try!(File::create(p)));
+            }
+            StdoutFile(ref f) => {
+                context.stdout = IoValue::File(try!(f.try_clone()));
             }
             StdoutNull => {
                 context.stdout = IoValue::Null;
@@ -322,8 +343,11 @@ impl IoExpressionInner {
             StdoutToStderr => {
                 context.stdout = try!(context.stderr.try_clone());
             }
-            Stderr(ref f) => {
-                context.stderr = IoValue::File(try!(f.open_for_writing()));
+            Stderr(ref p) => {
+                context.stderr = IoValue::File(try!(File::create(p)));
+            }
+            StderrFile(ref f) => {
+                context.stderr = IoValue::File(try!(f.try_clone()));
             }
             StderrNull => {
                 context.stderr = IoValue::Null;
@@ -426,60 +450,6 @@ impl ToExecutable for OsString {
 impl<'a> ToExecutable for &'a OsString {
     fn to_executable(self) -> OsString {
         self.into()
-    }
-}
-
-#[derive(Debug)]
-pub enum FileOpener {
-    PathBuf(PathBuf),
-    File(File),
-}
-
-impl FileOpener {
-    fn open_for_reading(&self) -> io::Result<File> {
-        match *self {
-            FileOpener::PathBuf(ref p) => File::open(p),
-            FileOpener::File(ref f) => f.try_clone(),
-        }
-    }
-
-    fn open_for_writing(&self) -> io::Result<File> {
-        match *self {
-            FileOpener::PathBuf(ref p) => File::create(p),
-            FileOpener::File(ref f) => f.try_clone(),
-        }
-    }
-}
-
-impl From<File> for FileOpener {
-    fn from(f: File) -> FileOpener {
-        FileOpener::File(f)
-    }
-}
-
-impl<'a, T: AsRef<Path> + ?Sized> From<&'a T> for FileOpener {
-    fn from(p: &'a T) -> FileOpener {
-        FileOpener::PathBuf(p.as_ref().into())
-    }
-}
-
-// TODO: Get rid of these impl's too.
-
-impl From<String> for FileOpener {
-    fn from(s: String) -> FileOpener {
-        FileOpener::PathBuf(s.into())
-    }
-}
-
-impl From<PathBuf> for FileOpener {
-    fn from(p: PathBuf) -> FileOpener {
-        FileOpener::PathBuf(p)
-    }
-}
-
-impl From<OsString> for FileOpener {
-    fn from(s: OsString) -> FileOpener {
-        FileOpener::PathBuf(s.into())
     }
 }
 
@@ -770,7 +740,7 @@ mod test {
     #[test]
     fn test_stderr() {
         let mut pipe = ::os_pipe::pipe().unwrap();
-        sh("echo hi>&2").stderr(pipe.write).run().unwrap();
+        sh("echo hi>&2").stderr_file(pipe.write).run().unwrap();
         let mut s = String::new();
         pipe.read.read_to_string(&mut s).unwrap();
         assert_eq!(s.trim(), "hi");
@@ -822,7 +792,7 @@ mod test {
         let dir = TempDir::new("test_file").unwrap();
         let file = dir.path().join("file");
         File::create(&file).unwrap().write_all(b"example").unwrap();
-        let expr = cmd!(path_to_test_binary("cat")).stdin(File::open(&file).unwrap());
+        let expr = cmd!(path_to_test_binary("cat")).stdin_file(File::open(&file).unwrap());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
