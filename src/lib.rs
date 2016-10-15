@@ -79,7 +79,7 @@ impl Expression {
     }
 
     pub fn read(&self) -> Result<String, Error> {
-        let output = try!(self.capture_stdout().run());
+        let output = try!(self.stdout_capture().run());
         let output_str = try!(std::str::from_utf8(&output.stdout));
         Ok(trim_right_newlines(output_str).to_owned())
     }
@@ -96,31 +96,31 @@ impl Expression {
         Self::new(Io(Input(input.into()), self.clone()))
     }
 
-    pub fn stdin<T: Into<PathBuf>>(&self, stdin: T) -> Self {
-        Self::new(Io(Stdin(stdin.into()), self.clone()))
+    pub fn stdin<T: Into<PathBuf>>(&self, path: T) -> Self {
+        Self::new(Io(Stdin(path.into()), self.clone()))
     }
 
     pub fn stdin_file(&self, file: File) -> Self {
         Self::new(Io(StdinFile(file), self.clone()))
     }
 
-    pub fn null_stdin(&self) -> Self {
+    pub fn stdin_null(&self) -> Self {
         Self::new(Io(StdinNull, self.clone()))
     }
 
-    pub fn stdout<T: Into<PathBuf>>(&self, stdout: T) -> Self {
-        Self::new(Io(Stdout(stdout.into()), self.clone()))
+    pub fn stdout<T: Into<PathBuf>>(&self, path: T) -> Self {
+        Self::new(Io(Stdout(path.into()), self.clone()))
     }
 
     pub fn stdout_file(&self, file: File) -> Self {
         Self::new(Io(StdoutFile(file), self.clone()))
     }
 
-    pub fn null_stdout(&self) -> Self {
+    pub fn stdout_null(&self) -> Self {
         Self::new(Io(StdoutNull, self.clone()))
     }
 
-    pub fn capture_stdout(&self) -> Self {
+    pub fn stdout_capture(&self) -> Self {
         Self::new(Io(StdoutCapture, self.clone()))
     }
 
@@ -128,19 +128,19 @@ impl Expression {
         Self::new(Io(StdoutToStderr, self.clone()))
     }
 
-    pub fn stderr<T: Into<PathBuf>>(&self, stderr: T) -> Self {
-        Self::new(Io(Stderr(stderr.into()), self.clone()))
+    pub fn stderr<T: Into<PathBuf>>(&self, path: T) -> Self {
+        Self::new(Io(Stderr(path.into()), self.clone()))
     }
 
     pub fn stderr_file(&self, file: File) -> Self {
         Self::new(Io(StderrFile(file.into()), self.clone()))
     }
 
-    pub fn null_stderr(&self) -> Self {
+    pub fn stderr_null(&self) -> Self {
         Self::new(Io(StderrNull, self.clone()))
     }
 
-    pub fn capture_stderr(&self) -> Self {
+    pub fn stderr_capture(&self) -> Self {
         Self::new(Io(StderrCapture, self.clone()))
     }
 
@@ -749,9 +749,9 @@ mod test {
     #[test]
     fn test_null() {
         let expr = cmd!(path_to_test_binary("cat"))
-            .null_stdin()
-            .null_stdout()
-            .null_stderr();
+            .stdin_null()
+            .stdout_null()
+            .stderr_null();
         let output = expr.read().unwrap();
         assert_eq!("", output);
     }
@@ -776,7 +776,7 @@ mod test {
     fn test_swapping() {
         let output = sh("echo hi")
             .stdout_to_stderr()
-            .capture_stderr()
+            .stderr_capture()
             .run()
             .unwrap();
         let stderr = str::from_utf8(&output.stderr).unwrap().trim();
@@ -817,8 +817,8 @@ mod test {
         // dealing with the different kinds.
         let output = sh("echo hi")
             .then(sh("echo lo>&2"))
-            .capture_stdout()
-            .capture_stderr()
+            .stdout_capture()
+            .stderr_capture()
             .run()
             .unwrap();
         assert_eq!("hi", str::from_utf8(&output.stdout).unwrap().trim());
