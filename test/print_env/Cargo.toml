@@ -1,6 +1,0 @@
-[package]
-name = "print_env"
-version = "0.1.0"
-authors = ["Jack O'Connor"]
-description = "prints the value of a single environment variable"
-license = "MIT"

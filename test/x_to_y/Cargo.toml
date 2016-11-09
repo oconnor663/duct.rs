@@ -1,6 +1,0 @@
-[package]
-name = "x_to_y"
-version = "0.1.0"
-authors = ["Jack O'Connor"]
-description = "a program that substitutes y's for x's in its stdin"
-license = "MIT"

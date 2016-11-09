@@ -1,6 +1,0 @@
-[package]
-name = "status"
-version = "0.1.0"
-authors = ["Jack O'Connor"]
-description = "a program that returns its first argument as exit status"
-license = "MIT"

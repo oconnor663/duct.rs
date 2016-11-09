@@ -651,50 +651,46 @@ mod test {
     use super::*;
     use std::collections::HashMap;
     use std::env;
+    use std::env::consts::EXE_EXTENSION;
     use std::ffi::{OsStr, OsString};
     use std::fs::File;
     use std::io;
     use std::io::prelude::*;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::str;
+    use std::sync::{Once, ONCE_INIT};
 
-    #[cfg(unix)]
-    fn exe_filename(name: &str) -> String {
-        name.to_owned()
-    }
+    fn path_to_exe(name: &str) -> PathBuf {
+        // This project defines some associated binaries for testing, and we shell out to them in
+        // these tests. `cargo test` doesn't automatically build associated binaries, so this
+        // function takes care of building them explicitly.
+        static CARGO_BUILD_ONCE: Once = ONCE_INIT;
+        CARGO_BUILD_ONCE.call_once(|| {
+            let build_status = Command::new("cargo")
+                .arg("build")
+                .arg("--quiet")
+                .status()
+                .unwrap();
+            assert!(build_status.success(),
+                    "Cargo failed to build associated binaries.");
+        });
 
-    #[cfg(windows)]
-    fn exe_filename(name: &str) -> String {
-        format!("{}.exe", name)
-    }
-
-    fn path_to_test_binary(name: &str) -> PathBuf {
-        let test_project = Path::new(".").join("test").join(name);
-        // Build the test command.
-        sh("cargo build --quiet")
-            .dir(&test_project)
-            .run()
-            .expect(&format!("building test command '{}' returned an error", name));
-        // Return the path to the built binary.
-        test_project.join("target")
-            .join("debug")
-            .join(exe_filename(name))
-            .canonicalize()
-            .unwrap()
+        Path::new("target").join("debug").join(name).with_extension(EXE_EXTENSION)
     }
 
     fn true_cmd() -> Expression {
-        cmd!(path_to_test_binary("status"), "0")
+        cmd!(path_to_exe("status"), "0")
     }
 
     fn false_cmd() -> Expression {
-        cmd!(path_to_test_binary("status"), "1")
+        cmd!(path_to_exe("status"), "1")
     }
 
     #[test]
     fn test_cmd() {
         // Windows compatible.
-        let output = cmd!(path_to_test_binary("echo"), "hi").read().unwrap();
+        let output = cmd!(path_to_exe("echo"), "hi").read().unwrap();
         assert_eq!("hi", output);
     }
 
@@ -719,7 +715,7 @@ mod test {
     #[test]
     fn test_unchecked() {
         let unchecked_false = false_cmd().unchecked();
-        let output = unchecked_false.then(cmd!(path_to_test_binary("echo"), "waa"))
+        let output = unchecked_false.then(cmd!(path_to_exe("echo"), "waa"))
             .then(unchecked_false)
             .read()
             .unwrap();
@@ -728,7 +724,7 @@ mod test {
 
     #[test]
     fn test_pipe() {
-        let output = sh("echo xxx").pipe(cmd!(path_to_test_binary("x_to_y"))).read().unwrap();
+        let output = sh("echo xxx").pipe(cmd!(path_to_exe("x_to_y"))).read().unwrap();
         assert_eq!("yyy", output);
 
         // Check that errors on either side are propagated.
@@ -774,7 +770,7 @@ mod test {
 
     #[test]
     fn test_input() {
-        let expr = cmd!(path_to_test_binary("x_to_y")).input("xxx");
+        let expr = cmd!(path_to_exe("x_to_y")).input("xxx");
         let output = expr.read().unwrap();
         assert_eq!("yyy", output);
     }
@@ -790,7 +786,7 @@ mod test {
 
     #[test]
     fn test_null() {
-        let expr = cmd!(path_to_test_binary("cat"))
+        let expr = cmd!(path_to_exe("cat"))
             .stdin_null()
             .stdout_null()
             .stderr_null();
@@ -804,7 +800,7 @@ mod test {
         let input_file = dir.path().join("input_file");
         let output_file = dir.path().join("output_file");
         File::create(&input_file).unwrap().write_all(b"xxx").unwrap();
-        let expr = cmd!(path_to_test_binary("x_to_y"))
+        let expr = cmd!(path_to_exe("x_to_y"))
             .stdin(&input_file)
             .stdout(&output_file);
         let output = expr.read().unwrap();
@@ -834,7 +830,7 @@ mod test {
         let dir = TempDir::new("test_file").unwrap();
         let file = dir.path().join("file");
         File::create(&file).unwrap().write_all(b"example").unwrap();
-        let expr = cmd!(path_to_test_binary("cat")).stdin_file(File::open(&file).unwrap());
+        let expr = cmd!(path_to_exe("cat")).stdin_file(File::open(&file).unwrap());
         let output = expr.read().unwrap();
         assert_eq!(output, "example");
     }
@@ -869,14 +865,15 @@ mod test {
 
     #[test]
     fn test_dir() {
-        let pwd = cmd!(path_to_test_binary("pwd"));
+        let pwd = cmd!(path_to_exe("pwd"));
 
         // First assert that ordinary commands happen in the parent's dir.
         let pwd_output = pwd.read().unwrap();
         let pwd_path = Path::new(&pwd_output);
         assert_eq!(pwd_path, env::current_dir().unwrap());
 
-        // Now create a temp dir and make sure we can set dir to it.
+        // Now create a temp dir and make sure we can set dir to it. This
+        // also tests the interaction of `dir` and relative exe paths.
         let dir = TempDir::new("duct_test").unwrap();
         let pwd_output = pwd.dir(dir.path()).read().unwrap();
         let pwd_path = Path::new(&pwd_output);
@@ -889,7 +886,7 @@ mod test {
 
     #[test]
     fn test_env() {
-        let output = cmd!(path_to_test_binary("print_env"), "foo")
+        let output = cmd!(path_to_exe("print_env"), "foo")
             .env("foo", "bar")
             .read()
             .unwrap();
@@ -906,7 +903,7 @@ mod test {
 
         // Run a child process with that map passed to full_env(). It should be guaranteed not to
         // see our variable, regardless of any outer env() calls or changes in the parent.
-        let clean_child = cmd!(path_to_test_binary("print_env"), var_name).full_env(clean_env);
+        let clean_child = cmd!(path_to_exe("print_env"), var_name).full_env(clean_env);
 
         // Dirty the parent env. Should be suppressed.
         env::set_var(var_name, "junk1");
@@ -947,9 +944,7 @@ mod test {
         // We don't do any chdir'ing in this process, because the tests runner is multithreaded,
         // and we don't want to screw up anyone else's relative paths. Instead, we shell out to a
         // small test process that does that for us.
-        cmd!(path_to_test_binary("exe_in_dir"),
-             path_to_test_binary("status"),
-             "0")
+        cmd!(path_to_exe("exe_in_dir"), path_to_exe("status"), "0")
             .run()
             .unwrap();
     }

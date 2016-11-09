@@ -1,6 +1,0 @@
-[package]
-name = "cat"
-version = "0.1.0"
-authors = ["Jack O'Connor"]
-description = "a simple cat program for (Windows compatible) testing"
-license = "MIT"

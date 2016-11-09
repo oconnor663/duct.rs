@@ -1,6 +1,0 @@
-[package]
-name = "pwd"
-version = "0.1.0"
-authors = ["Jack O'Connor"]
-description = "cross platform implementation of pwd"
-license = "MIT"
