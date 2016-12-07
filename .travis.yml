@@ -1,10 +1,14 @@
 language: rust
+os:
+  - linux
+  - osx
 rust:
   - stable
   - beta
   - nightly
-# code coverage
+# code coverage (Linux only)
 after_success: |
+  [[ "$TRAVIS_OS_NAME" = "linux" ]] &&
   sudo apt-get install libcurl4-openssl-dev libelf-dev libdw-dev &&
   wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz &&
   tar xzf master.tar.gz && mkdir kcov-master/build && cd kcov-master/build &&

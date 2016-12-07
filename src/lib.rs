@@ -838,7 +838,11 @@ mod test {
         let dir = TempDir::new("duct_test").unwrap();
         let pwd_output = pwd.dir(dir.path()).read().unwrap();
         let pwd_path = Path::new(&pwd_output);
-        assert_eq!(pwd_path, dir.path());
+        // pwd_path isn't totally canonical on Windows, because it
+        // doesn't have a prefix. Thus we have to canonicalize both
+        // sides. (This also handles symlinks in TMP_DIR.)
+        assert_eq!(pwd_path.canonicalize().unwrap(),
+                   dir.path().canonicalize().unwrap());
     }
 
     #[test]
