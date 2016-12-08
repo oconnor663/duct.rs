@@ -837,8 +837,8 @@ mod test {
         // Now create a temp dir and make sure we can set dir to it.
         let dir = TempDir::new("duct_test").unwrap();
         let pwd_output = pwd.dir(dir.path()).read().unwrap();
-        let pwd_path = Path::new(&pwd_output).canonicalize().unwrap();
-        assert_eq!(pwd_path, dir.path());
+        let pwd_path = Path::new(&pwd_output);
+        assert_eq!(pwd_path, dir.path().canonicalize().unwrap());
     }
 
     #[test]
