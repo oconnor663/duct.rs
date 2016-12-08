@@ -838,7 +838,8 @@ mod test {
         let dir = TempDir::new("duct_test").unwrap();
         let pwd_output = pwd.dir(dir.path()).read().unwrap();
         let pwd_path = Path::new(&pwd_output);
-        assert_eq!(pwd_path, dir.path().canonicalize().unwrap());
+        assert_eq!(pwd_path.canonicalize().unwrap(),
+                   dir.path().canonicalize().unwrap());
     }
 
     #[test]
