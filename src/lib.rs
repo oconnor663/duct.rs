@@ -1,7 +1,6 @@
 extern crate crossbeam;
 extern crate os_pipe;
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -379,17 +378,16 @@ impl IoExpressionInner {
 // Unix, and we want to *prevent* Path("echo") from referring to the
 // global "echo" command on either Unix or Windows. Prepend a dot to all
 // relative paths to accomplish both of those.
-fn sanitize_exe_path<'a, T: Into<Cow<'a, Path>>>(path: T) -> Cow<'a, Path> {
-    let path_cow = path.into();
+fn sanitize_exe_path<T: Into<PathBuf>>(path: T) -> PathBuf {
+    let path_buf = path.into();
     // Don't try to be too clever with checking parent(). The parent of "foo" is
     // Some(""). See https://github.com/rust-lang/rust/issues/36861. Also we
     // don't strictly need the has_root check, because joining a leading dot is
-    // a no-op in that case, but explicitly checking it is less tricky and
-    // happens to avoid an allocation.
-    if path_cow.is_absolute() || path_cow.has_root() {
-        path_cow
+    // a no-op in that case, but explicitly checking it is clearer.
+    if path_buf.is_absolute() || path_buf.has_root() {
+        path_buf
     } else {
-        Path::new(".").join(path_cow).into()
+        Path::new(".").join(path_buf)
     }
 }
 
@@ -401,19 +399,19 @@ pub trait ToExecutable {
 
 impl<'a> ToExecutable for &'a Path {
     fn to_executable(self) -> OsString {
-        sanitize_exe_path(self).into_owned().into()
+        sanitize_exe_path(self).into()
     }
 }
 
 impl ToExecutable for PathBuf {
     fn to_executable(self) -> OsString {
-        sanitize_exe_path(self).into_owned().into()
+        sanitize_exe_path(self).into()
     }
 }
 
 impl<'a> ToExecutable for &'a PathBuf {
     fn to_executable(self) -> OsString {
-        sanitize_exe_path(&**self).into_owned().into()
+        sanitize_exe_path(&**self).into()
     }
 }
 
