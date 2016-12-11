@@ -199,14 +199,58 @@ impl ExpressionInner {
     }
 }
 
+fn maybe_canonicalize_exe_path(exe_name: &OsStr, context: &IoContext) -> io::Result<OsString> {
+    // There's a tricky interaction between exe paths and `dir`. Exe
+    // paths can be relative, and so we have to ask: Is an exe path
+    // interpreted relative to the parent's cwd, or the child's? The
+    // answer is that it's platform dependent! >.< (Windows uses the
+    // parent's cwd, but because of the fork-chdir-exec pattern, Unix
+    // usually uses the child's.)
+    //
+    // We want to use the parent's cwd consistently, because that saves
+    // the caller from having to worry about whether `dir` will have
+    // side effects, and because it's easy for the caller to use
+    // Path::join if they want to. That means that when `dir` is in use,
+    // we need to detect exe names that are relative paths, and
+    // absolutify them. We want to do that as little as possible though,
+    // both because canonicalization can fail, and because we prefer to
+    // let the caller control the child's argv[0].
+    //
+    // We never want to absolutify a name like "emacs", because that's
+    // probably a program in the PATH rather than a local file. So we
+    // look for slashes in the name to determine what's a filepath and
+    // what isn't. Note that anything given as a std::path::Path will
+    // always have a slash by the time we get here, because we
+    // specialize the ToExecutable trait to prepend a ./ to them when
+    // they're relative. This leaves the case where Windows users might
+    // pass a local file like "foo.bat" as a string, which we can't
+    // distinguish from a global program name. However, because the
+    // Windows has the preferred "relative to parent's cwd" behavior
+    // already, this case actually works without our help. (The thing
+    // Windows users have to watch out for instead is local files
+    // shadowing global program names, which I don't think we can or
+    // should prevent.)
+
+    let has_separator = exe_name.to_string_lossy().chars().any(std::path::is_separator);
+    let is_relative = Path::new(exe_name).is_relative();
+    if context.dir.is_some() && has_separator && is_relative {
+        Path::new(exe_name).canonicalize().map(Into::into)
+    } else {
+        Ok(exe_name.to_owned())
+    }
+}
+
 fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
-    let mut command = Command::new(&argv[0]);
+    let exe = maybe_canonicalize_exe_path(&argv[0], &context)?;
+    let mut command = Command::new(exe);
     command.args(&argv[1..]);
     // TODO: Avoid unnecessary dup'ing here.
     command.stdin(try!(context.stdin.into_stdio()));
     command.stdout(try!(context.stdout.into_stdio()));
     command.stderr(try!(context.stderr.into_stdio()));
-    command.current_dir(context.dir);
+    if let Some(dir) = context.dir {
+        command.current_dir(dir);
+    }
     command.env_clear();
     for (name, val) in context.env {
         command.env(name, val);
@@ -358,7 +402,7 @@ impl IoExpressionInner {
                 context.stderr = try!(context.stdout.try_clone());
             }
             Dir(ref p) => {
-                context.dir = p.clone();
+                context.dir = Some(p.clone());
             }
             Env(ref name, ref val) => {
                 context.env.insert(name.clone(), val.clone());
@@ -480,7 +524,7 @@ pub struct IoContext {
     stderr: IoValue,
     stdout_capture: File,
     stderr_capture: File,
-    dir: PathBuf,
+    dir: Option<PathBuf>,
     env: HashMap<OsString, OsString>,
 }
 
@@ -499,7 +543,7 @@ impl IoContext {
             stderr: IoValue::ParentStderr,
             stdout_capture: stdout_capture,
             stderr_capture: stderr_capture,
-            dir: try!(std::env::current_dir()),
+            dir: None,
             env: env,
         };
         Ok((context, stdout_reader, stderr_reader))
