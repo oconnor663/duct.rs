@@ -34,12 +34,14 @@ pub fn cmd<T, U, V>(program: T, args: U) -> Expression
 macro_rules! cmd {
     ( $program:expr ) => {
         {
+            use std::ffi::OsString;
             use std::iter::empty;
             $crate::cmd($program, empty::<OsString>())
         }
     };
     ( $program:expr $(, $arg:expr )* ) => {
         {
+            use std::ffi::OsString;
             let mut args: Vec<OsString> = Vec::new();
             $(
                 args.push(Into::<OsString>::into($arg));
