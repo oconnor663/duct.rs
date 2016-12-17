@@ -1,3 +1,7 @@
+//! Duct is a library for shelling out to child processes, building on
+//! top of what's available in `std::process`. The goal is to make
+//! shelling out in Rust as convenient and flexible as it is in Bash.
+
 extern crate crossbeam;
 extern crate os_pipe;
 
@@ -19,6 +23,20 @@ use std::sync::Arc;
 use ExpressionInner::*;
 use IoExpressionInner::*;
 
+/// Create a command given a program name and a collection of arguments.
+/// See also the `cmd!` macro, which doesn't require a collection.
+///
+/// # Example
+///
+/// ```
+/// use duct::cmd;
+///
+/// let args = vec!["foo", "bar", "baz"];
+///
+/// let output = cmd("echo", &args).read();
+///
+/// assert_eq!("foo bar baz", output.unwrap());
+/// ```
 pub fn cmd<T, U, V>(program: T, args: U) -> Expression
     where T: ToExecutable,
           U: IntoIterator<Item = V>,
@@ -30,6 +48,27 @@ pub fn cmd<T, U, V>(program: T, args: U) -> Expression
     Expression::new(Cmd(argv_vec))
 }
 
+/// Create a command with any number of of positional arguments, which
+/// may be different types (anything that implements `Into<OsString>`).
+/// See also the `cmd` function, which takes a collection of arguments.
+///
+/// # Example
+///
+/// ```
+/// #[macro_use]
+/// extern crate duct;
+/// use std::path::Path;
+///
+/// fn main() {
+///     let arg1 = "foo";
+///     let arg2 = "bar".to_owned();
+///     let arg3 = Path::new("baz");
+///
+///     let output = cmd!("echo", arg1, arg2, arg3).read();
+///
+///     assert_eq!("foo bar baz", output.unwrap());
+/// }
+/// ```
 #[macro_export]
 macro_rules! cmd {
     ( $program:expr ) => {
@@ -51,6 +90,28 @@ macro_rules! cmd {
     };
 }
 
+/// Create a command from a string of shell code.
+///
+/// This invokes the operating system's shell to execute the string:
+/// `/bin/sh` on Unix-like systems and `cmd.exe` on Windows. This can be
+/// very convenient sometimes, especially in small scripts and examples.
+/// You don't need to quote each argument, and all the operators like
+/// `|` and `>` work as usual.
+///
+/// However, building shell commands at runtime brings up tricky
+/// whitespace and escaping issues, so avoid using `sh` and `format!`
+/// together. Prefer `cmd!` instead in those cases. Also note that shell
+/// commands don't tend to be portable between Unix and Windows.
+///
+/// # Example
+///
+/// ```
+/// use duct::sh;
+///
+/// let output = sh("echo foo bar baz").read();
+///
+/// assert_eq!("foo bar baz", output.unwrap());
+/// ```
 pub fn sh<T: ToExecutable>(command: T) -> Expression {
     Expression::new(Sh(command.to_executable()))
 }
