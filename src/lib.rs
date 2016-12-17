@@ -520,7 +520,7 @@ impl From<std::str::Utf8Error> for Error {
 // It's initialized in run(), with dups of the stdin/stdout/stderr pipes, and then passed down to
 // sub-expressions. Compound expressions will clone() it, and redirections will modify it.
 #[derive(Debug)]
-pub struct IoContext {
+struct IoContext {
     stdin: IoValue,
     stdout: IoValue,
     stderr: IoValue,
