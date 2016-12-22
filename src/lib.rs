@@ -124,10 +124,12 @@ pub struct Expression {
 
 impl Expression {
     pub fn run(&self) -> Result<Output, Error> {
-        let (context, stdout_reader, stderr_reader) = try!(IoContext::new());
-        let status = try!(self.inner.exec(context));
-        let stdout_vec = try!(stdout_reader.join().unwrap());
-        let stderr_vec = try!(stderr_reader.join().unwrap());
+        let (context, stdout_reader, stderr_reader) = IoContext::new()?;
+        let status = self.inner.exec(context)?;
+        // These unwraps propagate any panics from the other thread,
+        // but regular errors return normally.
+        let stdout_vec = stdout_reader.join().unwrap()?;
+        let stderr_vec = stderr_reader.join().unwrap()?;
         let output = Output {
             status: status,
             stdout: stdout_vec,
@@ -141,8 +143,8 @@ impl Expression {
     }
 
     pub fn read(&self) -> Result<String, Error> {
-        let output = try!(self.stdout_capture().run());
-        let output_str = try!(std::str::from_utf8(&output.stdout));
+        let output = self.stdout_capture().run()?;
+        let output_str = std::str::from_utf8(&output.stdout)?;
         Ok(trim_right_newlines(output_str).to_owned())
     }
 
@@ -308,9 +310,9 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
     let mut command = Command::new(exe);
     command.args(&argv[1..]);
     // TODO: Avoid unnecessary dup'ing here.
-    command.stdin(try!(context.stdin.into_stdio()));
-    command.stdout(try!(context.stdout.into_stdio()));
-    command.stderr(try!(context.stderr.into_stdio()));
+    command.stdin(context.stdin.into_stdio()?);
+    command.stdout(context.stdout.into_stdio()?);
+    command.stderr(context.stderr.into_stdio()?);
     if let Some(dir) = context.dir {
         command.current_dir(dir);
     }
@@ -318,7 +320,7 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
     for (name, val) in context.env {
         command.env(name, val);
     }
-    Ok(try!(command.status()))
+    command.status()
 }
 
 #[cfg(unix)]
@@ -337,8 +339,8 @@ fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExitStatus> {
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
-    let pair = try!(os_pipe::pipe());
-    let mut left_context = try!(context.try_clone());  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+    let pair = os_pipe::pipe()?;
+    let mut left_context = context.try_clone()?;  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
     left_context.stdout = IoValue::File(pair.write);
     let mut right_context = context;
     right_context.stdin = IoValue::File(pair.read);
@@ -350,8 +352,8 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
         (left_result, right_result)
     });
 
-    let right_status = try!(right_result);
-    let left_status = try!(left_result);
+    let right_status = right_result?;
+    let left_status = left_result?;
     if !right_status.success() {
         Ok(right_status)
     } else {
@@ -360,7 +362,7 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
 }
 
 fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
-    let status = try!(left.inner.exec(try!(context.try_clone())));
+    let status = left.inner.exec(context.try_clone()?)?;
     if !status.success() {
         Ok(status)
     } else {
@@ -374,13 +376,13 @@ fn exec_io(io_inner: &IoExpressionInner,
            -> io::Result<ExitStatus> {
     {
         crossbeam::scope(|scope| {
-            let (new_context, maybe_writer_thread) = try!(io_inner.update_context(context, scope));
+            let (new_context, maybe_writer_thread) = io_inner.update_context(context, scope)?;
             let exec_result = expr.inner.exec(new_context);
             let writer_result = join_maybe_writer_thread(maybe_writer_thread);
             // Propagate any exec errors first.
-            let exec_status = try!(exec_result);
+            let exec_status = exec_result?;
             // Then propagate any writer thread errors.
-            try!(writer_result);
+            writer_result?;
             // Finally, implement unchecked() status suppression here.
             if let &Unchecked = io_inner {
                 Ok(ExitStatus::from_raw(0))
@@ -421,48 +423,44 @@ impl IoExpressionInner {
         let mut maybe_thread = None;
         match *self {
             Input(ref v) => {
-                let (reader, thread) = try!(pipe_with_writer_thread(v, scope));
+                let (reader, thread) = pipe_with_writer_thread(v, scope)?;
                 context.stdin = IoValue::File(reader);
                 maybe_thread = Some(thread)
             }
             Stdin(ref p) => {
-                context.stdin = IoValue::File(try!(File::open(p)));
+                context.stdin = IoValue::File(File::open(p)?);
             }
             StdinFile(ref f) => {
-                context.stdin = IoValue::File(try!(f.try_clone()));
+                context.stdin = IoValue::File(f.try_clone()?);
             }
             StdinNull => {
                 context.stdin = IoValue::Null;
             }
             Stdout(ref p) => {
-                context.stdout = IoValue::File(try!(File::create(p)));
+                context.stdout = IoValue::File(File::create(p)?);
             }
             StdoutFile(ref f) => {
-                context.stdout = IoValue::File(try!(f.try_clone()));
+                context.stdout = IoValue::File(f.try_clone()?);
             }
             StdoutNull => {
                 context.stdout = IoValue::Null;
             }
-            StdoutCapture => {
-                context.stdout = IoValue::File(try!(context.stdout_capture.try_clone()))
-            }
+            StdoutCapture => context.stdout = IoValue::File(context.stdout_capture.try_clone()?),
             StdoutToStderr => {
-                context.stdout = try!(context.stderr.try_clone());
+                context.stdout = context.stderr.try_clone()?;
             }
             Stderr(ref p) => {
-                context.stderr = IoValue::File(try!(File::create(p)));
+                context.stderr = IoValue::File(File::create(p)?);
             }
             StderrFile(ref f) => {
-                context.stderr = IoValue::File(try!(f.try_clone()));
+                context.stderr = IoValue::File(f.try_clone()?);
             }
             StderrNull => {
                 context.stderr = IoValue::Null;
             }
-            StderrCapture => {
-                context.stderr = IoValue::File(try!(context.stderr_capture.try_clone()))
-            }
+            StderrCapture => context.stderr = IoValue::File(context.stderr_capture.try_clone()?),
             StderrToStdout => {
-                context.stderr = try!(context.stdout.try_clone());
+                context.stderr = context.stdout.try_clone()?;
             }
             Dir(ref p) => {
                 context.dir = Some(p.clone());
@@ -594,8 +592,8 @@ struct IoContext {
 impl IoContext {
     // Returns (context, stdout_reader, stderr_reader).
     fn new() -> io::Result<(IoContext, ReaderThread, ReaderThread)> {
-        let (stdout_capture, stdout_reader) = try!(pipe_with_reader_thread());
-        let (stderr_capture, stderr_reader) = try!(pipe_with_reader_thread());
+        let (stdout_capture, stdout_reader) = pipe_with_reader_thread()?;
+        let (stderr_capture, stderr_reader) = pipe_with_reader_thread()?;
         let mut env = HashMap::new();
         for (name, val) in std::env::vars_os() {
             env.insert(name, val);
@@ -614,11 +612,11 @@ impl IoContext {
 
     fn try_clone(&self) -> io::Result<IoContext> {
         Ok(IoContext {
-            stdin: try!(self.stdin.try_clone()),
-            stdout: try!(self.stdout.try_clone()),
-            stderr: try!(self.stderr.try_clone()),
-            stdout_capture: try!(self.stdout_capture.try_clone()),
-            stderr_capture: try!(self.stderr_capture.try_clone()),
+            stdin: self.stdin.try_clone()?,
+            stdout: self.stdout.try_clone()?,
+            stderr: self.stderr.try_clone()?,
+            stdout_capture: self.stdout_capture.try_clone()?,
+            stderr_capture: self.stderr_capture.try_clone()?,
             dir: self.dir.clone(),
             env: self.env.clone(),
         })
@@ -641,7 +639,7 @@ impl IoValue {
             &IoValue::ParentStdout => IoValue::ParentStdout,
             &IoValue::ParentStderr => IoValue::ParentStderr,
             &IoValue::Null => IoValue::Null,
-            &IoValue::File(ref f) => IoValue::File(try!(f.try_clone())),
+            &IoValue::File(ref f) => IoValue::File(f.try_clone()?),
         })
     }
 
@@ -659,10 +657,10 @@ impl IoValue {
 type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 
 fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
-    let os_pipe::Pair { mut read, write } = try!(os_pipe::pipe());
+    let os_pipe::Pair { mut read, write } = os_pipe::pipe()?;
     let thread = std::thread::spawn(move || {
         let mut output = Vec::new();
-        try!(read.read_to_end(&mut output));
+        read.read_to_end(&mut output)?;
         Ok(output)
     });
     Ok((write, thread))
@@ -673,9 +671,9 @@ type WriterThread = crossbeam::ScopedJoinHandle<io::Result<()>>;
 fn pipe_with_writer_thread<'a>(input: &'a [u8],
                                scope: &crossbeam::Scope<'a>)
                                -> io::Result<(File, WriterThread)> {
-    let os_pipe::Pair { read, mut write } = try!(os_pipe::pipe());
+    let os_pipe::Pair { read, mut write } = os_pipe::pipe()?;
     let thread = scope.spawn(move || {
-        try!(write.write_all(&input));
+        write.write_all(&input)?;
         Ok(())
     });
     Ok((read, thread))
