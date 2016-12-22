@@ -339,11 +339,11 @@ fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExitStatus> {
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
-    let pair = os_pipe::pipe()?;
+    let pipe = os_pipe::pipe()?;
     let mut left_context = context.try_clone()?;  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-    left_context.stdout = IoValue::File(pair.write);
+    left_context.stdout = IoValue::File(pipe.writer);
     let mut right_context = context;
-    right_context.stdin = IoValue::File(pair.read);
+    right_context.stdin = IoValue::File(pipe.reader);
 
     let (left_result, right_result) = crossbeam::scope(|scope| {
         let left_joiner = scope.spawn(|| left.inner.exec(left_context));
@@ -657,13 +657,13 @@ impl IoValue {
 type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 
 fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
-    let os_pipe::Pair { mut read, write } = os_pipe::pipe()?;
+    let os_pipe::Pipe { mut reader, writer } = os_pipe::pipe()?;
     let thread = std::thread::spawn(move || {
         let mut output = Vec::new();
-        read.read_to_end(&mut output)?;
+        reader.read_to_end(&mut output)?;
         Ok(output)
     });
-    Ok((write, thread))
+    Ok((writer, thread))
 }
 
 type WriterThread = crossbeam::ScopedJoinHandle<io::Result<()>>;
@@ -671,12 +671,12 @@ type WriterThread = crossbeam::ScopedJoinHandle<io::Result<()>>;
 fn pipe_with_writer_thread<'a>(input: &'a [u8],
                                scope: &crossbeam::Scope<'a>)
                                -> io::Result<(File, WriterThread)> {
-    let os_pipe::Pair { read, mut write } = os_pipe::pipe()?;
+    let os_pipe::Pipe { reader, mut writer } = os_pipe::pipe()?;
     let thread = scope.spawn(move || {
-        write.write_all(&input)?;
+        writer.write_all(&input)?;
         Ok(())
     });
-    Ok((read, thread))
+    Ok((reader, thread))
 }
 
 fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Result<()> {
@@ -839,9 +839,9 @@ mod test {
     #[test]
     fn test_stderr() {
         let mut pipe = ::os_pipe::pipe().unwrap();
-        sh("echo hi>&2").stderr_file(pipe.write).run().unwrap();
+        sh("echo hi>&2").stderr_file(pipe.writer).run().unwrap();
         let mut s = String::new();
-        pipe.read.read_to_string(&mut s).unwrap();
+        pipe.reader.read_to_string(&mut s).unwrap();
         assert_eq!(s.trim(), "hi");
     }
 

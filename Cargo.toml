@@ -7,8 +7,8 @@ repository = "https://github.com/oconnor663/duct.rs"
 license = "MIT"
 
 [dependencies]
-os_pipe = "^0.2"
-crossbeam = ">=0.2.8"
+os_pipe = "^0.3.0"
+crossbeam = "^0.2.8"
 
 [dev-dependencies]
-tempdir = ">=0.3.4"
+tempdir = "^0.3.4"
