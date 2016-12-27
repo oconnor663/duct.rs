@@ -145,14 +145,12 @@ pub fn sh<T: ToExecutable>(command: T) -> Expression {
 
 #[derive(Clone, Debug)]
 #[must_use]
-pub struct Expression {
-    inner: Arc<ExpressionInner>,
-}
+pub struct Expression(Arc<ExpressionInner>);
 
 impl Expression {
     pub fn run(&self) -> Result<Output, Error> {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
-        let status = self.inner.exec(context)?;
+        let status = self.0.exec(context)?;
         // These unwraps propagate any panics from the other thread,
         // but regular errors return normally.
         let stdout_vec = stdout_reader.join().unwrap()?;
@@ -173,6 +171,37 @@ impl Expression {
         let output = self.stdout_capture().run()?;
         let output_str = std::str::from_utf8(&output.stdout)?;
         Ok(trim_right_newlines(output_str).to_owned())
+    }
+
+    /// Start running an expression, and immediately return a `WaitHandle`. This
+    /// is equivalent to `run`, except it doesn't block the current thread until
+    /// you call `wait` on the handle.
+    ///
+    /// Note that this returns a `WaitHandle` directly, not an
+    /// `io::Result<WaitHandle>`. That means that even IO errors that happen
+    /// during spawn (like a misspelled program name) won't show up until you
+    /// `wait` on the handle. The reason we can't report spawn errors
+    /// immediately is that it wouldn't work well with `then` and `pipe`.
+    ///
+    /// The problem with `then` is that spawn errors in the right child don't
+    /// happen on the main thread. Instead there's a worker thread waiting on
+    /// the left child to finish, and it's that worker's job to spawn the right
+    /// child. The only way to return errors at that point is through the
+    /// WaitClosure, so a "return spawn errors immediately" design would be
+    /// inconsistent at best.
+    ///
+    /// The problem with `pipe` is worse. Both children start immediately, so if
+    /// a spawn error happens on the right, the left is already running. Someone
+    /// has to wait on it, or we'll leak a zombie process. But the left child
+    /// might take a long time to finish, and it's not ok for `start` to block.
+    /// Instead, we need the caller to `wait` as usual, so that we can do this
+    /// cleanup.
+    ///
+    /// Implementation note: This is currently implemented with a background
+    /// thread, so it's not as efficient as it could be.
+    pub fn start(&self) -> WaitHandle {
+        let clone = Expression(self.0.clone());
+        WaitHandle(std::thread::spawn(move || clone.run()))
     }
 
     pub fn pipe(&self, right: Expression) -> Expression {
@@ -266,7 +295,15 @@ impl Expression {
     }
 
     fn new(inner: ExpressionInner) -> Self {
-        Expression { inner: Arc::new(inner) }
+        Expression(Arc::new(inner))
+    }
+}
+
+pub struct WaitHandle(JoinHandle<Result<Output, Error>>);
+
+impl WaitHandle {
+    pub fn wait(self) -> Result<Output, Error> {
+        self.0.join().unwrap()
     }
 }
 
@@ -373,8 +410,8 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
     right_context.stdin = IoValue::File(pipe.reader);
 
     let (left_result, right_result) = crossbeam::scope(|scope| {
-        let left_joiner = scope.spawn(|| left.inner.exec(left_context));
-        let right_result = right.inner.exec(right_context);
+        let left_joiner = scope.spawn(|| left.0.exec(left_context));
+        let right_result = right.0.exec(right_context);
         let left_result = left_joiner.join();
         (left_result, right_result)
     });
@@ -389,11 +426,11 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
 }
 
 fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
-    let status = left.inner.exec(context.try_clone()?)?;
+    let status = left.0.exec(context.try_clone()?)?;
     if !status.success() {
         Ok(status)
     } else {
-        right.inner.exec(context)
+        right.0.exec(context)
     }
 }
 
@@ -404,7 +441,7 @@ fn exec_io(io_inner: &IoExpressionInner,
     {
         crossbeam::scope(|scope| {
             let (new_context, maybe_writer_thread) = io_inner.update_context(context, scope)?;
-            let exec_result = expr.inner.exec(new_context);
+            let exec_result = expr.0.exec(new_context);
             let writer_result = join_maybe_writer_thread(maybe_writer_thread);
             // Propagate any exec errors first.
             let exec_status = exec_result?;
@@ -777,7 +814,6 @@ mod test {
 
     #[test]
     fn test_cmd() {
-        // Windows compatible.
         let output = cmd!(path_to_exe("echo"), "hi").read().unwrap();
         assert_eq!("hi", output);
     }
@@ -787,6 +823,13 @@ mod test {
         // Windows compatible.
         let output = sh("echo hi").read().unwrap();
         assert_eq!("hi", output);
+    }
+
+    #[test]
+    fn test_start() {
+        let handle = cmd!(path_to_exe("echo"), "hi").stdout_capture().start();
+        let output = handle.wait().unwrap();
+        assert_eq!("hi", str::from_utf8(&output.stdout).unwrap().trim());
     }
 
     #[test]
