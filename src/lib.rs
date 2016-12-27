@@ -29,7 +29,6 @@
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
 //! ```
 
-extern crate crossbeam;
 extern crate os_pipe;
 
 use std::collections::HashMap;
@@ -213,7 +212,7 @@ impl Expression {
     }
 
     pub fn input<T: Into<Vec<u8>>>(&self, input: T) -> Self {
-        Self::new(Io(Input(input.into()), self.clone()))
+        Self::new(Io(Input(Arc::new(input.into())), self.clone()))
     }
 
     pub fn stdin<T: Into<PathBuf>>(&self, path: T) -> Self {
@@ -409,12 +408,10 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
     let mut right_context = context;
     right_context.stdin = IoValue::File(pipe.reader);
 
-    let (left_result, right_result) = crossbeam::scope(|scope| {
-        let left_joiner = scope.spawn(|| left.0.exec(left_context));
-        let right_result = right.0.exec(right_context);
-        let left_result = left_joiner.join();
-        (left_result, right_result)
-    });
+    let left_clone = Expression(left.0.clone());
+    let left_joiner = std::thread::spawn(move || left_clone.0.exec(left_context));
+    let right_result = right.0.exec(right_context);
+    let left_result = left_joiner.join().unwrap();
 
     let right_status = right_result?;
     let left_status = left_result?;
@@ -439,27 +436,25 @@ fn exec_io(io_inner: &IoExpressionInner,
            context: IoContext)
            -> io::Result<ExitStatus> {
     {
-        crossbeam::scope(|scope| {
-            let (new_context, maybe_writer_thread) = io_inner.update_context(context, scope)?;
-            let exec_result = expr.0.exec(new_context);
-            let writer_result = join_maybe_writer_thread(maybe_writer_thread);
-            // Propagate any exec errors first.
-            let exec_status = exec_result?;
-            // Then propagate any writer thread errors.
-            writer_result?;
-            // Finally, implement unchecked() status suppression here.
-            if let &Unchecked = io_inner {
-                Ok(ExitStatus::from_raw(0))
-            } else {
-                Ok(exec_status)
-            }
-        })
+        let (new_context, maybe_writer_thread) = io_inner.update_context(context)?;
+        let exec_result = expr.0.exec(new_context);
+        let writer_result = join_maybe_writer_thread(maybe_writer_thread);
+        // Propagate any exec errors first.
+        let exec_status = exec_result?;
+        // Then propagate any writer thread errors.
+        writer_result?;
+        // Finally, implement unchecked() status suppression here.
+        if let &Unchecked = io_inner {
+            Ok(ExitStatus::from_raw(0))
+        } else {
+            Ok(exec_status)
+        }
     }
 }
 
 #[derive(Debug)]
 enum IoExpressionInner {
-    Input(Vec<u8>),
+    Input(Arc<Vec<u8>>),
     Stdin(PathBuf),
     StdinFile(File),
     StdinNull,
@@ -480,14 +475,13 @@ enum IoExpressionInner {
 }
 
 impl IoExpressionInner {
-    fn update_context<'a>(&'a self,
-                          mut context: IoContext,
-                          scope: &crossbeam::Scope<'a>)
-                          -> io::Result<(IoContext, Option<WriterThread>)> {
+    fn update_context(&self,
+                      mut context: IoContext)
+                      -> io::Result<(IoContext, Option<WriterThread>)> {
         let mut maybe_thread = None;
         match *self {
             Input(ref v) => {
-                let (reader, thread) = pipe_with_writer_thread(v, scope)?;
+                let (reader, thread) = pipe_with_writer_thread(v)?;
                 context.stdin = IoValue::File(reader);
                 maybe_thread = Some(thread)
             }
@@ -730,14 +724,13 @@ fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
     Ok((writer, thread))
 }
 
-type WriterThread = crossbeam::ScopedJoinHandle<io::Result<()>>;
+type WriterThread = JoinHandle<io::Result<()>>;
 
-fn pipe_with_writer_thread<'a>(input: &'a [u8],
-                               scope: &crossbeam::Scope<'a>)
-                               -> io::Result<(File, WriterThread)> {
+fn pipe_with_writer_thread(input: &Arc<Vec<u8>>) -> io::Result<(File, WriterThread)> {
     let os_pipe::Pipe { reader, mut writer } = os_pipe::pipe()?;
-    let thread = scope.spawn(move || {
-        writer.write_all(&input)?;
+    let new_arc = input.clone();
+    let thread = std::thread::spawn(move || {
+        writer.write_all(&new_arc)?;
         Ok(())
     });
     Ok((reader, thread))
@@ -748,7 +741,7 @@ fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Re
         // A broken pipe error happens if the process on the other end exits before
         // we're done writing. We ignore those but return any other errors to the
         // caller.
-        suppress_broken_pipe_errors(thread.join())
+        suppress_broken_pipe_errors(thread.join().unwrap())
     } else {
         Ok(())
     }

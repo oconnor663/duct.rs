@@ -8,7 +8,6 @@ license = "MIT"
 
 [dependencies]
 os_pipe = "^0.3.0"
-crossbeam = "^0.2.8"
 
 [dev-dependencies]
 tempdir = "^0.3.4"
