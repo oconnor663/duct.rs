@@ -15,15 +15,51 @@
 //!
 //! # Example
 //!
+//! `duct` tries to be as concise as possible, so that you don't wish you were
+//! back writing shell scripts. At the same time, it's explicit about what
+//! happens to output, and strict about error codes in child processes.
+//!
+//! ```rust,no_run
+//! #[macro_use]
+//! extern crate duct;
+//!
+//! use duct::{cmd, sh};
+//!
+//! fn main() {
+//!     // Read the name of the current git branch. If git exits with an error
+//!     // code here (because we're not in a git repo, for example), `read` will
+//!     // return an error too. `sh` commands run under the real system shell,
+//!     // /bin/sh on Unix or cmd.exe on Windows.
+//!     let current_branch = sh("git symbolic-ref --short HEAD").read().unwrap();
+//!
+//!     // Log the current branch, with git taking over the terminal as usual.
+//!     // `cmd!` commands are spawned directly, without going through the
+//!     // shell, so there aren't any escaping issues with variable arguments.
+//!     cmd!("git", "log", current_branch).run().unwrap();
+//!
+//!     // More complicated expressions become trees. Here's a pipeline with two
+//!     // child processes on the left, just because we can. In Bash this would
+//!     // be: stdout=$((echo -n part one "" && echo part two) | sed s/p/sm/g)
+//!     let part_one = &["-n", "part", "one", ""];
+//!     let stdout = cmd("echo", part_one)
+//!         .then(sh("echo part two"))
+//!         .pipe(cmd!("sed", "s/p/sm/g"))
+//!         .read()
+//!         .unwrap();
+//!     assert_eq!("smart one smart two", stdout);
+//! }
+//! ```
+//!
 //! `duct` uses [`os_pipe`](https://github.com/oconnor663/os_pipe.rs)
 //! internally, and the docs for that one include a [big
-//! example](https://docs.rs/os_pipe#example) that uses more than a
-//! dozen lines of code to read both stdout and stderr from a child
-//! process. `duct` can do that in one line:
+//! example](https://docs.rs/os_pipe#example) that takes a dozen lines of code
+//! to read both stdout and stderr from a child process. `duct` can do that in
+//! one line:
 //!
 //! ```rust
 //! use duct::sh;
 //!
+//! // This works on Windows too!
 //! let output = sh("echo foo && echo bar >&2").stderr_to_stdout().read().unwrap();
 //!
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
@@ -51,8 +87,8 @@ use std::sync::Arc;
 use ExpressionInner::*;
 use IoExpressionInner::*;
 
-/// Create a command given a program name and a collection of arguments.
-/// See also the `cmd!` macro, which doesn't require a collection.
+/// Create a command given a program name and a collection of arguments. See
+/// also the [`cmd!`](macro.cmd.html) macro, which doesn't require a collection.
 ///
 /// # Example
 ///
@@ -61,6 +97,10 @@ use IoExpressionInner::*;
 ///
 /// let args = vec!["foo", "bar", "baz"];
 ///
+/// # // NOTE: Normally this wouldn't work on Windows, but we have an "echo"
+/// # // binary that gets built for our main tests, and it's sitting around by
+/// # // the time we get here. If this ever stops working, then we can disable
+/// # // the tests that depend on it.
 /// let output = cmd("echo", &args).read();
 ///
 /// assert_eq!("foo bar baz", output.unwrap());
@@ -76,9 +116,11 @@ pub fn cmd<T, U, V>(program: T, args: U) -> Expression
     Expression::new(Cmd(argv_vec))
 }
 
-/// Create a command with any number of of positional arguments, which
-/// may be different types (anything that implements `Into<OsString>`).
-/// See also the `cmd` function, which takes a collection of arguments.
+/// Create a command with any number of of positional arguments, which may be
+/// different types (anything that implements
+/// [`Into<OsString>`](https://doc.rust-lang.org/std/convert/trait.From.html)).
+/// See also the [`cmd`](fn.cmd.html) function, which takes a collection of
+/// arguments.
 ///
 /// # Example
 ///
@@ -126,9 +168,9 @@ macro_rules! cmd {
 /// You don't need to quote each argument, and all the operators like
 /// `|` and `>` work as usual.
 ///
-/// However, building shell commands at runtime brings up tricky
-/// whitespace and escaping issues, so avoid using `sh` and `format!`
-/// together. Prefer `cmd!` instead in those cases. Also note that shell
+/// However, building shell commands at runtime brings up tricky whitespace and
+/// escaping issues, so avoid using `sh` and `format!` together. Prefer
+/// [`cmd!`](macro.cmd.html) instead in those cases. Also note that shell
 /// commands don't tend to be portable between Unix and Windows.
 ///
 /// # Example
@@ -144,11 +186,55 @@ pub fn sh<T: ToExecutable>(command: T) -> Expression {
     Expression::new(Sh(command.to_executable()))
 }
 
+/// The central objects in `duct`, Expressions are created with
+/// [`cmd`](fn.cmd.html), [`cmd!`](macro.cmd.html), or [`sh`](fn.sh.html), then
+/// combined with [`pipe`](struct.Expression.html#method.pipe) or
+/// [`then`](struct.Expression.html#method.then), and finally executed with
+/// [`start`](struct.Expression.html#method.start),
+/// [`run`](struct.Expression.html#method.run), or
+/// [`read`](struct.Expression.html#method.read). They also support several
+/// methods to control their execution, like
+/// [`input`](struct.Expression.html#method.input),
+/// [`env`](struct.Expression.html#method.env), and
+/// [`unchecked`](struct.Expression.html#method.unchecked). Expressions are
+/// immutable, and they do a lot of
+/// [`Arc`](https://doc.rust-lang.org/std/sync/struct.Arc.html) sharing
+/// internally, so all of these methods take `&self` and return a new
+/// `Expression` cheaply.
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Expression(Arc<ExpressionInner>);
 
 impl Expression {
+    /// Execute an expression, wait for it to complete, and return a
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
+    /// object containing the results. Nothing is captured by default, but if
+    /// you build the expression with
+    /// [`stdout_capture`](struct.Expression.html#method.stdout_capture) or
+    /// [`stderr_capture`](struct.Expression.html#method.stderr_capture) then
+    /// the `Output` will hold those captured bytes.
+    ///
+    /// # Errors
+    ///
+    /// In addition to all the IO errors possible with
+    /// [`std::process::Command`](https://doc.rust-lang.org/std/process/struct.Command.html),
+    /// `run` will return a [`Status`](enum.Error.html) error if the exit status
+    /// of the child is non-zero. The `Output` is available through that error
+    /// type if you catch it, but if you want a non-zero exit status to be `Ok`
+    /// then you should use the
+    /// [`unchecked`](struct.Expression.html#method.unchecked) method.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let output = cmd!("echo", "hi").stdout_capture().run().unwrap();
+    /// assert_eq!(b"hi\n".to_vec(), output.stdout);
+    /// # }
+    /// # }
+    /// ```
     pub fn run(&self) -> Result<Output, Error> {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         let status = self.0.exec(context)?;
@@ -168,111 +254,438 @@ impl Expression {
         }
     }
 
+    /// Execute an expression, capture its standard output, and return the
+    /// captured output as a `String`. This is a convenience wrapper around
+    /// [`run`](struct.Expression.html#method.run). Like backticks and `$()` in
+    /// the shell, `read` trims trailing newlines.
+    ///
+    /// # Errors
+    ///
+    /// In addition to all the errors possible with
+    /// [`run`](struct.Expression.html#method.run), `read` can return a wrapped
+    /// [`std::str::Utf8Error`](https://doc.rust-lang.org/stable/std/str/struct.Utf8Error.html)
+    /// if the output of the expression is not valid UTF-8.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let output = cmd!("echo", "hi").stdout_capture().read().unwrap();
+    /// assert_eq!("hi", output);
+    /// # }
+    /// # }
+    /// ```
     pub fn read(&self) -> Result<String, Error> {
         let output = self.stdout_capture().run()?;
         let output_str = std::str::from_utf8(&output.stdout)?;
         Ok(trim_right_newlines(output_str).to_owned())
     }
 
-    /// Start running an expression, and immediately return a `WaitHandle`. This
-    /// is equivalent to `run`, except it doesn't block the current thread until
-    /// you call `wait` on the handle.
+    /// Start running an expression, and immediately return a
+    /// [`WaitHandle`](struct.WaitHandle.html). This is equivalent to
+    /// [`run`](struct.Expression.html#method.run), except it doesn't block the
+    /// current thread until you call
+    /// [`wait`](struct.WaitHandle.html#method.wait) on the handle.
     ///
-    /// Note that this returns a `WaitHandle` directly, not an
-    /// `io::Result<WaitHandle>`. That means that even IO errors that happen
-    /// during spawn (like a misspelled program name) won't show up until you
-    /// `wait` on the handle. The reason we can't report spawn errors
-    /// immediately is that it wouldn't work well with `then` and `pipe`.
+    /// # Example
     ///
-    /// The problem with `then` is that spawn errors in the right child don't
-    /// happen on the main thread. Instead there's a worker thread waiting on
-    /// the left child to finish, and it's that worker's job to spawn the right
-    /// child. The only way to return errors at that point is through the
-    /// WaitClosure, so a "return spawn errors immediately" design would be
-    /// inconsistent at best.
-    ///
-    /// The problem with `pipe` is worse. Both children start immediately, so if
-    /// a spawn error happens on the right, the left is already running. Someone
-    /// has to wait on it, or we'll leak a zombie process. But the left child
-    /// might take a long time to finish, and it's not ok for `start` to block.
-    /// Instead, we need the caller to `wait` as usual, so that we can do this
-    /// cleanup.
-    ///
-    /// Implementation note: This is currently implemented with a background
-    /// thread, so it's not as efficient as it could be.
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let handle = cmd!("echo", "hi").stdout_capture().start();
+    /// let output = handle.wait().unwrap();
+    /// assert_eq!(b"hi\n".to_vec(), output.stdout);
+    /// # }
+    /// # }
+    /// ```
     pub fn start(&self) -> WaitHandle {
+        // Note that this returns a `WaitHandle` directly, not an
+        // `io::Result<WaitHandle>`. That means that even IO errors that happen
+        // during spawn (like a misspelled program name) won't show up until you
+        // `wait` on the handle. The reason we can't report spawn errors
+        // immediately is that it wouldn't work well with
+        // [`then`](struct.Expression.html#method.then) and
+        // [`pipe`](struct.Expression.html#method.pipe).
+        //
+        // The problem with `then` is that spawn errors in the right child don't
+        // happen on the main thread. Instead there's a worker thread waiting on
+        // the left child to finish, and it's that worker's job to spawn the
+        // right child. The only way to return errors at that point is through
+        // the WaitHandle, so a "return spawn errors immediately" design would
+        // be inconsistent at best.
+        //
+        // The problem with `pipe` is worse. Both children start immediately, so
+        // if a spawn error happens on the right, the left is already running.
+        // Someone has to wait on it, or we'll leak a zombie process. But the
+        // left child might take a long time to finish, and it's not ok for
+        // `start` to block. Instead, we need the caller to `wait` as usual, so
+        // that we can do this cleanup.
+        //
+        // Implementation note: This is currently implemented with a background
+        // thread, so it's not as efficient as it could be.
         let clone = Expression(self.0.clone());
         WaitHandle(std::thread::spawn(move || clone.run()))
     }
 
+    /// Join two expressions into a pipe, with the standard output of the left
+    /// hooked up to the standard input of the right, like `|` in the shell.
+    /// The exit status of this expression is that of the right child if it's
+    /// non-zero, otherwise it's that of the left child.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let output = cmd!("echo", "hi").pipe(cmd!("sed", "s/h/p/")).read();
+    /// assert_eq!("pi", output.unwrap());
+    /// # }
+    /// # }
+    /// ```
     pub fn pipe(&self, right: Expression) -> Expression {
         Self::new(Pipe(self.clone(), right.clone()))
     }
 
+    /// Chain two expressions together to run in series, like `&&` in the shell.
+    /// If the left child returns a non-zero exit status, the right child
+    /// doesn't run. (You can use
+    /// [`unchecked`](struct.Expression.html#method.unchecked) on the left child
+    /// to make sure the right child always runs.) The exit status of this
+    /// expression is the status of the last child that ran.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// // Both echoes share the same stdout, so both go through `sed`.
+    /// let output = sh("echo -n bar")
+    ///     .then(sh("echo baz"))
+    ///     .pipe(sh("sed s/b/f/g")).read();
+    /// assert_eq!("farfaz", output.unwrap());
+    /// # }
+    /// # }
+    /// ```
     pub fn then(&self, right: Expression) -> Expression {
         Self::new(Then(self.clone(), right.clone()))
     }
 
+    /// Use bytes or a string as input for an expression, like `<<<` in the
+    /// shell. A worker thread will be spawned at runtime to write this input.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// // Many types implement Into<Vec<u8>>. Here's a string.
+    /// let output = cmd!("cat").input("foo").read().unwrap();
+    /// assert_eq!("foo", output);
+    ///
+    /// // And here's a byte slice.
+    /// let output = cmd!("cat").input(&b"foo"[..]).read().unwrap();
+    /// assert_eq!("foo", output);
+    /// # }
+    /// # }
+    /// ```
     pub fn input<T: Into<Vec<u8>>>(&self, input: T) -> Self {
         Self::new(Io(Input(Arc::new(input.into())), self.clone()))
     }
 
+    /// Open a file at the given path and use it as input for an expression, like
+    /// `<` in the shell.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # if cfg!(not(windows)) {
+    /// // Many types implement Into<PathBuf>, including &str.
+    /// let output = sh("head -c 3").stdin("/dev/zero").read().unwrap();
+    /// assert_eq!("\0\0\0", output);
+    /// # }
+    /// ```
     pub fn stdin<T: Into<PathBuf>>(&self, path: T) -> Self {
         Self::new(Io(Stdin(path.into()), self.clone()))
     }
 
+    /// Use an already opened file as input for an expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # if cfg!(not(windows)) {
+    /// let input_file = std::fs::File::open("/dev/zero").unwrap();
+    /// let output = sh("head -c 3").stdin_file(input_file).read().unwrap();
+    /// assert_eq!("\0\0\0", output);
+    /// # }
+    /// ```
     pub fn stdin_file(&self, file: File) -> Self {
         Self::new(Io(StdinFile(file), self.clone()))
     }
 
+    /// Use `/dev/null` (or `NUL` on Windows) as input for an expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let output = cmd!("cat").stdin_null().read().unwrap();
+    /// assert_eq!("", output);
+    /// # }
+    /// # }
+    /// ```
     pub fn stdin_null(&self) -> Self {
         Self::new(Io(StdinNull, self.clone()))
     }
 
+    /// Open a file at the given path and use it as output for an expression,
+    /// like `>` in the shell.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # use std::io::prelude::*;
+    /// # if cfg!(not(windows)) {
+    /// // Many types implement Into<PathBuf>, including &str.
+    /// let path = "/tmp/duct_test_tmp.txt";
+    /// sh("echo wee").stdout(path).run().unwrap();
+    /// let mut output = String::new();
+    /// std::fs::File::open(path).unwrap().read_to_string(&mut output).unwrap();
+    /// assert_eq!("wee\n", output);
+    /// # }
+    /// ```
     pub fn stdout<T: Into<PathBuf>>(&self, path: T) -> Self {
         Self::new(Io(Stdout(path.into()), self.clone()))
     }
 
+    /// Use an already opened file as output for an expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # use std::io::prelude::*;
+    /// # if cfg!(not(windows)) {
+    /// let path = "/tmp/duct_test_tmp.txt";
+    /// let file = std::fs::File::create(path).unwrap();
+    /// sh("echo wee").stdout_file(file).run().unwrap();
+    /// let mut output = String::new();
+    /// std::fs::File::open(path).unwrap().read_to_string(&mut output).unwrap();
+    /// assert_eq!("wee\n", output);
+    /// # }
+    /// ```
     pub fn stdout_file(&self, file: File) -> Self {
         Self::new(Io(StdoutFile(file), self.clone()))
     }
 
+    /// Use `/dev/null` (or `NUL` on Windows) as output for an expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// // This echo command won't print anything.
+    /// sh("echo foo bar baz").stdout_null().run().unwrap();
+    ///
+    /// // And you won't get anything even if you try to read its output! The
+    /// // null redirect happens farther down in the expression tree than the
+    /// // implicit `stdout_capture`, and so it takes precedence.
+    /// let output = sh("echo foo bar baz").stdout_null().read().unwrap();
+    /// assert_eq!("", output);
+    /// ```
     pub fn stdout_null(&self) -> Self {
         Self::new(Io(StdoutNull, self.clone()))
     }
 
+    /// Capture the standard output of an expression. The captured bytes will be
+    /// available on the `stdout` field of the
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
+    /// object returned by [`run`](struct.Expression.html#method.run) or
+    /// [`wait`](struct.WaitHandle.html#method.wait). In the simplest cases,
+    /// [`read`](struct.Expression.html#method.read) can be more convenient.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # if cfg!(not(windows)) {
+    /// // The most direct way to read stdout bytes is `stdout_capture`.
+    /// let output1 = sh("echo foo").stdout_capture().run().unwrap().stdout;
+    /// assert_eq!(&b"foo\n"[..], &output1[..]);
+    ///
+    /// // The `read` method is a shorthand for `stdout_capture`, and it also
+    /// // does string parsing and newline trimming.
+    /// let output2 = sh("echo foo").read().unwrap();
+    /// assert_eq!("foo", output2)
+    /// # }
+    /// ```
     pub fn stdout_capture(&self) -> Self {
         Self::new(Io(StdoutCapture, self.clone()))
     }
 
+    /// Join the standard output of an expression to its standard error pipe,
+    /// similar to `1>&2` in the shell.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # if cfg!(not(windows)) {
+    /// let output = sh("echo foo").stdout_to_stderr().stderr_capture().run().unwrap();
+    /// assert_eq!(&b"foo\n"[..], &output.stderr[..]);
+    /// # }
+    /// ```
     pub fn stdout_to_stderr(&self) -> Self {
         Self::new(Io(StdoutToStderr, self.clone()))
     }
 
+    /// Open a file at the given path and use it as error output for an
+    /// expression, like `2>` in the shell.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # use std::io::prelude::*;
+    /// # if cfg!(not(windows)) {
+    /// // Many types implement Into<PathBuf>, including &str.
+    /// let path = "/tmp/duct_test_tmp.txt";
+    /// sh("echo wee >&2").stderr(path).run().unwrap();
+    /// let mut error_output = String::new();
+    /// std::fs::File::open(path).unwrap().read_to_string(&mut error_output).unwrap();
+    /// assert_eq!("wee\n", error_output);
+    /// # }
+    /// ```
     pub fn stderr<T: Into<PathBuf>>(&self, path: T) -> Self {
         Self::new(Io(Stderr(path.into()), self.clone()))
     }
 
+    /// Use an already opened file as error output for an expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # use std::io::prelude::*;
+    /// # if cfg!(not(windows)) {
+    /// let path = "/tmp/duct_test_tmp.txt";
+    /// let file = std::fs::File::create(path).unwrap();
+    /// sh("echo wee >&2").stderr_file(file).run().unwrap();
+    /// let mut error_output = String::new();
+    /// std::fs::File::open(path).unwrap().read_to_string(&mut error_output).unwrap();
+    /// assert_eq!("wee\n", error_output);
+    /// # }
+    /// ```
     pub fn stderr_file(&self, file: File) -> Self {
         Self::new(Io(StderrFile(file.into()), self.clone()))
     }
 
+    /// Use `/dev/null` (or `NUL` on Windows) as error output for an expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// // This echo-to-stderr command won't print anything.
+    /// sh("echo foo bar baz >&2").stderr_null().run().unwrap();
+    /// ```
     pub fn stderr_null(&self) -> Self {
         Self::new(Io(StderrNull, self.clone()))
     }
 
+    /// Capture the error output of an expression. The captured bytes will be
+    /// available on the `stderr` field of the `Output` object returned by
+    /// [`run`](struct.Expression.html#method.run) or
+    /// [`wait`](struct.WaitHandle.html#method.wait).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # if cfg!(not(windows)) {
+    /// let output_obj = sh("echo foo >&2").stderr_capture().run().unwrap();
+    /// assert_eq!(&b"foo\n"[..], &output_obj.stderr[..]);
+    /// # }
+    /// ```
     pub fn stderr_capture(&self) -> Self {
         Self::new(Io(StderrCapture, self.clone()))
     }
 
+    /// Join the standard error of an expression to its standard output pipe,
+    /// similar to `2>&1` in the shell.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # if cfg!(not(windows)) {
+    /// let error_output = sh("echo foo >&2").stderr_to_stdout().read().unwrap();
+    /// assert_eq!("foo", error_output);
+    /// # }
+    /// ```
     pub fn stderr_to_stdout(&self) -> Self {
         Self::new(Io(StderrToStdout, self.clone()))
     }
 
+    /// Set the working directory where the expression will execute.
+    ///
+    /// Note that in some languages (Rust and Python at least), there are tricky
+    /// platform differences in the way relative exe paths interact with child
+    /// working directories. In particular, the exe path will be interpreted
+    /// relative to the child dir on Unix, but relative to the parent dir on
+    /// Windows. `duct` considers the Windows behavior correct, so in order to
+    /// get that behavior consistently it calls
+    /// [`std::fs::canonicalize`](https://doc.rust-lang.org/std/fs/fn.canonicalize.html)
+    /// on relative exe paths when `dir` is in use. Paths in this sense are any
+    /// program name containing a path separator, regardless of the type. (Note
+    /// also that `Path` and `PathBuf` program names get a `./` prepended to
+    /// them automatically by the [`ToExecutable`](trait.ToExecutable.html)
+    /// trait, and so will always contain a separator.)
+    ///
+    /// # Errors
+    ///
+    /// Canonicalization can fail on some filesystems, or if the current
+    /// directory has been removed, and
+    /// [`run`](struct.Expression.html#method.run) will return those errors
+    /// rather than trying any sneaky workarounds.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let output = cmd!("pwd").dir("/").read().unwrap();
+    /// assert_eq!("/", output);
+    /// # }
+    /// # }
+    /// ```
     pub fn dir<T: Into<PathBuf>>(&self, path: T) -> Self {
         Self::new(Io(Dir(path.into()), self.clone()))
     }
 
+    /// Set a variable in the expression's environment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # if cfg!(not(windows)) {
+    /// let output = sh("echo $FOO").env("FOO", "bar").read().unwrap();
+    /// assert_eq!("bar", output);
+    /// # }
+    /// ```
     pub fn env<T, U>(&self, name: T, val: U) -> Self
         where T: Into<OsString>,
               U: Into<OsString>
@@ -280,6 +693,33 @@ impl Expression {
         Self::new(Io(Env(name.into(), val.into()), self.clone()))
     }
 
+    /// Set the expression's entire environment, from a collection of name-value
+    /// pairs (like a `HashMap`). You can use this method to clear specific
+    /// variables for example, by collecting the parent's enironment, removing
+    /// some names from the collection, and passing the result to `full_env`.
+    /// Note that some environment variables are required for normal program
+    /// execution (like `SystemRoot` on Windows), so copying the parent's
+    /// environment is usually preferable to starting with an empty one.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::sh;
+    /// # use std::collections::HashMap;
+    /// # if cfg!(not(windows)) {
+    /// let mut env_map: HashMap<_, _> = std::env::vars().collect();
+    /// env_map.insert("FOO".into(), "bar".into());
+    /// let output = sh("echo $FOO").full_env(env_map).read().unwrap();
+    /// assert_eq!("bar", output);
+    ///
+    /// // The IntoIterator/Into<OsString> bounds are pretty flexible. A shared
+    /// // reference works here too.
+    /// # let mut env_map: HashMap<_, _> = std::env::vars().collect();
+    /// # env_map.insert("FOO".into(), "bar".into());
+    /// let output = sh("echo $FOO").full_env(&env_map).read().unwrap();
+    /// assert_eq!("bar", output);
+    /// # }
+    /// ```
     pub fn full_env<T, U, V>(&self, name_vals: T) -> Self
         where T: IntoIterator<Item = (U, V)>,
               U: Into<OsString>,
@@ -291,6 +731,27 @@ impl Expression {
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
 
+    /// Force an expression to return a zero exit-status.
+    /// [`run`](struct.Expression.html#method.run) and friends return errors
+    /// when the exit status is non-zero, and `unchecked` is a simple way to
+    /// prevent that. (If you actually need the original status value, though,
+    /// you need to catch the error.) You can also use `unchecked` to make the
+    /// right side of a [`then`](struct.Expression.html#method.then) expression
+    /// run unconditionally.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// // Normally the `false` command (which does nothing but return a
+    /// // non-zero exit status) would short-circuit the `then` expression and
+    /// // also make `read` return an error. `unchecked` prevents this.
+    /// cmd!("false").unchecked().then(cmd!("echo", "hi")).read().unwrap();
+    /// # }
+    /// # }
+    /// ```
     pub fn unchecked(&self) -> Self {
         Self::new(Io(Unchecked, self.clone()))
     }
@@ -300,9 +761,15 @@ impl Expression {
     }
 }
 
+/// Returned by the [`start`](struct.Expression.html#method.start) method.
+/// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait) on
+/// the handle is equivalent to [`run`](struct.Expression.html#method.run).
 pub struct WaitHandle(JoinHandle<Result<Output, Error>>);
 
 impl WaitHandle {
+    /// Wait for the running expression to finish, and return its output.
+    /// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait)
+    /// is equivalent to [`run`](struct.Expression.html#method.run).
     pub fn wait(self) -> Result<Output, Error> {
         self.0.join().unwrap()
     }
@@ -556,6 +1023,14 @@ fn sanitize_exe_path<T: Into<PathBuf>>(path: T) -> PathBuf {
     }
 }
 
+/// `duct` provides several impls of this trait to handle the difference between
+/// [`Path`](https://doc.rust-lang.org/std/path/struct.Path.html)/[`PathBuf`](https://doc.rust-lang.org/std/path/struct.PathBuf.html)
+/// and other types of strings. In particular, `duct` automatically prepends a
+/// leading dot to relative paths (though not other string types) before
+/// executing them. This is required for single-component relative paths to work
+/// at all on Unix, and it prevents aliasing with programs in the global `PATH`
+/// on both Unix and Windows. See the trait bounds on [`cmd`](fn.cmd.html) and
+/// [`sh`](fn.sh.html).
 pub trait ToExecutable {
     fn to_executable(self) -> OsString;
 }
@@ -619,8 +1094,8 @@ impl<'a> ToExecutable for &'a OsString {
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    Utf8(std::str::Utf8Error),
     Status(Output),
+    Utf8(std::str::Utf8Error),
 }
 
 impl From<io::Error> for Error {
