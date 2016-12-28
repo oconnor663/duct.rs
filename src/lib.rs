@@ -31,6 +31,8 @@
 
 extern crate os_pipe;
 
+use os_pipe::FromFile;
+
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -402,11 +404,11 @@ fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExitStatus> {
 }
 
 fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
-    let pipe = os_pipe::pipe()?;
+    let (reader, writer) = os_pipe::pipe()?;
     let mut left_context = context.try_clone()?;  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-    left_context.stdout = IoValue::File(pipe.writer);
+    left_context.stdout = IoValue::File(File::from_file(writer));
     let mut right_context = context;
-    right_context.stdin = IoValue::File(pipe.reader);
+    right_context.stdin = IoValue::File(File::from_file(reader));
 
     let left_clone = Expression(left.0.clone());
     let left_joiner = std::thread::spawn(move || left_clone.0.exec(left_context));
@@ -707,7 +709,7 @@ impl IoValue {
             IoValue::ParentStdout => os_pipe::parent_stdout(),
             IoValue::ParentStderr => os_pipe::parent_stderr(),
             IoValue::Null => Ok(Stdio::null()),
-            IoValue::File(f) => Ok(os_pipe::stdio_from_file(f)),
+            IoValue::File(f) => Ok(Stdio::from_file(f)),
         }
     }
 }
@@ -715,25 +717,25 @@ impl IoValue {
 type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 
 fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
-    let os_pipe::Pipe { mut reader, writer } = os_pipe::pipe()?;
+    let (mut reader, writer) = os_pipe::pipe()?;
     let thread = std::thread::spawn(move || {
         let mut output = Vec::new();
         reader.read_to_end(&mut output)?;
         Ok(output)
     });
-    Ok((writer, thread))
+    Ok((File::from_file(writer), thread))
 }
 
 type WriterThread = JoinHandle<io::Result<()>>;
 
 fn pipe_with_writer_thread(input: &Arc<Vec<u8>>) -> io::Result<(File, WriterThread)> {
-    let os_pipe::Pipe { reader, mut writer } = os_pipe::pipe()?;
+    let (reader, mut writer) = os_pipe::pipe()?;
     let new_arc = input.clone();
     let thread = std::thread::spawn(move || {
         writer.write_all(&new_arc)?;
         Ok(())
     });
-    Ok((reader, thread))
+    Ok((File::from_file(reader), thread))
 }
 
 fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Result<()> {
@@ -765,6 +767,8 @@ fn trim_right_newlines(s: &str) -> &str {
 mod test {
     extern crate tempdir;
     use self::tempdir::TempDir;
+
+    use os_pipe::FromFile;
 
     use super::*;
     use std::collections::HashMap;
@@ -901,10 +905,10 @@ mod test {
 
     #[test]
     fn test_stderr() {
-        let mut pipe = ::os_pipe::pipe().unwrap();
-        sh("echo hi>&2").stderr_file(pipe.writer).run().unwrap();
+        let (mut reader, writer) = ::os_pipe::pipe().unwrap();
+        sh("echo hi>&2").stderr_file(File::from_file(writer)).run().unwrap();
         let mut s = String::new();
-        pipe.reader.read_to_string(&mut s).unwrap();
+        reader.read_to_string(&mut s).unwrap();
         assert_eq!(s.trim(), "hi");
     }
 
