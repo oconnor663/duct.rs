@@ -74,10 +74,6 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
-#[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
-#[cfg(windows)]
-use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 use std::thread::JoinHandle;
@@ -238,16 +234,17 @@ impl Expression {
     pub fn run(&self) -> Result<Output, Error> {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         let status = self.0.exec(context)?;
+        let is_checked_error = status.is_checked_error();
         // These unwraps propagate any panics from the other thread,
         // but regular errors return normally.
         let stdout_vec = stdout_reader.join().unwrap()?;
         let stderr_vec = stderr_reader.join().unwrap()?;
         let output = Output {
-            status: status,
+            status: status.into_inner(),
             stdout: stdout_vec,
             stderr: stderr_vec,
         };
-        if !output.status.success() {
+        if is_checked_error {
             Err(Error::Status(output))
         } else {
             Ok(output)
@@ -331,9 +328,12 @@ impl Expression {
     }
 
     /// Join two expressions into a pipe, with the standard output of the left
-    /// hooked up to the standard input of the right, like `|` in the shell.
-    /// The exit status of this expression is that of the right child if it's
-    /// non-zero, otherwise it's that of the left child.
+    /// hooked up to the standard input of the right, like `|` in the shell. If
+    /// either side of the pipe returns a non-zero exit status, that becomes the
+    /// status of the whole pipe, similar to Bash's `pipefail` option. If both
+    /// sides return non-zero, and one of them is
+    /// [`unchecked`](struct.Expression.html#method.unchecked), then the checked
+    /// side wins. Otherwise the right side wins.
     ///
     /// # Example
     ///
@@ -731,13 +731,19 @@ impl Expression {
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
 
-    /// Force an expression to return a zero exit-status.
-    /// [`run`](struct.Expression.html#method.run) and friends return errors
-    /// when the exit status is non-zero, and `unchecked` is a simple way to
-    /// prevent that. (If you actually need the original status value, though,
-    /// you need to catch the error.) You can also use `unchecked` to make the
-    /// right side of a [`then`](struct.Expression.html#method.then) expression
-    /// run unconditionally.
+    /// Prevent a non-zero exit status from short-circuiting a
+    /// [`then`](struct.Expression.html#method.then) expression or from causing
+    /// [`run`](struct.Expression.html#method.run) and friends to return an
+    /// error. The unchecked exit code will still be there on the `Output`
+    /// returned by `run`; its value doesn't change.
+    ///
+    /// "Uncheckedness" sticks to an exit code as it bubbles up through
+    /// complicated expressions, but it doesn't "infect" other exit codes. So
+    /// for example, if only one sub-expression in a pipe has `unchecked`, then
+    /// errors returned by the other side will still be checked. That said,
+    /// usually you'll just call `unchecked` right before `run`, and it'll apply
+    /// to an entire expression. This sub-expression stuff doesn't usually come
+    /// up unless you have a big pipeline built out of lots of different pieces.
     ///
     /// # Example
     ///
@@ -785,7 +791,7 @@ enum ExpressionInner {
 }
 
 impl ExpressionInner {
-    fn exec(&self, context: IoContext) -> io::Result<ExitStatus> {
+    fn exec(&self, context: IoContext) -> io::Result<ExpressionStatus> {
         match *self {
             Cmd(ref argv) => exec_argv(argv, context),
             Sh(ref command) => exec_sh(command, context),
@@ -837,7 +843,7 @@ fn maybe_canonicalize_exe_path(exe_name: &OsStr, context: &IoContext) -> io::Res
     }
 }
 
-fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
+fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExpressionStatus> {
     let exe = maybe_canonicalize_exe_path(&argv[0], &context)?;
     let mut command = Command::new(exe);
     command.args(&argv[1..]);
@@ -852,7 +858,7 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExitStatus> {
     for (name, val) in context.env {
         command.env(name, val);
     }
-    command.status()
+    command.status().map(ExpressionStatus::Checked)
 }
 
 #[cfg(unix)]
@@ -866,11 +872,14 @@ fn shell_command_argv(command: OsString) -> [OsString; 3] {
     [comspec, OsStr::new("/C").to_owned(), command]
 }
 
-fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExitStatus> {
+fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExpressionStatus> {
     exec_argv(&shell_command_argv(command.clone()), context)
 }
 
-fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
+fn exec_pipe(left: &Expression,
+             right: &Expression,
+             context: IoContext)
+             -> io::Result<ExpressionStatus> {
     let (reader, writer) = os_pipe::pipe()?;
     let mut left_context = context.try_clone()?;  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
     left_context.stdout = IoValue::File(File::from_file(writer));
@@ -882,18 +891,33 @@ fn exec_pipe(left: &Expression, right: &Expression, context: IoContext) -> io::R
     let right_result = right.0.exec(right_context);
     let left_result = left_joiner.join().unwrap();
 
+    // First return any IO errors, with the right side taking precedence.
     let right_status = right_result?;
     let left_status = left_result?;
-    if !right_status.success() {
-        Ok(right_status)
+
+    // Now return one of the two statuses. The rules of precedence are:
+    // 1) Checked errors trump unchecked errors.
+    // 2) Unchecked errors trump success.
+    // 3) All else equal, right side wins.
+    Ok(if right_status.is_checked_error() {
+        right_status
+    } else if left_status.is_checked_error() {
+        left_status
+    } else if !right_status.success() {
+        right_status
     } else {
-        Ok(left_status)
-    }
+        left_status
+    })
 }
 
-fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::Result<ExitStatus> {
+fn exec_then(left: &Expression,
+             right: &Expression,
+             context: IoContext)
+             -> io::Result<ExpressionStatus> {
     let status = left.0.exec(context.try_clone()?)?;
-    if !status.success() {
+    if status.is_checked_error() {
+        // Checked status errors are `Ok` because they're not literally IO
+        // errors, but we short circuit and bubble them up.
         Ok(status)
     } else {
         right.0.exec(context)
@@ -903,7 +927,7 @@ fn exec_then(left: &Expression, right: &Expression, context: IoContext) -> io::R
 fn exec_io(io_inner: &IoExpressionInner,
            expr: &Expression,
            context: IoContext)
-           -> io::Result<ExitStatus> {
+           -> io::Result<ExpressionStatus> {
     {
         let (new_context, maybe_writer_thread) = io_inner.update_context(context)?;
         let exec_result = expr.0.exec(new_context);
@@ -914,7 +938,7 @@ fn exec_io(io_inner: &IoExpressionInner,
         writer_result?;
         // Finally, implement unchecked() status suppression here.
         if let &Unchecked = io_inner {
-            Ok(ExitStatus::from_raw(0))
+            Ok(ExpressionStatus::Unchecked(exec_status.into_inner()))
         } else {
             Ok(exec_status)
         }
@@ -1238,6 +1262,36 @@ fn trim_right_newlines(s: &str) -> &str {
     s.trim_right_matches(|c| c == '\n' || c == '\r')
 }
 
+// This enum allows `unchecked` to keep the original non-zero exit status,
+// while suppressing the errors it would normally cause.
+enum ExpressionStatus {
+    Checked(ExitStatus),
+    Unchecked(ExitStatus),
+}
+
+impl ExpressionStatus {
+    fn into_inner(self) -> ExitStatus {
+        match self {
+            ExpressionStatus::Checked(status) => status,
+            ExpressionStatus::Unchecked(status) => status,
+        }
+    }
+
+    fn is_checked_error(&self) -> bool {
+        match *self {
+            ExpressionStatus::Checked(ref status) => !status.success(),
+            ExpressionStatus::Unchecked(_) => false,
+        }
+    }
+
+    fn success(&self) -> bool {
+        match *self {
+            ExpressionStatus::Checked(ref status) => status.success(),
+            ExpressionStatus::Unchecked(ref status) => status.success(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     extern crate tempdir;
@@ -1318,11 +1372,44 @@ mod test {
     #[test]
     fn test_unchecked() {
         let unchecked_false = false_cmd().unchecked();
+        // Unchecked errors shouldn't prevent the right side of `then` from
+        // running, and they shouldn't cause `run` to return an error.
         let output = unchecked_false.then(cmd!(path_to_exe("echo"), "waa"))
             .then(unchecked_false)
-            .read()
+            .stdout_capture()
+            .run()
             .unwrap();
-        assert_eq!("waa", output);
+        // The value of the exit code is preserved.
+        assert_eq!(1, output.status.code().unwrap());
+        assert_eq!("waa", String::from_utf8_lossy(&output.stdout).trim());
+    }
+
+    #[test]
+    fn test_unchecked_in_pipe() {
+        let zero = cmd!(path_to_exe("status"), "0");
+        let one = cmd!(path_to_exe("status"), "1");
+        let two = cmd!(path_to_exe("status"), "2");
+
+        // Right takes precedence over left.
+        let output = one.pipe(two.clone()).unchecked().run().unwrap();
+        assert_eq!(2, output.status.code().unwrap());
+
+        // Except that checked on the left takes precedence over unchecked on
+        // the right.
+        let output = one.pipe(two.unchecked()).unchecked().run().unwrap();
+        assert_eq!(1, output.status.code().unwrap());
+
+        // Right takes precedence over the left again if they're both unchecked.
+        let output = one.unchecked().pipe(two.unchecked()).unchecked().run().unwrap();
+        assert_eq!(2, output.status.code().unwrap());
+
+        // Except that if the right is a success, the left takes precedence.
+        let output = one.unchecked().pipe(zero.unchecked()).unchecked().run().unwrap();
+        assert_eq!(1, output.status.code().unwrap());
+
+        // Even if the right is checked.
+        let output = one.unchecked().pipe(zero).unchecked().run().unwrap();
+        assert_eq!(1, output.status.code().unwrap());
     }
 
     #[test]
