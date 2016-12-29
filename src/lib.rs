@@ -1468,7 +1468,12 @@ mod test {
 
     #[test]
     fn test_dir() {
-        let pwd = cmd!(path_to_exe("pwd"));
+        // This test checks the interaction of `dir` and relative exe paths.
+        // Make sure that's actually what we're testing.
+        let pwd_path = path_to_exe("pwd");
+        assert!(pwd_path.is_relative());
+
+        let pwd = cmd!(pwd_path);
 
         // First assert that ordinary commands happen in the parent's dir.
         let pwd_output = pwd.read().unwrap();
