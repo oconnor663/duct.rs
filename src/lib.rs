@@ -1353,9 +1353,12 @@ mod test {
 
     #[test]
     fn test_start() {
-        let handle = cmd!(path_to_exe("echo"), "hi").stdout_capture().start();
-        let output = handle.wait().unwrap();
-        assert_eq!("hi", str::from_utf8(&output.stdout).unwrap().trim());
+        let handle1 = cmd!(path_to_exe("echo"), "hi").stdout_capture().start();
+        let handle2 = cmd!(path_to_exe("echo"), "lo").stdout_capture().start();
+        let output1 = handle1.wait().unwrap();
+        let output2 = handle2.wait().unwrap();
+        assert_eq!("hi", str::from_utf8(&output1.stdout).unwrap().trim());
+        assert_eq!("lo", str::from_utf8(&output2.stdout).unwrap().trim());
     }
 
     #[test]
