@@ -360,11 +360,13 @@ impl Expression {
     /// # Example
     ///
     /// ```
+    /// # #[macro_use] extern crate duct;
     /// # use duct::sh;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // Both echoes share the same stdout, so both go through `sed`.
-    /// let output = sh("echo -n bar")
+    /// # // NOTE: The shell's builtin echo doesn't support -n on OSX.
+    /// let output = cmd!("echo", "-n", "bar")
     ///     .then(sh("echo baz"))
     ///     .pipe(sh("sed s/b/f/g")).read();
     /// assert_eq!("farfaz", output.unwrap());
