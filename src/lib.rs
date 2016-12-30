@@ -741,9 +741,10 @@ impl Expression {
     /// complicated expressions, but it doesn't "infect" other exit codes. So
     /// for example, if only one sub-expression in a pipe has `unchecked`, then
     /// errors returned by the other side will still be checked. That said,
-    /// usually you'll just call `unchecked` right before `run`, and it'll apply
-    /// to an entire expression. This sub-expression stuff doesn't usually come
-    /// up unless you have a big pipeline built out of lots of different pieces.
+    /// most commonly you'll just call `unchecked` right before `run`, and it'll
+    /// apply to an entire expression. This sub-expression stuff doesn't usually
+    /// come up unless you have a big pipeline built out of lots of different
+    /// pieces.
     ///
     /// # Example
     ///
