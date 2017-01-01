@@ -68,7 +68,7 @@ fn test_start() {
 #[test]
 fn test_error() {
     let result = false_cmd().run();
-    if let Err(Error::Status(output)) = result {
+    if let Err(Error(ErrorKind::Status(output), _)) = result {
         // Check that the status is non-zero.
         assert!(!output.status.success());
     } else {
@@ -127,7 +127,7 @@ fn test_pipe() {
     // Check that errors on either side are propagated.
     let result = true_cmd().pipe(false_cmd()).run();
     match result {
-        Err(Error::Status(output)) => {
+        Err(Error(ErrorKind::Status(output), _)) => {
             assert!(output.status.code().unwrap() == 1);
         }
         _ => panic!("should never get here"),
@@ -135,7 +135,7 @@ fn test_pipe() {
 
     let result = false_cmd().pipe(true_cmd()).run();
     match result {
-        Err(Error::Status(output)) => {
+        Err(Error(ErrorKind::Status(output), _)) => {
             assert!(output.status.code().unwrap() == 1);
         }
         _ => panic!("should never get here"),
@@ -150,7 +150,7 @@ fn test_then() {
     // Check that errors on either side are propagated.
     let result = true_cmd().then(false_cmd()).run();
     match result {
-        Err(Error::Status(output)) => {
+        Err(Error(ErrorKind::Status(output), _)) => {
             assert!(output.status.code().unwrap() == 1);
         }
         _ => panic!("should never get here"),
@@ -158,7 +158,7 @@ fn test_then() {
 
     let result = false_cmd().then(true_cmd()).run();
     match result {
-        Err(Error::Status(output)) => {
+        Err(Error(ErrorKind::Status(output), _)) => {
             assert!(output.status.code().unwrap() == 1);
         }
         _ => panic!("should never get here"),

@@ -65,6 +65,11 @@
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
 //! ```
 
+// `error_chain!` can recurse deeply
+#![recursion_limit = "1024"]
+#[macro_use]
+extern crate error_chain;
+
 extern crate os_pipe;
 
 use os_pipe::FromFile;
@@ -231,7 +236,7 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn run(&self) -> Result<Output, Error> {
+    pub fn run(&self) -> Result<Output> {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         let status = self.0.exec(context)?;
         let is_checked_error = status.is_checked_error();
@@ -245,7 +250,7 @@ impl Expression {
             stderr: stderr_vec,
         };
         if is_checked_error {
-            Err(Error::Status(output))
+            Err(ErrorKind::Status(output).into())
         } else {
             Ok(output)
         }
@@ -274,7 +279,7 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn read(&self) -> Result<String, Error> {
+    pub fn read(&self) -> Result<String> {
         let output = self.stdout_capture().run()?;
         let output_str = std::str::from_utf8(&output.stdout)?;
         Ok(trim_right_newlines(output_str).to_owned())
@@ -773,13 +778,13 @@ impl Expression {
 /// Returned by the [`start`](struct.Expression.html#method.start) method.
 /// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait) on
 /// the handle is equivalent to [`run`](struct.Expression.html#method.run).
-pub struct WaitHandle(JoinHandle<Result<Output, Error>>);
+pub struct WaitHandle(JoinHandle<Result<Output>>);
 
 impl WaitHandle {
     /// Wait for the running expression to finish, and return its output.
     /// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait)
     /// is equivalent to [`run`](struct.Expression.html#method.run).
-    pub fn wait(self) -> Result<Output, Error> {
+    pub fn wait(self) -> Result<Output> {
         self.0.join().unwrap()
     }
 }
@@ -1118,25 +1123,6 @@ impl<'a> ToExecutable for &'a OsString {
     }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    Io(io::Error),
-    Status(Output),
-    Utf8(std::str::Utf8Error),
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::Io(err)
-    }
-}
-
-impl From<std::str::Utf8Error> for Error {
-    fn from(err: std::str::Utf8Error) -> Error {
-        Error::Utf8(err)
-    }
-}
-
 // An IoContext represents the file descriptors child processes are talking to at execution time.
 // It's initialized in run(), with dups of the stdin/stdout/stderr pipes, and then passed down to
 // sub-expressions. Compound expressions will clone() it, and redirections will modify it.
@@ -1294,6 +1280,36 @@ impl ExpressionStatus {
         }
     }
 }
+
+mod errors {
+    fn display_exit_status(status: ::std::process::ExitStatus) -> String {
+        if cfg!(not(windows)) {
+            use std::os::unix::prelude::*;
+            if status.code().is_none() {
+                return format!("SIGNAL {}", status.signal().unwrap());
+            }
+        }
+
+        status.code().unwrap().to_string()
+    }
+
+    error_chain!{
+        errors {
+            Status(output: ::std::process::Output) {
+                description("child process returned an error code")
+                display("child process returned an error code: {}",
+                        display_exit_status(output.status))
+            }
+        }
+
+        foreign_links {
+            Io(::std::io::Error);
+            Utf8(::std::str::Utf8Error);
+        }
+    }
+}
+
+pub use errors::*;
 
 #[cfg(test)]
 mod test;

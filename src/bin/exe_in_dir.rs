@@ -72,29 +72,29 @@ fn main() {
         exit(0);
     }
 
-    // The point of this whole test is to see if the child executes at all, so
-    // we probably don't care about errors it returns. Still, it's safer to pass
-    // them along then to drop them. We probably won't write tests that hit this
-    // branch.
-    if let Err(duct::Error::Status(output)) = res {
-        let status = output.status.code().unwrap();
-        println!(r#"command "{}" exited with error code {}"#,
-                 exe_name.display(),
-                 status);
-        exit(status);
-    }
-
-    if let Err(duct::Error::Io(ioerror)) = res {
-        // Here's the error we're *really* looking for.
-        if ioerror.kind() == io::ErrorKind::NotFound {
-            println!("File not found during execution! Path sanitization is TOTALLY BROKEN!");
-            exit(1);
-        } else {
-            println!("Unexpected IO error: {:?}", ioerror);
-            exit(1);
+    match res {
+        Err(duct::Error(duct::ErrorKind::Status(output), _)) => {
+            // The point of this whole test is to see if the child executes at
+            // all, so we probably don't care about errors it returns. Still,
+            // it's safer to pass them along then to drop them. We probably
+            // won't write tests that hit this branch.
+            let status = output.status.code().unwrap();
+            println!(r#"command "{}" exited with error code {}"#,
+                     exe_name.display(),
+                     status);
+            exit(status);
         }
+        Err(duct::Error(duct::ErrorKind::Io(ioerror), _)) => {
+            // Here's the error we're *really* looking for.
+            if ioerror.kind() == io::ErrorKind::NotFound {
+                println!("File not found during execution! Path sanitization is TOTALLY BROKEN!");
+                exit(1);
+            } else {
+                println!("Unexpected IO error: {:?}", ioerror);
+                exit(1);
+            }
+        }
+        // Utf8 errors shouldn't be possible here.
+        _ => unreachable!(),
     }
-
-    // Some unexpected error? (UTF8 errors shouldn't be possible here.)
-    res.unwrap();
 }

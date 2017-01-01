@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 os_pipe = "^0.4.0"
+error-chain = "^0.7.2"
 
 [dev-dependencies]
 tempdir = "^0.3.4"
