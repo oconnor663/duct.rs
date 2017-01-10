@@ -3,13 +3,12 @@
 A cross-platform library for running child processes and building
 pipelines.
 
-`duct` wants to make shelling out in Rust as easy and flexible as it
-is in Bash. It also takes care of [tricky
-inconsistencies](https://github.com/oconnor663/duct.py/blob/master/spec.md#consistent-behavior-for-dir)
-in the way different platforms shell out. And it's a cross-language
-library; the [original
-implementation](https://github.com/oconnor663/duct.py) is in Python,
-with an identical API.
+`duct` wants to make shelling out in Rust as easy and flexible as it is in
+Bash. It takes care of [gotchas and
+inconsistencies](https://github.com/oconnor663/duct.py/blob/master/spec.md)
+in the way different platforms shell out. And it's a cross-language library;
+the [original implementation](https://github.com/oconnor663/duct.py) is in
+Python, with an identical API.
 
 - [Docs](https://docs.rs/duct)
 - [Crate](https://crates.io/crates/duct)
