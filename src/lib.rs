@@ -1280,7 +1280,7 @@ impl ExpressionStatus {
     }
 }
 
-mod errors {
+pub mod errors {
     fn display_exit_status(status: ::std::process::ExitStatus) -> String {
         if cfg!(not(windows)) {
             use std::os::unix::prelude::*;
