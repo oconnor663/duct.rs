@@ -888,7 +888,7 @@ fn exec_pipe(left: &Expression,
              context: IoContext)
              -> io::Result<ExpressionStatus> {
     let (reader, writer) = os_pipe::pipe()?;
-    let mut left_context = context.try_clone()?;  // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+    let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
     left_context.stdout = IoValue::File(File::from_file(writer));
     let mut right_context = context;
     right_context.stdin = IoValue::File(File::from_file(reader));
@@ -1281,14 +1281,17 @@ impl ExpressionStatus {
 }
 
 mod errors {
+    #[cfg(not(windows))]
     fn display_exit_status(status: ::std::process::ExitStatus) -> String {
-        if cfg!(not(windows)) {
-            use std::os::unix::prelude::*;
-            if status.code().is_none() {
-                return format!("SIGNAL {}", status.signal().unwrap());
-            }
+        use std::os::unix::prelude::*;
+        if status.code().is_none() {
+            return format!("SIGNAL {}", status.signal().unwrap());
         }
+        status.code().unwrap().to_string()
+    }
 
+    #[cfg(windows)]
+    fn display_exit_status(status: ::std::process::ExitStatus) -> String {
         status.code().unwrap().to_string()
     }
 
