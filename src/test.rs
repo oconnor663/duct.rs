@@ -10,7 +10,6 @@ use std::env::consts::EXE_EXTENSION;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
