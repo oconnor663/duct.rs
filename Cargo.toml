@@ -4,6 +4,7 @@ version = "0.7.0"
 authors = ["oconnor663@gmail.com"]
 description = "a library for creating shell pipelines"
 repository = "https://github.com/oconnor663/duct.rs"
+documentation = "https://docs.rs/duct"
 license = "MIT"
 
 [dependencies]
