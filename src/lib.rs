@@ -282,10 +282,10 @@ impl Expression {
     }
 
     /// Start running an expression, and immediately return a
-    /// [`WaitHandle`](struct.WaitHandle.html). This is equivalent to
+    /// [`Handle`](struct.Handle.html). This is equivalent to
     /// [`run`](struct.Expression.html#method.run), except it doesn't block the
-    /// current thread until you call
-    /// [`wait`](struct.WaitHandle.html#method.wait) on the handle.
+    /// current thread until you call [`wait`](struct.Handle.html#method.wait)
+    /// on the handle.
     ///
     /// # Example
     ///
@@ -299,9 +299,9 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn start(&self) -> WaitHandle {
-        // Note that this returns a `WaitHandle` directly, not an
-        // `io::Result<WaitHandle>`. That means that even IO errors that happen
+    pub fn start(&self) -> Handle {
+        // Note that this returns a `Handle` directly, not an
+        // `io::Result<Handle>`. That means that even IO errors that happen
         // during spawn (like a misspelled program name) won't show up until you
         // `wait` on the handle. The reason we can't report spawn errors
         // immediately is that it wouldn't work well with
@@ -312,7 +312,7 @@ impl Expression {
         // happen on the main thread. Instead there's a worker thread waiting on
         // the left child to finish, and it's that worker's job to spawn the
         // right child. The only way to return errors at that point is through
-        // the WaitHandle, so a "return spawn errors immediately" design would
+        // the Handle, so a "return spawn errors immediately" design would
         // be inconsistent at best.
         //
         // The problem with `pipe` is worse. Both children start immediately, so
@@ -325,7 +325,7 @@ impl Expression {
         // Implementation note: This is currently implemented with a background
         // thread, so it's not as efficient as it could be.
         let clone = Expression(self.0.clone());
-        WaitHandle(std::thread::spawn(move || clone.run()))
+        Handle(std::thread::spawn(move || clone.run()))
     }
 
     /// Join two expressions into a pipe, with the standard output of the left
@@ -521,7 +521,7 @@ impl Expression {
     /// available on the `stdout` field of the
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
     /// object returned by [`run`](struct.Expression.html#method.run) or
-    /// [`wait`](struct.WaitHandle.html#method.wait). In the simplest cases,
+    /// [`wait`](struct.Handle.html#method.wait). In the simplest cases,
     /// [`read`](struct.Expression.html#method.read) can be more convenient.
     ///
     /// # Example
@@ -622,7 +622,7 @@ impl Expression {
     /// Capture the error output of an expression. The captured bytes will be
     /// available on the `stderr` field of the `Output` object returned by
     /// [`run`](struct.Expression.html#method.run) or
-    /// [`wait`](struct.WaitHandle.html#method.wait).
+    /// [`wait`](struct.Handle.html#method.wait).
     ///
     /// # Example
     ///
@@ -784,14 +784,14 @@ impl Expression {
 }
 
 /// Returned by the [`start`](struct.Expression.html#method.start) method.
-/// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait) on
-/// the handle is equivalent to [`run`](struct.Expression.html#method.run).
-pub struct WaitHandle(JoinHandle<io::Result<Output>>);
+/// Calling `start` followed by [`wait`](struct.Handle.html#method.wait) on the
+/// handle is equivalent to [`run`](struct.Expression.html#method.run).
+pub struct Handle(JoinHandle<io::Result<Output>>);
 
-impl WaitHandle {
+impl Handle {
     /// Wait for the running expression to finish, and return its output.
-    /// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait)
-    /// is equivalent to [`run`](struct.Expression.html#method.run).
+    /// Calling `start` followed by [`wait`](struct.Handle.html#method.wait) is
+    /// equivalent to [`run`](struct.Expression.html#method.run).
     pub fn wait(self) -> io::Result<Output> {
         self.0.join().unwrap()
     }
