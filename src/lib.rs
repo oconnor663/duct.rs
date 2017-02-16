@@ -64,9 +64,12 @@
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
 //! ```
 
+// Two utility crates build mainly to work for duct.
 extern crate os_pipe;
+extern crate shared_child;
 
 use os_pipe::FromFile;
+use shared_child::SharedChild;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -293,39 +296,20 @@ impl Expression {
     /// # #[macro_use] extern crate duct;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
-    /// let handle = cmd!("echo", "hi").stdout_capture().start();
+    /// let handle = cmd!("echo", "hi").stdout_capture().start().unwrap();
     /// let output = handle.wait().unwrap();
     /// assert_eq!(b"hi\n".to_vec(), output.stdout);
     /// # }
     /// # }
     /// ```
-    pub fn start(&self) -> Handle {
-        // Note that this returns a `Handle` directly, not an
-        // `io::Result<Handle>`. That means that even IO errors that happen
-        // during spawn (like a misspelled program name) won't show up until you
-        // `wait` on the handle. The reason we can't report spawn errors
-        // immediately is that it wouldn't work well with
-        // [`then`](struct.Expression.html#method.then) and
-        // [`pipe`](struct.Expression.html#method.pipe).
-        //
-        // The problem with `then` is that spawn errors in the right child don't
-        // happen on the main thread. Instead there's a worker thread waiting on
-        // the left child to finish, and it's that worker's job to spawn the
-        // right child. The only way to return errors at that point is through
-        // the Handle, so a "return spawn errors immediately" design would
-        // be inconsistent at best.
-        //
-        // The problem with `pipe` is worse. Both children start immediately, so
-        // if a spawn error happens on the right, the left is already running.
-        // Someone has to wait on it, or we'll leak a zombie process. But the
-        // left child might take a long time to finish, and it's not ok for
-        // `start` to block. Instead, we need the caller to `wait` as usual, so
-        // that we can do this cleanup.
-        //
-        // Implementation note: This is currently implemented with a background
-        // thread, so it's not as efficient as it could be.
-        let clone = Expression(self.0.clone());
-        Handle(std::thread::spawn(move || clone.run()))
+    pub fn start(&self) -> io::Result<Handle> {
+        // TODO: SUBSTANTIAL COMMENTS ABOUT ERROR BEHAVIOR
+        let (context, stdout_reader, stderr_reader) = IoContext::new()?;
+        Ok(Handle {
+            inner: self.0.start(context)?,
+            stdout_reader: stdout_reader,
+            stderr_reader: stderr_reader,
+        })
     }
 
     /// Join two expressions into a pipe, with the standard output of the left
@@ -786,14 +770,72 @@ impl Expression {
 /// Returned by the [`start`](struct.Expression.html#method.start) method.
 /// Calling `start` followed by [`wait`](struct.Handle.html#method.wait) on the
 /// handle is equivalent to [`run`](struct.Expression.html#method.run).
-pub struct Handle(JoinHandle<io::Result<Output>>);
+pub struct Handle {
+    inner: HandleInner,
+    stdout_reader: ReaderThread,
+    stderr_reader: ReaderThread,
+}
 
 impl Handle {
-    /// Wait for the running expression to finish, and return its output.
+    /// Wait for the running expression to finish, and return its status.
     /// Calling `start` followed by [`wait`](struct.Handle.html#method.wait) is
     /// equivalent to [`run`](struct.Expression.html#method.run).
-    pub fn wait(self) -> io::Result<Output> {
-        self.0.join().unwrap()
+    pub fn wait(&self) -> io::Result<ExitStatus> {
+        let status = self.inner.wait()?;
+        if status.is_checked_error() {
+            Err(io::Error::new(io::ErrorKind::Other, status.message()))
+        } else {
+            Ok(status.status)
+        }
+    }
+
+    /// Wait for the running expression to finish, and then return a
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html) object
+    /// containing the results, including any captured output.
+    pub fn output(self) -> io::Result<Output> {
+        let status = self.inner.wait()?;
+        let stdout_vec = self.stdout_reader.join().unwrap()?;
+        let stderr_vec = self.stderr_reader.join().unwrap()?;
+        let output = Output {
+            status: status.status,
+            stdout: stdout_vec,
+            stderr: stderr_vec,
+        };
+        if status.is_checked_error() {
+            Err(io::Error::new(io::ErrorKind::Other, status.message()))
+        } else {
+            Ok(output)
+        }
+    }
+
+    /// Kill the running expression.
+    pub fn kill(&self) -> io::Result<()> {
+        self.inner.kill()
+    }
+}
+
+enum HandleInner {
+    Child(SharedChild, String), 
+    // others
+}
+
+impl HandleInner {
+    fn wait(&self) -> io::Result<ExpressionStatus> {
+        Ok(match *self {
+            HandleInner::Child(ref shared_child, ref command_string) => {
+                ExpressionStatus {
+                    status: shared_child.wait()?,
+                    checked: true,
+                    command: command_string.clone(),
+                }
+            }
+        })
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        match *self {
+            HandleInner::Child(ref shared_child, _) => shared_child.kill(),
+        }
     }
 }
 
@@ -814,6 +856,17 @@ impl ExpressionInner {
             Pipe(ref left, ref right) => exec_pipe(left, right, context),
             Then(ref left, ref right) => exec_then(left, right, context),
             Io(ref io_inner, ref expr) => exec_io(io_inner, expr, context),
+        }
+    }
+
+    fn start(&self, context: IoContext) -> io::Result<HandleInner> {
+        match *self {
+            Cmd(ref argv) => start_argv(argv, context),
+            Sh(ref command) => start_sh(command, context),
+            _ => unimplemented!(),
+            // Pipe(ref left, ref right) => start_pipe(left, right, context),
+            // Then(ref left, ref right) => start_then(left, right, context),
+            // Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
         }
     }
 }
@@ -881,6 +934,26 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExpressionStat
     })
 }
 
+fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<HandleInner> {
+    let exe = maybe_canonicalize_exe_path(&argv[0], &context)?;
+    let mut command = Command::new(exe);
+    command.args(&argv[1..]);
+    // TODO: Avoid unnecessary dup'ing here.
+    command.stdin(context.stdin.into_stdio()?);
+    command.stdout(context.stdout.into_stdio()?);
+    command.stderr(context.stderr.into_stdio()?);
+    if let Some(dir) = context.dir {
+        command.current_dir(dir);
+    }
+    command.env_clear();
+    for (name, val) in context.env {
+        command.env(name, val);
+    }
+    let shared_child = SharedChild::spawn(&mut command)?;
+    let command_string = format!("{:?}", argv);
+    Ok(HandleInner::Child(shared_child, command_string))
+}
+
 #[cfg(unix)]
 fn shell_command_argv(command: OsString) -> [OsString; 3] {
     [OsStr::new("/bin/sh").to_owned(), OsStr::new("-c").to_owned(), command]
@@ -894,6 +967,10 @@ fn shell_command_argv(command: OsString) -> [OsString; 3] {
 
 fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExpressionStatus> {
     exec_argv(&shell_command_argv(command.clone()), context)
+}
+
+fn start_sh(command: &OsString, context: IoContext) -> io::Result<HandleInner> {
+    start_argv(&shell_command_argv(command.clone()), context)
 }
 
 fn exec_pipe(left: &Expression,

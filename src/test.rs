@@ -57,10 +57,10 @@ fn test_sh() {
 
 #[test]
 fn test_start() {
-    let handle1 = cmd!(path_to_exe("echo"), "hi").stdout_capture().start();
-    let handle2 = cmd!(path_to_exe("echo"), "lo").stdout_capture().start();
-    let output1 = handle1.wait().unwrap();
-    let output2 = handle2.wait().unwrap();
+    let handle1 = cmd!(path_to_exe("echo"), "hi").stdout_capture().start().unwrap();
+    let handle2 = cmd!(path_to_exe("echo"), "lo").stdout_capture().start().unwrap();
+    let output1 = handle1.output().unwrap();
+    let output2 = handle2.output().unwrap();
     assert_eq!("hi", str::from_utf8(&output1.stdout).unwrap().trim());
     assert_eq!("lo", str::from_utf8(&output2.stdout).unwrap().trim());
 }
