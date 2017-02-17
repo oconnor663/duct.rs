@@ -815,8 +815,12 @@ impl Handle {
 }
 
 enum HandleInner {
-    Child(SharedChild, String), 
-    // others
+    Child(SharedChild, String),
+    // If the left side of a pipe fails to start, there's nothing to wait for,
+    // and we return an error immediately. But if the right side fails to start,
+    // the caller still needs to wait on the left, and we must return a handle.
+    // Thus the handle preserves the right side's errors here.
+    Pipe(Box<HandleInner>, Box<io::Result<HandleInner>>),
 }
 
 impl HandleInner {
@@ -829,12 +833,18 @@ impl HandleInner {
                     command: command_string.clone(),
                 }
             }
+            HandleInner::Pipe(ref left_handle, ref right_start_result) => {
+                wait_pipe(left_handle, right_start_result)?
+            }
         })
     }
 
     fn kill(&self) -> io::Result<()> {
         match *self {
             HandleInner::Child(ref shared_child, _) => shared_child.kill(),
+            HandleInner::Pipe(ref left_handle, ref right_start_result) => {
+                kill_pipe(left_handle, right_start_result)
+            }
         }
     }
 }
@@ -863,8 +873,8 @@ impl ExpressionInner {
         match *self {
             Cmd(ref argv) => start_argv(argv, context),
             Sh(ref command) => start_sh(command, context),
+            Pipe(ref left, ref right) => start_pipe(left, right, context),
             _ => unimplemented!(),
-            // Pipe(ref left, ref right) => start_pipe(left, right, context),
             // Then(ref left, ref right) => start_then(left, right, context),
             // Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
         }
@@ -1005,6 +1015,86 @@ fn exec_pipe(left: &Expression,
     } else {
         left_status
     })
+}
+
+fn start_pipe(left: &Expression,
+              right: &Expression,
+              context: IoContext)
+              -> io::Result<HandleInner> {
+    let (reader, writer) = os_pipe::pipe()?;
+    let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+    left_context.stdout = IoValue::File(File::from_file(writer));
+    let mut right_context = context;
+    right_context.stdin = IoValue::File(File::from_file(reader));
+
+    // Errors starting the left side just short-circuit us.
+    let left_handle = left.0.start(left_context)?;
+
+    // Now the left has started, and we *must* return a handle. No more
+    // short-circuiting.
+    let right_result = right.0.start(right_context);
+
+    Ok(HandleInner::Pipe(Box::new(left_handle), Box::new(right_result)))
+}
+
+// Waiting on a pipe expression is tricky. The right side might've failed to
+// start before we even got here. Or we might hit an error waiting on the left
+// side, before we try to wait on the right. No matter what happens, we must
+// call wait on *both* sides (if they're running), to make sure that errors on
+// one side don't cause us to leave zombie processes on the other side.
+fn wait_pipe(left_handle: &HandleInner,
+             right_start_result: &io::Result<HandleInner>)
+             -> io::Result<ExpressionStatus> {
+    // Even if the right side never started, the left side did. Wait for it.
+    // Don't short circuit until after we wait on the right side though.
+    let left_wait_result = left_handle.wait();
+
+    // Now if the right side never started at all, we just return that error,
+    // regardless of how the left turned out. (Recall that if the left never
+    // started, we won't get here at all.)
+    let right_handle = match *right_start_result {
+        Ok(ref handle) => handle,
+        Err(ref err) => return Err(clone_os_error(err)),
+    };
+
+    // The right side did start, so we need to wait on it.
+    let right_wait_result = right_handle.wait();
+
+    // Now we deal with errors from either of those waits. The left wait
+    // happened first, so that one takes precedence. Note that this is the
+    // reverse order of exit status precedence.
+    let left_status = left_wait_result?;
+    let right_status = right_wait_result?;
+
+    // Now return one of the two statuses. The rules of precedence are:
+    // 1) Checked errors trump unchecked errors.
+    // 2) Unchecked errors trump success.
+    // 3) All else equal, right side wins.
+    Ok(if right_status.is_checked_error() {
+        right_status
+    } else if left_status.is_checked_error() {
+        left_status
+    } else if !right_status.status.success() {
+        right_status
+    } else {
+        left_status
+    })
+}
+
+// As with wait_pipe, we need to call kill on both sides even if the left side
+// returns an error. But if the right side never started, we'll ignore it.
+fn kill_pipe(left_handle: &HandleInner,
+             right_start_result: &io::Result<HandleInner>)
+             -> io::Result<()> {
+    let left_kill_result = left_handle.kill();
+    if let Ok(ref right_handle) = *right_start_result {
+        let right_kill_result = right_handle.kill();
+        // As with wait, the left side happened first, so its errors take
+        // precedence.
+        left_kill_result.and(right_kill_result)
+    } else {
+        left_kill_result
+    }
 }
 
 fn exec_then(left: &Expression,
@@ -1337,6 +1427,21 @@ fn suppress_broken_pipe_errors(r: io::Result<()>) -> io::Result<()> {
 
 fn trim_right_newlines(s: &str) -> &str {
     s.trim_right_matches(|c| c == '\n' || c == '\r')
+}
+
+// io::Error doesn't implement clone directly, but errors that come from the OS
+// are actually just an i32, and we can retrieve that. If this doesn't work
+// we'll have to cobble together a crappy new error, but in debug mode we assert
+// that that isn't happening.
+fn clone_os_error(error: &io::Error) -> io::Error {
+    debug_assert!(error.raw_os_error().is_some(),
+                  "tried to clone a non-OS error");
+    if let Some(code) = error.raw_os_error() {
+        io::Error::from_raw_os_error(code)
+    } else {
+        io::Error::new(io::ErrorKind::Other,
+                       format!("failed to clone non-OS error: {:?}", error))
+    }
 }
 
 // This struct keeps track of a child exit status, whether or not it's been
