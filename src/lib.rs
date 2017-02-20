@@ -701,7 +701,7 @@ impl Expression {
 
     /// Set the expression's entire environment, from a collection of name-value
     /// pairs (like a `HashMap`). You can use this method to clear specific
-    /// variables for example, by collecting the parent's enironment, removing
+    /// variables for example, by collecting the parent's environment, removing
     /// some names from the collection, and passing the result to `full_env`.
     /// Note that some environment variables are required for normal program
     /// execution (like `SystemRoot` on Windows), so copying the parent's
