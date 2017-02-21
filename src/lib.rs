@@ -64,6 +64,8 @@
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
 //! ```
 
+extern crate lazycell;
+
 // Two utility crates build mainly to work for duct.
 extern crate os_pipe;
 extern crate shared_child;
@@ -79,7 +81,7 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 use std::thread::JoinHandle;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // enums defined below
 use ExpressionInner::*;
@@ -307,8 +309,8 @@ impl Expression {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         Ok(Handle {
             inner: self.0.start(context)?,
-            stdout_reader: stdout_reader,
-            stderr_reader: stderr_reader,
+            result: lazycell::AtomicLazyCell::new(),
+            readers: Mutex::new(Some((stdout_reader, stderr_reader))),
         })
     }
 
@@ -772,40 +774,78 @@ impl Expression {
 /// handle is equivalent to [`run`](struct.Expression.html#method.run).
 pub struct Handle {
     inner: HandleInner,
-    stdout_reader: ReaderThread,
-    stderr_reader: ReaderThread,
+    result: lazycell::AtomicLazyCell<io::Result<Output>>,
+    readers: Mutex<Option<(ReaderThread, ReaderThread)>>,
 }
 
 impl Handle {
-    /// Wait for the running expression to finish, and return its status.
-    /// Calling `start` followed by [`wait`](struct.Handle.html#method.wait) is
-    /// equivalent to [`run`](struct.Expression.html#method.run).
-    pub fn wait(&self) -> io::Result<ExitStatus> {
+    /// Wait for the running expression to finish, and return a reference to its
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
+    /// Multiple threads may wait at the same time.
+    pub fn wait(&self) -> io::Result<&Output> {
         let status = self.inner.wait()?;
-        if status.is_checked_error() {
-            Err(io::Error::new(io::ErrorKind::Other, status.message()))
-        } else {
-            Ok(status.status)
+        // The expression has exited. See if we need to collect its output
+        // result, or if another caller has already done it. Do this inside the
+        // readers lock, to avoid racing to fill the result.
+        let mut readers_lock = self.readers.lock().expect("readers lock poisoned");
+        if !self.result.filled() {
+            // We're holding the readers lock, and we're the thread that needs
+            // to collect the output. Take the reader threads and join them.
+            let (stdout_reader, stderr_reader) = readers_lock.take()
+                .expect("readers taken without filling result");
+            let stdout_result = stdout_reader.join().expect("stdout reader panic");
+            let stderr_result = stderr_reader.join().expect("stderr reader panic");
+            let final_result = match (stdout_result, stderr_result) {
+                // The highest priority result is IO errors in the reader
+                // threads.
+                (Err(err), _) | (_, Err(err)) => Err(err),
+
+                // Then checked status errors.
+                _ if status.is_checked_error() => {
+                    Err(io::Error::new(io::ErrorKind::Other, status.message()))
+                }
+
+                // And finally the successful output.
+                (Ok(stdout), Ok(stderr)) => {
+                    Ok(Output {
+                        status: status.status,
+                        stdout: stdout,
+                        stderr: stderr,
+                    })
+                }
+            };
+            self.result.fill(final_result).expect("result already filled outside the readers lock");
+        }
+        // The result has been collected, whether or not we were the caller that
+        // collected it. Return a reference.
+        match self.result.borrow().expect("result not filled") {
+            &Ok(ref output) => Ok(output),
+            &Err(ref err) => Err(clone_os_error(err)),
         }
     }
 
-    /// Wait for the running expression to finish, and then return a
-    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html) object
-    /// containing the results, including any captured output.
-    pub fn output(self) -> io::Result<Output> {
-        let status = self.inner.wait()?;
-        let stdout_vec = self.stdout_reader.join().unwrap()?;
-        let stderr_vec = self.stderr_reader.join().unwrap()?;
-        let output = Output {
-            status: status.status,
-            stdout: stdout_vec,
-            stderr: stderr_vec,
-        };
-        if status.is_checked_error() {
-            Err(io::Error::new(io::ErrorKind::Other, status.message()))
-        } else {
-            Ok(output)
+    /// Check whether the running expression is finished. If it is, return a
+    /// reference to its
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
+    /// If it's still running, return `Ok(None)`.
+    pub fn try_wait(&self) -> io::Result<Option<&Output>> {
+        if self.inner.try_wait()?.is_none() {
+            return Ok(None);
         }
+        // The expression has finished. Use a regular wait to collect the
+        // result, since it won't block now.
+        self.wait().map(Some)
+    }
+
+    /// Wait for the running expression to finish, and then return a
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
+    /// object containing the results, including any captured output. This
+    /// consumes the `Handle`. Calling `start` followed by
+    /// [`output`](struct.Handle.html#method.wait) is equivalent to
+    /// [`run`](struct.Expression.html#method.run).
+    pub fn output(self) -> io::Result<Output> {
+        self.wait()?;
+        self.result.into_inner().expect("wait didn't set the result")
     }
 
     /// Kill the running expression.
@@ -825,18 +865,21 @@ enum HandleInner {
 
 impl HandleInner {
     fn wait(&self) -> io::Result<ExpressionStatus> {
-        Ok(match *self {
+        match *self {
             HandleInner::Child(ref shared_child, ref command_string) => {
-                ExpressionStatus {
-                    status: shared_child.wait()?,
-                    checked: true,
-                    command: command_string.clone(),
-                }
+                wait_child(shared_child, command_string)
             }
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
-                wait_pipe(left_handle, right_start_result)?
+                wait_pipe(left_handle, right_start_result)
             }
-        })
+        }
+    }
+
+    fn try_wait(&self) -> io::Result<Option<ExpressionStatus>> {
+        match *self {
+            HandleInner::Child(..) => unimplemented!(),
+            HandleInner::Pipe(..) => unimplemented!(),
+        };
     }
 
     fn kill(&self) -> io::Result<()> {
@@ -981,6 +1024,14 @@ fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExpressionStatu
 
 fn start_sh(command: &OsString, context: IoContext) -> io::Result<HandleInner> {
     start_argv(&shell_command_argv(command.clone()), context)
+}
+
+fn wait_child(shared_child: &SharedChild, command_string: &str) -> io::Result<ExpressionStatus> {
+    Ok(ExpressionStatus {
+        status: shared_child.wait()?,
+        checked: true,
+        command: command_string.to_owned(),
+    })
 }
 
 fn exec_pipe(left: &Expression,
