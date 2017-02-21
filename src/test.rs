@@ -3,7 +3,7 @@ use self::tempdir::TempDir;
 
 use os_pipe::FromFile;
 
-use super::{sh, Expression, Error, ErrorKind};
+use super::{sh, Expression};
 use std::collections::HashMap;
 use std::env;
 use std::env::consts::EXE_EXTENSION;
@@ -68,9 +68,8 @@ fn test_start() {
 #[test]
 fn test_error() {
     let result = false_cmd().run();
-    if let Err(Error(ErrorKind::Status(output), _)) = result {
-        // Check that the status is non-zero.
-        assert!(!output.status.success());
+    if let Err(err) = result {
+        assert_eq!(err.kind(), io::ErrorKind::Other);
     } else {
         panic!("Expected a status error.");
     }
@@ -126,20 +125,10 @@ fn test_pipe() {
 
     // Check that errors on either side are propagated.
     let result = true_cmd().pipe(false_cmd()).run();
-    match result {
-        Err(Error(ErrorKind::Status(output), _)) => {
-            assert!(output.status.code().unwrap() == 1);
-        }
-        _ => panic!("should never get here"),
-    }
+    assert!(result.is_err());
 
     let result = false_cmd().pipe(true_cmd()).run();
-    match result {
-        Err(Error(ErrorKind::Status(output), _)) => {
-            assert!(output.status.code().unwrap() == 1);
-        }
-        _ => panic!("should never get here"),
-    }
+    assert!(result.is_err());
 }
 
 #[test]
@@ -149,20 +138,10 @@ fn test_then() {
 
     // Check that errors on either side are propagated.
     let result = true_cmd().then(false_cmd()).run();
-    match result {
-        Err(Error(ErrorKind::Status(output), _)) => {
-            assert!(output.status.code().unwrap() == 1);
-        }
-        _ => panic!("should never get here"),
-    }
+    assert!(result.is_err());
 
     let result = false_cmd().then(true_cmd()).run();
-    match result {
-        Err(Error(ErrorKind::Status(output), _)) => {
-            assert!(output.status.code().unwrap() == 1);
-        }
-        _ => panic!("should never get here"),
-    }
+    assert!(result.is_err());
 }
 
 #[test]

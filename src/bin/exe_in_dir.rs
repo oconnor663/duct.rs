@@ -66,35 +66,15 @@ fn main() {
     let res = duct::cmd(exe_name, &args_vec[2..]).run();
 
     // Check what the child did, and exit appropriately.
-
-    if res.is_ok() {
+    if let Err(err) = res {
+        if err.kind() == io::ErrorKind::NotFound {
+            println!("File not found during execution! Path sanitization is TOTALLY BROKEN!");
+            exit(1);
+        } else {
+            println!("Unexpected IO error: {:?}", err);
+            exit(1);
+        }
+    } else {
         println!("Success!");
-        exit(0);
-    }
-
-    match res {
-        Err(duct::Error(duct::ErrorKind::Status(output), _)) => {
-            // The point of this whole test is to see if the child executes at
-            // all, so we probably don't care about errors it returns. Still,
-            // it's safer to pass them along then to drop them. We probably
-            // won't write tests that hit this branch.
-            let status = output.status.code().unwrap();
-            println!(r#"command "{}" exited with error code {}"#,
-                     exe_name.display(),
-                     status);
-            exit(status);
-        }
-        Err(duct::Error(duct::ErrorKind::Io(ioerror), _)) => {
-            // Here's the error we're *really* looking for.
-            if ioerror.kind() == io::ErrorKind::NotFound {
-                println!("File not found during execution! Path sanitization is TOTALLY BROKEN!");
-                exit(1);
-            } else {
-                println!("Unexpected IO error: {:?}", ioerror);
-                exit(1);
-            }
-        }
-        // Utf8 errors shouldn't be possible here.
-        _ => unreachable!(),
     }
 }

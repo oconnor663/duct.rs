@@ -64,11 +64,6 @@
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
 //! ```
 
-// `error_chain!` can recurse deeply
-#![recursion_limit = "1024"]
-#[macro_use]
-extern crate error_chain;
-
 extern crate os_pipe;
 
 use os_pipe::FromFile;
@@ -218,10 +213,10 @@ impl Expression {
     ///
     /// In addition to all the IO errors possible with
     /// [`std::process::Command`](https://doc.rust-lang.org/std/process/struct.Command.html),
-    /// `run` will return a [`Status`](enum.Error.html) error if the exit status
-    /// of the child is non-zero. The `Output` is available through that error
-    /// type if you catch it, but if you want a non-zero exit status to be `Ok`
-    /// then you should use the
+    /// `run` will return an
+    /// [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
+    /// IO error if child returns a non-zero exit status. To suppress this error
+    /// and return an `Output` even when the exit status is non-zero, use the
     /// [`unchecked`](struct.Expression.html#method.unchecked) method.
     ///
     /// # Example
@@ -235,21 +230,20 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn run(&self) -> Result<Output> {
+    pub fn run(&self) -> io::Result<Output> {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         let status = self.0.exec(context)?;
-        let is_checked_error = status.is_checked_error();
         // These unwraps propagate any panics from the other thread,
         // but regular errors return normally.
         let stdout_vec = stdout_reader.join().unwrap()?;
         let stderr_vec = stderr_reader.join().unwrap()?;
         let output = Output {
-            status: status.into_inner(),
+            status: status.status,
             stdout: stdout_vec,
             stderr: stderr_vec,
         };
-        if is_checked_error {
-            Err(ErrorKind::Status(output).into())
+        if status.is_checked_error() {
+            Err(io::Error::new(io::ErrorKind::Other, status.message()))
         } else {
             Ok(output)
         }
@@ -263,9 +257,9 @@ impl Expression {
     /// # Errors
     ///
     /// In addition to all the errors possible with
-    /// [`run`](struct.Expression.html#method.run), `read` can return a wrapped
-    /// [`std::str::Utf8Error`](https://doc.rust-lang.org/stable/std/str/struct.Utf8Error.html)
-    /// if the output of the expression is not valid UTF-8.
+    /// [`run`](struct.Expression.html#method.run), `read` will return an
+    /// [`ErrorKind::InvalidData`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
+    /// IO error if the captured bytes aren't valid UTF-8.
     ///
     /// # Example
     ///
@@ -278,10 +272,13 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn read(&self) -> Result<String> {
+    pub fn read(&self) -> io::Result<String> {
         let output = self.stdout_capture().run()?;
-        let output_str = std::str::from_utf8(&output.stdout)?;
-        Ok(trim_right_newlines(output_str).to_owned())
+        if let Ok(output_str) = std::str::from_utf8(&output.stdout) {
+            Ok(trim_right_newlines(output_str).to_owned())
+        } else {
+            Err(io::Error::new(io::ErrorKind::InvalidData, "stdout is not valid UTF-8"))
+        }
     }
 
     /// Start running an expression, and immediately return a
@@ -777,13 +774,13 @@ impl Expression {
 /// Returned by the [`start`](struct.Expression.html#method.start) method.
 /// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait) on
 /// the handle is equivalent to [`run`](struct.Expression.html#method.run).
-pub struct WaitHandle(JoinHandle<Result<Output>>);
+pub struct WaitHandle(JoinHandle<io::Result<Output>>);
 
 impl WaitHandle {
     /// Wait for the running expression to finish, and return its output.
     /// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait)
     /// is equivalent to [`run`](struct.Expression.html#method.run).
-    pub fn wait(self) -> Result<Output> {
+    pub fn wait(self) -> io::Result<Output> {
         self.0.join().unwrap()
     }
 }
@@ -865,7 +862,11 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExpressionStat
     for (name, val) in context.env {
         command.env(name, val);
     }
-    command.status().map(ExpressionStatus::Checked)
+    Ok(ExpressionStatus {
+        status: command.status()?,
+        checked: true,
+        command: format!("{:?}", argv),
+    })
 }
 
 #[cfg(unix)]
@@ -910,7 +911,7 @@ fn exec_pipe(left: &Expression,
         right_status
     } else if left_status.is_checked_error() {
         left_status
-    } else if !right_status.success() {
+    } else if !right_status.status.success() {
         right_status
     } else {
         left_status
@@ -940,15 +941,14 @@ fn exec_io(io_inner: &IoExpressionInner,
         let exec_result = expr.0.exec(new_context);
         let writer_result = join_maybe_writer_thread(maybe_writer_thread);
         // Propagate any exec errors first.
-        let exec_status = exec_result?;
+        let mut exec_status = exec_result?;
         // Then propagate any writer thread errors.
         writer_result?;
         // Finally, implement unchecked() status suppression here.
         if let &Unchecked = io_inner {
-            Ok(ExpressionStatus::Unchecked(exec_status.into_inner()))
-        } else {
-            Ok(exec_status)
+            exec_status.checked = false;
         }
+        Ok(exec_status)
     }
 }
 
@@ -1250,68 +1250,40 @@ fn trim_right_newlines(s: &str) -> &str {
     s.trim_right_matches(|c| c == '\n' || c == '\r')
 }
 
-// This enum allows `unchecked` to keep the original non-zero exit status,
-// while suppressing the errors it would normally cause.
-enum ExpressionStatus {
-    Checked(ExitStatus),
-    Unchecked(ExitStatus),
+// This struct keeps track of a child exit status, whether or not it's been
+// unchecked(), and what the command was that gave it (for error messages).
+#[derive(Clone, Debug)]
+struct ExpressionStatus {
+    status: ExitStatus,
+    checked: bool,
+    command: String,
 }
 
 impl ExpressionStatus {
-    fn into_inner(self) -> ExitStatus {
-        match self {
-            ExpressionStatus::Checked(status) => status,
-            ExpressionStatus::Unchecked(status) => status,
-        }
-    }
-
     fn is_checked_error(&self) -> bool {
-        match *self {
-            ExpressionStatus::Checked(ref status) => !status.success(),
-            ExpressionStatus::Unchecked(_) => false,
-        }
+        self.checked && !self.status.success()
     }
 
-    fn success(&self) -> bool {
-        match *self {
-            ExpressionStatus::Checked(ref status) => status.success(),
-            ExpressionStatus::Unchecked(ref status) => status.success(),
-        }
+    fn message(&self) -> String {
+        format!("command {} exited with code {}",
+                self.command,
+                self.exit_code_string())
     }
-}
 
-mod errors {
     #[cfg(not(windows))]
-    fn display_exit_status(status: ::std::process::ExitStatus) -> String {
-        use std::os::unix::prelude::*;
-        if status.code().is_none() {
-            return format!("SIGNAL {}", status.signal().unwrap());
+    fn exit_code_string(&self) -> String {
+        use std::os::unix::process::ExitStatusExt;
+        if self.status.code().is_none() {
+            return format!("<signal {}>", self.status.signal().unwrap());
         }
-        status.code().unwrap().to_string()
+        self.status.code().unwrap().to_string()
     }
 
     #[cfg(windows)]
-    fn display_exit_status(status: ::std::process::ExitStatus) -> String {
-        status.code().unwrap().to_string()
-    }
-
-    error_chain!{
-        errors {
-            Status(output: ::std::process::Output) {
-                description("child process returned an error code")
-                display("child process returned an error code: {}",
-                        display_exit_status(output.status))
-            }
-        }
-
-        foreign_links {
-            Io(::std::io::Error);
-            Utf8(::std::str::Utf8Error);
-        }
+    fn exit_code_string(&self) -> String {
+        self.status.code().unwrap().to_string()
     }
 }
-
-pub use errors::*;
 
 #[cfg(test)]
 mod test;
