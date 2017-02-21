@@ -457,15 +457,18 @@ impl Expression {
     /// # Example
     ///
     /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
-    /// let path = "/tmp/duct_test_tmp.txt";
-    /// sh("echo wee").stdout(path).run().unwrap();
+    /// let path = cmd!("mktemp").read().unwrap();
+    /// sh("echo wee").stdout(&path).run().unwrap();
     /// let mut output = String::new();
-    /// std::fs::File::open(path).unwrap().read_to_string(&mut output).unwrap();
+    /// std::fs::File::open(&path).unwrap().read_to_string(&mut output).unwrap();
     /// assert_eq!("wee\n", output);
+    /// # }
     /// # }
     /// ```
     pub fn stdout<T: Into<PathBuf>>(&self, path: T) -> Self {
@@ -477,15 +480,18 @@ impl Expression {
     /// # Example
     ///
     /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
-    /// let path = "/tmp/duct_test_tmp.txt";
-    /// let file = std::fs::File::create(path).unwrap();
+    /// let path = cmd!("mktemp").read().unwrap();
+    /// let file = std::fs::File::create(&path).unwrap();
     /// sh("echo wee").stdout_file(file).run().unwrap();
     /// let mut output = String::new();
-    /// std::fs::File::open(path).unwrap().read_to_string(&mut output).unwrap();
+    /// std::fs::File::open(&path).unwrap().read_to_string(&mut output).unwrap();
     /// assert_eq!("wee\n", output);
+    /// # }
     /// # }
     /// ```
     pub fn stdout_file(&self, file: File) -> Self {
@@ -559,15 +565,18 @@ impl Expression {
     /// # Example
     ///
     /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
-    /// let path = "/tmp/duct_test_tmp.txt";
-    /// sh("echo wee >&2").stderr(path).run().unwrap();
+    /// let path = cmd!("mktemp").read().unwrap();
+    /// sh("echo wee >&2").stderr(&path).run().unwrap();
     /// let mut error_output = String::new();
-    /// std::fs::File::open(path).unwrap().read_to_string(&mut error_output).unwrap();
+    /// std::fs::File::open(&path).unwrap().read_to_string(&mut error_output).unwrap();
     /// assert_eq!("wee\n", error_output);
+    /// # }
     /// # }
     /// ```
     pub fn stderr<T: Into<PathBuf>>(&self, path: T) -> Self {
@@ -579,15 +588,18 @@ impl Expression {
     /// # Example
     ///
     /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
-    /// let path = "/tmp/duct_test_tmp.txt";
-    /// let file = std::fs::File::create(path).unwrap();
+    /// let path = cmd!("mktemp").read().unwrap();
+    /// let file = std::fs::File::create(&path).unwrap();
     /// sh("echo wee >&2").stderr_file(file).run().unwrap();
     /// let mut error_output = String::new();
-    /// std::fs::File::open(path).unwrap().read_to_string(&mut error_output).unwrap();
+    /// std::fs::File::open(&path).unwrap().read_to_string(&mut error_output).unwrap();
     /// assert_eq!("wee\n", error_output);
+    /// # }
     /// # }
     /// ```
     pub fn stderr_file(&self, file: File) -> Self {
