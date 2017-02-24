@@ -236,22 +236,7 @@ impl Expression {
     /// # }
     /// ```
     pub fn run(&self) -> io::Result<Output> {
-        let (context, stdout_reader, stderr_reader) = IoContext::new()?;
-        let status = self.0.exec(context)?;
-        // These unwraps propagate any panics from the other thread,
-        // but regular errors return normally.
-        let stdout_vec = stdout_reader.join().unwrap()?;
-        let stderr_vec = stderr_reader.join().unwrap()?;
-        let output = Output {
-            status: status.status,
-            stdout: stdout_vec,
-            stderr: stderr_vec,
-        };
-        if status.is_checked_error() {
-            Err(io::Error::new(io::ErrorKind::Other, status.message()))
-        } else {
-            Ok(output)
-        }
+        self.start()?.output()
     }
 
     /// Execute an expression, capture its standard output, and return the
@@ -856,11 +841,16 @@ impl Handle {
 
 enum HandleInner {
     Child(SharedChild, String),
+
     // If the left side of a pipe fails to start, there's nothing to wait for,
     // and we return an error immediately. But if the right side fails to start,
     // the caller still needs to wait on the left, and we must return a handle.
     // Thus the handle preserves the right side's errors here.
     Pipe(Box<HandleInner>, Box<io::Result<HandleInner>>),
+
+    Input(Box<HandleInner>, WriterThread),
+
+    Unchecked(Box<HandleInner>),
 }
 
 impl HandleInner {
@@ -872,6 +862,14 @@ impl HandleInner {
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
                 wait_pipe(left_handle, right_start_result)
             }
+            HandleInner::Input(ref inner_handle, ref writer_thread) => {
+                wait_input(inner_handle, writer_thread)
+            }
+            HandleInner::Unchecked(ref inner_handle) => {
+                let mut status = inner_handle.wait()?;
+                status.checked = false;
+                Ok(status)
+            }
         }
     }
 
@@ -879,7 +877,14 @@ impl HandleInner {
         match *self {
             HandleInner::Child(..) => unimplemented!(),
             HandleInner::Pipe(..) => unimplemented!(),
-        };
+            HandleInner::Input(..) => unimplemented!(),
+            HandleInner::Unchecked(ref inner_handle) => {
+                Ok(inner_handle.try_wait()?.map(|mut status| {
+                    status.checked = false;
+                    status
+                }))
+            }
+        }
     }
 
     fn kill(&self) -> io::Result<()> {
@@ -888,6 +893,8 @@ impl HandleInner {
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
                 kill_pipe(left_handle, right_start_result)
             }
+            HandleInner::Input(ref inner_handle, _) => inner_handle.kill(),
+            HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
         }
     }
 }
@@ -902,24 +909,14 @@ enum ExpressionInner {
 }
 
 impl ExpressionInner {
-    fn exec(&self, context: IoContext) -> io::Result<ExpressionStatus> {
-        match *self {
-            Cmd(ref argv) => exec_argv(argv, context),
-            Sh(ref command) => exec_sh(command, context),
-            Pipe(ref left, ref right) => exec_pipe(left, right, context),
-            Then(ref left, ref right) => exec_then(left, right, context),
-            Io(ref io_inner, ref expr) => exec_io(io_inner, expr, context),
-        }
-    }
-
     fn start(&self, context: IoContext) -> io::Result<HandleInner> {
         match *self {
             Cmd(ref argv) => start_argv(argv, context),
             Sh(ref command) => start_sh(command, context),
             Pipe(ref left, ref right) => start_pipe(left, right, context),
+            Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
             _ => unimplemented!(),
             // Then(ref left, ref right) => start_then(left, right, context),
-            // Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
         }
     }
 }
@@ -965,28 +962,6 @@ fn maybe_canonicalize_exe_path(exe_name: &OsStr, context: &IoContext) -> io::Res
     }
 }
 
-fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExpressionStatus> {
-    let exe = maybe_canonicalize_exe_path(&argv[0], &context)?;
-    let mut command = Command::new(exe);
-    command.args(&argv[1..]);
-    // TODO: Avoid unnecessary dup'ing here.
-    command.stdin(context.stdin.into_stdio()?);
-    command.stdout(context.stdout.into_stdio()?);
-    command.stderr(context.stderr.into_stdio()?);
-    if let Some(dir) = context.dir {
-        command.current_dir(dir);
-    }
-    command.env_clear();
-    for (name, val) in context.env {
-        command.env(name, val);
-    }
-    Ok(ExpressionStatus {
-        status: command.status()?,
-        checked: true,
-        command: format!("{:?}", argv),
-    })
-}
-
 fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<HandleInner> {
     let exe = maybe_canonicalize_exe_path(&argv[0], &context)?;
     let mut command = Command::new(exe);
@@ -1018,10 +993,6 @@ fn shell_command_argv(command: OsString) -> [OsString; 3] {
     [comspec, OsStr::new("/C").to_owned(), command]
 }
 
-fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExpressionStatus> {
-    exec_argv(&shell_command_argv(command.clone()), context)
-}
-
 fn start_sh(command: &OsString, context: IoContext) -> io::Result<HandleInner> {
     start_argv(&shell_command_argv(command.clone()), context)
 }
@@ -1034,38 +1005,18 @@ fn wait_child(shared_child: &SharedChild, command_string: &str) -> io::Result<Ex
     })
 }
 
-fn exec_pipe(left: &Expression,
-             right: &Expression,
-             context: IoContext)
-             -> io::Result<ExpressionStatus> {
-    let (reader, writer) = os_pipe::pipe()?;
-    let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-    left_context.stdout = IoValue::File(File::from_file(writer));
-    let mut right_context = context;
-    right_context.stdin = IoValue::File(File::from_file(reader));
-
-    let left_clone = Expression(left.0.clone());
-    let left_joiner = std::thread::spawn(move || left_clone.0.exec(left_context));
-    let right_result = right.0.exec(right_context);
-    let left_result = left_joiner.join().unwrap();
-
-    // First return any IO errors, with the right side taking precedence.
-    let right_status = right_result?;
-    let left_status = left_result?;
-
-    // Now return one of the two statuses. The rules of precedence are:
-    // 1) Checked errors trump unchecked errors.
-    // 2) Unchecked errors trump success.
-    // 3) All else equal, right side wins.
-    Ok(if right_status.is_checked_error() {
-        right_status
-    } else if left_status.is_checked_error() {
-        left_status
-    } else if !right_status.status.success() {
-        right_status
+fn try_wait_child(shared_child: &SharedChild,
+                  command_string: &str)
+                  -> io::Result<Option<ExpressionStatus>> {
+    if let Some(status) = shared_child.try_wait()? {
+        Ok(Some(ExpressionStatus {
+            status: status,
+            checked: true,
+            command: command_string.to_owned(),
+        }))
     } else {
-        left_status
-    })
+        Ok(None)
+    }
 }
 
 fn start_pipe(left: &Expression,
@@ -1117,11 +1068,51 @@ fn wait_pipe(left_handle: &HandleInner,
     let left_status = left_wait_result?;
     let right_status = right_wait_result?;
 
-    // Now return one of the two statuses. The rules of precedence are:
+    // Now return one of the two statuses.
+    Ok(pipe_status_precedence(left_status, right_status))
+}
+
+// See wait_pipe comment above.
+fn try_wait_pipe(left_handle: &HandleInner,
+                 right_start_result: &io::Result<HandleInner>)
+                 -> io::Result<Option<ExpressionStatus>> {
+    // Even if the right side never started, the left side did. Wait for it.
+    // Don't short circuit until after we wait on the right side though.
+    let left_wait_result = left_handle.try_wait();
+
+    // Now if the right side never started at all, we just return that error,
+    // regardless of how the left turned out. (Recall that if the left never
+    // started, we won't get here at all.)
+    let right_handle = match *right_start_result {
+        Ok(ref handle) => handle,
+        Err(ref err) => return Err(clone_os_error(err)),
+    };
+
+    // The right side did start, so we need to wait on it.
+    let right_wait_result = right_handle.try_wait();
+
+    // Now we deal with errors from either of those waits. The left wait
+    // happened first, so that one takes precedence. Note that this is the
+    // reverse order of exit status precedence.
+    let left_maybe_status = left_wait_result?;
+    let right_maybe_status = right_wait_result?;
+
+    // Return None if either process is still running, otherwise use the same
+    // precedence rules as wait_pipe.
+    Ok(match (left_maybe_status, right_maybe_status) {
+        (None, _) | (_, None) => None,
+        (Some(left), Some(right)) => Some(pipe_status_precedence(left, right)),
+    })
+}
+
+fn pipe_status_precedence(left_status: ExpressionStatus,
+                          right_status: ExpressionStatus)
+                          -> ExpressionStatus {
+    // The rules of precedence are:
     // 1) Checked errors trump unchecked errors.
     // 2) Unchecked errors trump success.
     // 3) All else equal, right side wins.
-    Ok(if right_status.is_checked_error() {
+    if right_status.is_checked_error() {
         right_status
     } else if left_status.is_checked_error() {
         left_status
@@ -1129,7 +1120,7 @@ fn wait_pipe(left_handle: &HandleInner,
         right_status
     } else {
         left_status
-    })
+    }
 }
 
 // As with wait_pipe, we need to call kill on both sides even if the left side
@@ -1148,37 +1139,84 @@ fn kill_pipe(left_handle: &HandleInner,
     }
 }
 
-fn exec_then(left: &Expression,
-             right: &Expression,
-             context: IoContext)
-             -> io::Result<ExpressionStatus> {
-    let status = left.0.exec(context.try_clone()?)?;
-    if status.is_checked_error() {
-        // Checked status errors are `Ok` because they're not literally IO
-        // errors, but we short circuit and bubble them up.
-        Ok(status)
-    } else {
-        right.0.exec(context)
+fn start_io(io_inner: &IoExpressionInner,
+            expr_inner: &Expression,
+            mut context: IoContext)
+            -> io::Result<HandleInner> {
+    match *io_inner {
+        Input(ref v) => {
+            let (reader, thread) = pipe_with_writer_thread(v)?;
+            context.stdin = IoValue::File(reader);
+            let inner_handle = expr_inner.0.start(context)?;
+            return Ok(HandleInner::Input(Box::new(inner_handle), thread));
+        }
+        Stdin(ref p) => {
+            context.stdin = IoValue::File(File::open(p)?);
+        }
+        StdinFile(ref f) => {
+            context.stdin = IoValue::File(f.try_clone()?);
+        }
+        StdinNull => {
+            context.stdin = IoValue::Null;
+        }
+        Stdout(ref p) => {
+            context.stdout = IoValue::File(File::create(p)?);
+        }
+        StdoutFile(ref f) => {
+            context.stdout = IoValue::File(f.try_clone()?);
+        }
+        StdoutNull => {
+            context.stdout = IoValue::Null;
+        }
+        StdoutCapture => {
+            context.stdout = IoValue::File(context.stdout_capture.try_clone()?);
+        }
+        StdoutToStderr => {
+            context.stdout = context.stderr.try_clone()?;
+        }
+        Stderr(ref p) => {
+            context.stderr = IoValue::File(File::create(p)?);
+        }
+        StderrFile(ref f) => {
+            context.stderr = IoValue::File(f.try_clone()?);
+        }
+        StderrNull => {
+            context.stderr = IoValue::Null;
+        }
+        StderrCapture => context.stderr = IoValue::File(context.stderr_capture.try_clone()?),
+        StderrToStdout => {
+            context.stderr = context.stdout.try_clone()?;
+        }
+        Dir(ref p) => {
+            context.dir = Some(p.clone());
+        }
+        Env(ref name, ref val) => {
+            context.env.insert(name.clone(), val.clone());
+        }
+        FullEnv(ref map) => {
+            context.env = map.clone();
+        }
+        Unchecked => {} // Unchecked is handled when we wait.
     }
+    expr_inner.0.start(context)
 }
 
-fn exec_io(io_inner: &IoExpressionInner,
-           expr: &Expression,
-           context: IoContext)
-           -> io::Result<ExpressionStatus> {
-    {
-        let (new_context, maybe_writer_thread) = io_inner.update_context(context)?;
-        let exec_result = expr.0.exec(new_context);
-        let writer_result = join_maybe_writer_thread(maybe_writer_thread);
-        // Propagate any exec errors first.
-        let mut exec_status = exec_result?;
-        // Then propagate any writer thread errors.
-        writer_result?;
-        // Finally, implement unchecked() status suppression here.
-        if let &Unchecked = io_inner {
-            exec_status.checked = false;
-        }
-        Ok(exec_status)
+fn wait_input(inner_handle: &HandleInner,
+              writer_thread: &WriterThread)
+              -> io::Result<ExpressionStatus> {
+    // We need to join both the running inner expression and the input thread,
+    // even if one or the other returns an error, or else we'll leave zombies.
+    let child_result = inner_handle.wait();
+    let writer_result = writer_thread.join();
+
+    // Child errors take priority. Also we ignore broken pipe errors from the
+    // writer thread, since that will happen if the child exits without reading
+    // its input.
+    let status = child_result?;
+    match writer_result {
+        &Ok(()) => Ok(status),
+        &Err(ref err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(status),
+        &Err(ref err) => Err(clone_os_error(err)),
     }
 }
 
@@ -1202,69 +1240,6 @@ enum IoExpressionInner {
     Env(OsString, OsString),
     FullEnv(HashMap<OsString, OsString>),
     Unchecked,
-}
-
-impl IoExpressionInner {
-    fn update_context(&self,
-                      mut context: IoContext)
-                      -> io::Result<(IoContext, Option<WriterThread>)> {
-        let mut maybe_thread = None;
-        match *self {
-            Input(ref v) => {
-                let (reader, thread) = pipe_with_writer_thread(v)?;
-                context.stdin = IoValue::File(reader);
-                maybe_thread = Some(thread)
-            }
-            Stdin(ref p) => {
-                context.stdin = IoValue::File(File::open(p)?);
-            }
-            StdinFile(ref f) => {
-                context.stdin = IoValue::File(f.try_clone()?);
-            }
-            StdinNull => {
-                context.stdin = IoValue::Null;
-            }
-            Stdout(ref p) => {
-                context.stdout = IoValue::File(File::create(p)?);
-            }
-            StdoutFile(ref f) => {
-                context.stdout = IoValue::File(f.try_clone()?);
-            }
-            StdoutNull => {
-                context.stdout = IoValue::Null;
-            }
-            StdoutCapture => context.stdout = IoValue::File(context.stdout_capture.try_clone()?),
-            StdoutToStderr => {
-                context.stdout = context.stderr.try_clone()?;
-            }
-            Stderr(ref p) => {
-                context.stderr = IoValue::File(File::create(p)?);
-            }
-            StderrFile(ref f) => {
-                context.stderr = IoValue::File(f.try_clone()?);
-            }
-            StderrNull => {
-                context.stderr = IoValue::Null;
-            }
-            StderrCapture => context.stderr = IoValue::File(context.stderr_capture.try_clone()?),
-            StderrToStdout => {
-                context.stderr = context.stdout.try_clone()?;
-            }
-            Dir(ref p) => {
-                context.dir = Some(p.clone());
-            }
-            Env(ref name, ref val) => {
-                context.env.insert(name.clone(), val.clone());
-            }
-            FullEnv(ref map) => {
-                context.env = map.clone();
-            }
-            Unchecked => {
-                // No-op. Unchecked is handled in exec_io().
-            }
-        }
-        Ok((context, maybe_thread))
-    }
 }
 
 // We want to allow Path("foo") to refer to the local file "./foo" on
@@ -1443,7 +1418,7 @@ fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
     Ok((File::from_file(writer), thread))
 }
 
-type WriterThread = JoinHandle<io::Result<()>>;
+type WriterThread = SharedThread<io::Result<()>>;
 
 fn pipe_with_writer_thread(input: &Arc<Vec<u8>>) -> io::Result<(File, WriterThread)> {
     let (reader, mut writer) = os_pipe::pipe()?;
@@ -1452,18 +1427,7 @@ fn pipe_with_writer_thread(input: &Arc<Vec<u8>>) -> io::Result<(File, WriterThre
         writer.write_all(&new_arc)?;
         Ok(())
     });
-    Ok((File::from_file(reader), thread))
-}
-
-fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Result<()> {
-    if let Some(thread) = maybe_writer_thread {
-        // A broken pipe error happens if the process on the other end exits before
-        // we're done writing. We ignore those but return any other errors to the
-        // caller.
-        suppress_broken_pipe_errors(thread.join().unwrap())
-    } else {
-        Ok(())
-    }
+    Ok((File::from_file(reader), SharedThread::new(thread)))
 }
 
 // This is split out to make it easier to get test coverage.
@@ -1527,6 +1491,30 @@ impl ExpressionStatus {
     #[cfg(windows)]
     fn exit_code_string(&self) -> String {
         self.status.code().unwrap().to_string()
+    }
+}
+
+struct SharedThread<T> {
+    result: lazycell::AtomicLazyCell<T>,
+    handle: Mutex<Option<JoinHandle<T>>>,
+}
+
+impl<T> SharedThread<T> {
+    fn new(handle: JoinHandle<T>) -> Self {
+        SharedThread {
+            result: lazycell::AtomicLazyCell::new(),
+            handle: Mutex::new(Some(handle)),
+        }
+    }
+
+    // If the other thread panicked, this will panic.
+    fn join(&self) -> &T {
+        let mut handle_lock = self.handle.lock().expect("shared thread handle poisoned");
+        if let Some(handle) = handle_lock.take() {
+            let ret = handle.join().expect("panic on shared thread");
+            self.result.fill(ret).map_err(|_| ()).expect("result lazycell unexpectedly full");
+        }
+        self.result.borrow().expect("result lazycell unexpectedly empty")
     }
 }
 
