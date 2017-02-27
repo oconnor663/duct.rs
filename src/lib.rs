@@ -65,6 +65,7 @@
 //! ```
 
 extern crate lazycell;
+use lazycell::AtomicLazyCell;
 
 // Two utility crates build mainly to work for duct.
 extern crate os_pipe;
@@ -294,7 +295,7 @@ impl Expression {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         Ok(Handle {
             inner: self.0.start(context)?,
-            result: lazycell::AtomicLazyCell::new(),
+            result: AtomicLazyCell::new(),
             readers: Mutex::new(Some((stdout_reader, stderr_reader))),
         })
     }
@@ -324,10 +325,13 @@ impl Expression {
 
     /// Chain two expressions together to run in series, like `&&` in the shell.
     /// If the left child returns a non-zero exit status, the right child
-    /// doesn't run. (You can use
+    /// doesn't run. You can use
     /// [`unchecked`](struct.Expression.html#method.unchecked) on the left child
-    /// to make sure the right child always runs.) The exit status of this
-    /// expression is the status of the last child that ran.
+    /// to make sure the right child always runs. The exit status of this
+    /// expression is the status of the last child that ran. Note that
+    /// [`kill`](struct.Handle.html#method.kill) will prevent the right side
+    /// from starting if it hasn't already, even if the left side is
+    /// `unchecked`.
     ///
     /// # Example
     ///
@@ -759,7 +763,7 @@ impl Expression {
 /// handle is equivalent to [`run`](struct.Expression.html#method.run).
 pub struct Handle {
     inner: HandleInner,
-    result: lazycell::AtomicLazyCell<io::Result<Output>>,
+    result: AtomicLazyCell<io::Result<Output>>,
     readers: Mutex<Option<(ReaderThread, ReaderThread)>>,
 }
 
@@ -840,16 +844,17 @@ impl Handle {
 }
 
 enum HandleInner {
+    // Cmd and Sh expressions both yield this guy.
     Child(SharedChild, String),
-
     // If the left side of a pipe fails to start, there's nothing to wait for,
     // and we return an error immediately. But if the right side fails to start,
     // the caller still needs to wait on the left, and we must return a handle.
     // Thus the handle preserves the right side's errors here.
     Pipe(Box<HandleInner>, Box<io::Result<HandleInner>>),
-
+    // Then requires a background thread to wait on the left side and start the
+    // right side.
+    Then(Arc<ThenState>, ThenWaiter),
     Input(Box<HandleInner>, WriterThread),
-
     Unchecked(Box<HandleInner>),
 }
 
@@ -861,6 +866,13 @@ impl HandleInner {
             }
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
                 wait_pipe(left_handle, right_start_result)
+            }
+            HandleInner::Then(ref then_state, ref wait_thread) => {
+                // There's already a thread waiting. Just use its result.
+                match wait_thread.join() {
+                    &Ok(ref status) => Ok(status.clone()),
+                    &Err(ref err) => Err(clone_os_error(err)),
+                }
             }
             HandleInner::Input(ref inner_handle, ref writer_thread) => {
                 wait_input(inner_handle, writer_thread)
@@ -877,6 +889,7 @@ impl HandleInner {
         match *self {
             HandleInner::Child(..) => unimplemented!(),
             HandleInner::Pipe(..) => unimplemented!(),
+            HandleInner::Then(..) => unimplemented!(),
             HandleInner::Input(..) => unimplemented!(),
             HandleInner::Unchecked(ref inner_handle) => {
                 Ok(inner_handle.try_wait()?.map(|mut status| {
@@ -893,6 +906,7 @@ impl HandleInner {
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
                 kill_pipe(left_handle, right_start_result)
             }
+            HandleInner::Then(ref then_state, _) => kill_then(then_state.clone()),
             HandleInner::Input(ref inner_handle, _) => inner_handle.kill(),
             HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
         }
@@ -914,9 +928,8 @@ impl ExpressionInner {
             Cmd(ref argv) => start_argv(argv, context),
             Sh(ref command) => start_sh(command, context),
             Pipe(ref left, ref right) => start_pipe(left, right, context),
+            Then(ref left, ref right) => start_then(left, right, context),
             Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
-            _ => unimplemented!(),
-            // Then(ref left, ref right) => start_then(left, right, context),
         }
     }
 }
@@ -1138,6 +1151,67 @@ fn kill_pipe(left_handle: &HandleInner,
         left_kill_result
     }
 }
+
+fn start_then(left: &Expression,
+              right: &Expression,
+              context: IoContext)
+              -> io::Result<HandleInner> {
+    let left_context = context.try_clone()?;
+    let left_handle = left.0.start(left_context)?;
+    let then_state = Arc::new(ThenState {
+        left_handle: left_handle,
+        right_expression: Mutex::new(Some((right.clone(), context))),
+        right_handle: AtomicLazyCell::new(),
+    });
+    let state_clone = then_state.clone();
+    let wait_thread = std::thread::spawn(move || wait_then(state_clone));
+    Ok(HandleInner::Then(then_state, SharedThread::new(wait_thread)))
+}
+
+fn wait_then(state: Arc<ThenState>) -> io::Result<ExpressionStatus> {
+    let left_status = state.left_handle.wait()?;
+    let mut expression_lock = state.right_expression.lock().unwrap();
+    if let Some((expression, context)) = expression_lock.take() {
+        let right_start_result = expression.0.start(context);
+        state.right_handle
+            .fill(right_start_result)
+            .map_err(|_| ())
+            .expect("ThenState's right handle unexpectedly filled")
+    }
+    match state.right_handle.borrow() {
+        Some(&Ok(ref handle)) => handle.wait(),
+        Some(&Err(ref err)) => Err(clone_os_error(err)),
+        // The expression was killed before starting the right side.
+        None => Ok(left_status),
+    }
+}
+
+fn kill_then(state: Arc<ThenState>) -> io::Result<()> {
+    // First lock and clear the right expression, so that it can't be started.
+    let mut expression_lock = state.right_expression.lock().unwrap();
+    *expression_lock = None;
+
+    // Kill the left side. (It might already have exited though.)
+    state.left_handle.kill()?;
+
+    // And finally kill the right if it's running.
+    if let Some(&Ok(ref handle)) = state.right_handle.borrow() {
+        handle.kill()?;
+    }
+    Ok(())
+}
+
+// TODO: Is all this really necessary?
+struct ThenState {
+    left_handle: HandleInner,
+    // Right expression gets emptied when either:
+    // 1) the right side is started, or
+    // 2) the expression is killed while the left is running
+    right_expression: Mutex<Option<(Expression, IoContext)>>,
+    right_handle: AtomicLazyCell<io::Result<HandleInner>>,
+}
+
+type ThenWaiter = SharedThread<io::Result<ExpressionStatus>>;
 
 fn start_io(io_inner: &IoExpressionInner,
             expr_inner: &Expression,
@@ -1495,14 +1569,15 @@ impl ExpressionStatus {
 }
 
 struct SharedThread<T> {
-    result: lazycell::AtomicLazyCell<T>,
+    result: AtomicLazyCell<T>,
     handle: Mutex<Option<JoinHandle<T>>>,
 }
 
+// A thread that sticks its result in a lazy cell, so that multiple callers can see it.
 impl<T> SharedThread<T> {
     fn new(handle: JoinHandle<T>) -> Self {
         SharedThread {
-            result: lazycell::AtomicLazyCell::new(),
+            result: AtomicLazyCell::new(),
             handle: Mutex::new(Some(handle)),
         }
     }
