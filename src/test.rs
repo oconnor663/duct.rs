@@ -306,15 +306,6 @@ fn test_broken_pipe() {
 }
 
 #[test]
-fn test_suppress_broken_pipe() {
-    let broken_pipe_error = Err(io::Error::new(io::ErrorKind::BrokenPipe, ""));
-    assert!(::suppress_broken_pipe_errors(broken_pipe_error).is_ok());
-
-    let other_error = Err(io::Error::new(io::ErrorKind::Other, ""));
-    assert!(::suppress_broken_pipe_errors(other_error).is_err());
-}
-
-#[test]
 fn test_silly() {
     // A silly test, purely for coverage.
     ::IoValue::Null.try_clone().unwrap();

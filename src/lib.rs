@@ -887,10 +887,26 @@ impl HandleInner {
 
     fn try_wait(&self) -> io::Result<Option<ExpressionStatus>> {
         match *self {
-            HandleInner::Child(..) => unimplemented!(),
-            HandleInner::Pipe(..) => unimplemented!(),
-            HandleInner::Then(..) => unimplemented!(),
-            HandleInner::Input(..) => unimplemented!(),
+            HandleInner::Child(ref shared_child, ref command_str) => {
+                try_wait_child(shared_child, command_str)
+            }
+            HandleInner::Pipe(ref left_handle, ref right_start_result) => {
+                try_wait_pipe(left_handle, right_start_result)
+            }
+            HandleInner::Then(ref then_state, ref wait_thread) => {
+                let maybe_status = try_wait_then(then_state.clone())?;
+                if maybe_status.is_some() {
+                    wait_thread.join();
+                }
+                Ok(maybe_status)
+            }
+            HandleInner::Input(ref inner_handle, ref writer_thread) => {
+                if inner_handle.try_wait()?.is_none() {
+                    Ok(None)
+                } else {
+                    wait_input(inner_handle, writer_thread).map(Some)
+                }
+            }
             HandleInner::Unchecked(ref inner_handle) => {
                 Ok(inner_handle.try_wait()?.map(|mut status| {
                     status.checked = false;
@@ -1170,16 +1186,41 @@ fn start_then(left: &Expression,
 
 fn wait_then(state: Arc<ThenState>) -> io::Result<ExpressionStatus> {
     let left_status = state.left_handle.wait()?;
+    if left_status.is_checked_error() {
+        return Ok(left_status);
+    }
     let mut expression_lock = state.right_expression.lock().unwrap();
     if let Some((expression, context)) = expression_lock.take() {
         let right_start_result = expression.0.start(context);
-        state.right_handle
-            .fill(right_start_result)
-            .map_err(|_| ())
-            .expect("ThenState's right handle unexpectedly filled")
+        state.right_handle.fill(right_start_result).map_err(|_| ()).unwrap();
     }
+    drop(expression_lock);
     match state.right_handle.borrow() {
         Some(&Ok(ref handle)) => handle.wait(),
+        Some(&Err(ref err)) => Err(clone_os_error(err)),
+        // The expression was killed before starting the right side.
+        None => Ok(left_status),
+    }
+}
+
+fn try_wait_then(state: Arc<ThenState>) -> io::Result<Option<ExpressionStatus>> {
+    let left_status = state.left_handle.try_wait()?;
+    match left_status {
+        Some(ref status) => {
+            if status.is_checked_error() {
+                return Ok(Some(status.clone()));
+            }
+        }
+        None => return Ok(None),
+    }
+    let mut expression_lock = state.right_expression.lock().unwrap();
+    if let Some((expression, context)) = expression_lock.take() {
+        let right_start_result = expression.0.start(context);
+        state.right_handle.fill(right_start_result).map_err(|_| ()).unwrap();
+    }
+    drop(expression_lock);
+    match state.right_handle.borrow() {
+        Some(&Ok(ref handle)) => handle.try_wait(),
         Some(&Err(ref err)) => Err(clone_os_error(err)),
         // The expression was killed before starting the right side.
         None => Ok(left_status),
@@ -1502,16 +1543,6 @@ fn pipe_with_writer_thread(input: &Arc<Vec<u8>>) -> io::Result<(File, WriterThre
         Ok(())
     });
     Ok((File::from_file(reader), SharedThread::new(thread)))
-}
-
-// This is split out to make it easier to get test coverage.
-fn suppress_broken_pipe_errors(r: io::Result<()>) -> io::Result<()> {
-    if let &Err(ref io_error) = &r {
-        if io_error.kind() == io::ErrorKind::BrokenPipe {
-            return Ok(());
-        }
-    }
-    r
 }
 
 fn trim_right_newlines(s: &str) -> &str {
