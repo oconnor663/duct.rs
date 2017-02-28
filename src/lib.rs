@@ -1549,18 +1549,12 @@ fn trim_right_newlines(s: &str) -> &str {
     s.trim_right_matches(|c| c == '\n' || c == '\r')
 }
 
-// io::Error doesn't implement clone directly, but errors that come from the OS
-// are actually just an i32, and we can retrieve that. If this doesn't work
-// we'll have to cobble together a crappy new error, but in debug mode we assert
-// that that isn't happening.
+// io::Error doesn't implement clone directly, so we kind of hack it together.
 fn clone_os_error(error: &io::Error) -> io::Error {
-    debug_assert!(error.raw_os_error().is_some(),
-                  "tried to clone a non-OS error");
     if let Some(code) = error.raw_os_error() {
         io::Error::from_raw_os_error(code)
     } else {
-        io::Error::new(io::ErrorKind::Other,
-                       format!("failed to clone non-OS error: {:?}", error))
+        io::Error::new(error.kind(), error.to_string())
     }
 }
 
