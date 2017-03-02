@@ -1187,6 +1187,10 @@ fn start_then(left: &Expression,
 fn wait_then(state: Arc<ThenState>) -> io::Result<ExpressionStatus> {
     let left_status = state.left_handle.wait()?;
     if left_status.is_checked_error() {
+        // The expression_lock contains writer pipes for the right side. If the
+        // right side isn't going to start, we must close them, or reading
+        // output will deadlock.
+        *state.right_expression.lock().unwrap() = None;
         return Ok(left_status);
     }
     let mut expression_lock = state.right_expression.lock().unwrap();
