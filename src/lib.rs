@@ -759,8 +759,13 @@ impl Expression {
 }
 
 /// Returned by the [`start`](struct.Expression.html#method.start) method.
-/// Calling `start` followed by [`wait`](struct.Handle.html#method.wait) on the
-/// handle is equivalent to [`run`](struct.Expression.html#method.run).
+/// Calling `start` followed by [`output`](struct.Handle.html#method.output) on
+/// the handle is equivalent to [`run`](struct.Expression.html#method.run). Note
+/// that unlike
+/// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
+/// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
+/// `Handle` may be shared between multiple threads. See the
+/// [`shared_child`](https://github.com/oconnor663/shared_child.rs) crate.
 pub struct Handle {
     inner: HandleInner,
     result: AtomicLazyCell<io::Result<Output>>,
@@ -829,9 +834,9 @@ impl Handle {
     /// Wait for the running expression to finish, and then return a
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
     /// object containing the results, including any captured output. This
-    /// consumes the `Handle`. Calling `start` followed by
-    /// [`output`](struct.Handle.html#method.wait) is equivalent to
-    /// [`run`](struct.Expression.html#method.run).
+    /// consumes the `Handle`. Calling
+    /// [`start`](struct.Expression.html#method.start) followed by `output` is
+    /// equivalent to [`run`](struct.Expression.html#method.run).
     pub fn output(self) -> io::Result<Output> {
         self.wait()?;
         self.result.into_inner().expect("wait didn't set the result")
