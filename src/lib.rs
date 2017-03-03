@@ -867,7 +867,7 @@ impl HandleInner {
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
                 wait_pipe(left_handle, right_start_result)
             }
-            HandleInner::Then(ref then_state, ref wait_thread) => {
+            HandleInner::Then(_, ref wait_thread) => {
                 // There's already a thread waiting. Just use its result.
                 match wait_thread.join() {
                     &Ok(ref status) => Ok(status.clone()),
@@ -1315,7 +1315,10 @@ fn start_io(io_inner: &IoExpressionInner,
         FullEnv(ref map) => {
             context.env = map.clone();
         }
-        Unchecked => {} // Unchecked is handled when we wait.
+        Unchecked => {
+            let inner_handle = expr_inner.0.start(context)?;
+            return Ok(HandleInner::Unchecked(Box::new(inner_handle)));
+        }
     }
     expr_inner.0.start(context)
 }
