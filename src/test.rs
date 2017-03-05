@@ -42,10 +42,6 @@ fn false_cmd() -> Expression {
     cmd!(path_to_exe("status"), "1")
 }
 
-fn nonexistent_cmd() -> Expression {
-    cmd!(path_to_exe("nonexistent!!!"))
-}
-
 #[test]
 fn test_cmd() {
     let output = cmd!(path_to_exe("echo"), "hi").read().unwrap();
@@ -137,12 +133,14 @@ fn test_pipe() {
 
 #[test]
 fn test_pipe_start() {
+    let nonexistent_cmd = cmd!(path_to_exe("nonexistent!!!"));
+
     // Errors starting the left side of a pipe are returned immediately.
-    let res = nonexistent_cmd().pipe(true_cmd()).start();
+    let res = nonexistent_cmd.pipe(true_cmd()).start();
     assert!(res.is_err());
 
     // Errors starting the right side are retained.
-    let handle = true_cmd().pipe(nonexistent_cmd()).start().unwrap();
+    let handle = true_cmd().pipe(nonexistent_cmd).start().unwrap();
     // But they show up during wait().
     assert!(handle.wait().is_err());
 }
@@ -182,6 +180,17 @@ fn test_then_closes_handles() {
             Some(_) => break,
         }
     }
+}
+
+#[test]
+fn test_then_with_kill() {
+    // Kill should prevent the second command from starting. Test this with two
+    // long-running commands. The first command is unchecked, so the exit status
+    // alone won't short circuit the expression.
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
+    let handle = sleep_cmd.unchecked().then(sleep_cmd.clone()).start().unwrap();
+    handle.kill().unwrap();
+    handle.wait().unwrap();
 }
 
 #[test]
