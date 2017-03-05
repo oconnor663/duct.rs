@@ -132,6 +132,15 @@ fn test_pipe() {
 }
 
 #[test]
+fn test_pipe_with_kill() {
+    // Make sure both sides get killed.
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
+    let handle = sleep_cmd.pipe(sleep_cmd.clone()).unchecked().start().unwrap();
+    handle.kill().unwrap();
+    handle.wait().unwrap();
+}
+
+#[test]
 fn test_pipe_start() {
     let nonexistent_cmd = cmd!(path_to_exe("nonexistent!!!"));
 
