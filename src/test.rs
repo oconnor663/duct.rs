@@ -42,6 +42,10 @@ fn false_cmd() -> Expression {
     cmd!(path_to_exe("status"), "1")
 }
 
+fn nonexistent_cmd() -> Expression {
+    cmd!(path_to_exe("nonexistent!!!"))
+}
+
 #[test]
 fn test_cmd() {
     let output = cmd!(path_to_exe("echo"), "hi").read().unwrap();
@@ -129,6 +133,18 @@ fn test_pipe() {
 
     let result = false_cmd().pipe(true_cmd()).run();
     assert!(result.is_err());
+}
+
+#[test]
+fn test_pipe_start() {
+    // Errors starting the left side of a pipe are returned immediately.
+    let res = nonexistent_cmd().pipe(true_cmd()).start();
+    assert!(res.is_err());
+
+    // Errors starting the right side are retained.
+    let handle = true_cmd().pipe(nonexistent_cmd()).start().unwrap();
+    // But they show up during wait().
+    assert!(handle.wait().is_err());
 }
 
 #[test]
