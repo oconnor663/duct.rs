@@ -161,6 +161,30 @@ fn test_then() {
 }
 
 #[test]
+fn test_then_closes_handles() {
+    // Run a then expression that will short circuit because of a status error
+    // on the left, and which also captures output. Waiting on it will deadlock
+    // if we fail to close the write pipes before returning.
+    let expr = false_cmd().then(true_cmd()).unchecked().stdout_capture();
+    let handle = expr.start().unwrap();
+    handle.wait().unwrap();
+
+    // Do the same thing with try_wait. Right now this will always work if the
+    // first check above worked, because wait is both running on a background
+    // thread and called by try_wait for cleanup. But its nice to test it.
+    let handle = expr.start().unwrap();
+    loop {
+        match handle.try_wait().unwrap() {
+            // We might get None a few times before the children exit, which is
+            // why we're doing this in a loop.
+            None => continue,
+            // Getting here without deadlocking is what we're testing for.
+            Some(_) => break,
+        }
+    }
+}
+
+#[test]
 fn test_input() {
     let expr = cmd!(path_to_exe("x_to_y")).input("xxx");
     let output = expr.read().unwrap();
