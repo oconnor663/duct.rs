@@ -273,10 +273,23 @@ impl Expression {
     }
 
     /// Start running an expression, and immediately return a
-    /// [`Handle`](struct.Handle.html). This is equivalent to
-    /// [`run`](struct.Expression.html#method.run), except it doesn't block the
-    /// current thread until you call [`wait`](struct.Handle.html#method.wait)
-    /// on the handle.
+    /// [`Handle`](struct.Handle.html) that represents all the child processes.
+    /// This is analogous to the
+    /// [`spawn`](https://doc.rust-lang.org/std/process/struct.Command.html#method.spawn)
+    /// method in the standard library. The `Handle` may be shared between
+    /// multiple threads.
+    ///
+    /// # Errors
+    ///
+    /// In addition to all the errors prossible with
+    /// [`std::process::Command::spawn`](https://doc.rust-lang.org/std/process/struct.Command.html#method.spawn),
+    /// `start` can return errors from opening pipes and files. However, `start`
+    /// will never return an error if a child process has already started. In
+    /// particular, if the left side of a pipe expression starts successfully,
+    /// `start` will always return `Ok`. Any errors that happen on the right
+    /// side will be saved and returned later by the wait methods. That makes it
+    /// safe for callers to short circuit on `start` errors without the risk of
+    /// leaking processes.
     ///
     /// # Example
     ///
@@ -758,14 +771,16 @@ impl Expression {
     }
 }
 
-/// Returned by the [`start`](struct.Expression.html#method.start) method.
-/// Calling `start` followed by [`output`](struct.Handle.html#method.output) on
-/// the handle is equivalent to [`run`](struct.Expression.html#method.run). Note
-/// that unlike
+/// A handle to a running expression, returned by the
+/// [`start`](struct.Expression.html#method.start) method. Calling `start`
+/// followed by [`output`](struct.Handle.html#method.output) on the handle is
+/// equivalent to [`run`](struct.Expression.html#method.run). Note that unlike
 /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
 /// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
-/// `Handle` may be shared between multiple threads. See the
-/// [`shared_child`](https://github.com/oconnor663/shared_child.rs) crate.
+/// `Handle` may be shared between multiple threads.
+///
+/// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
+/// crate for implementation details behind making handles thread safe.
 pub struct Handle {
     inner: HandleInner,
     result: AtomicLazyCell<io::Result<Output>>,
