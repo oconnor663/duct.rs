@@ -203,6 +203,40 @@ fn test_then_with_kill() {
 }
 
 #[test]
+fn test_nonblocking_waits() {
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
+    // Build a big ol' thing with pipe and then.
+    let handle = sleep_cmd.then(sleep_cmd.clone())
+        .pipe(sleep_cmd.then(sleep_cmd.clone()))
+        .unchecked()
+        .start()
+        .unwrap();
+    // Make sure try_wait doesn't block on it.
+    assert!(handle.try_wait().unwrap().is_none());
+    handle.kill().unwrap();
+    handle.wait().unwrap();
+}
+
+#[test]
+fn test_then_makes_progress() {
+    // The right side of a then expression must start even if the caller isn't
+    // waiting. This is what we use the background thread for. Read from a pipe
+    // of our own to test that both sides are writing and exiting before the
+    // wait.
+    let (mut read, write) = ::os_pipe::pipe().unwrap();
+    let handle = cmd!(path_to_exe("echo"), "hi")
+        .then(cmd!(path_to_exe("echo"), "lo"))
+        .stdout_file(File::from_file(write))
+        .start()
+        .unwrap();
+    // Read *before* waiting.
+    let mut output = String::new();
+    read.read_to_string(&mut output).unwrap();
+    assert_eq!(output, "hi\nlo\n");
+    handle.wait().unwrap();
+}
+
+#[test]
 fn test_input() {
     let expr = cmd!(path_to_exe("x_to_y")).input("xxx");
     let output = expr.read().unwrap();

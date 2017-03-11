@@ -792,7 +792,7 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// Multiple threads may wait at the same time.
     pub fn wait(&self) -> io::Result<&Output> {
-        let status = self.inner.wait()?;
+        let status = self.inner.wait(WaitMode::Blocking)?.expect("blocking wait can't return None");
         // The expression has exited. See if we need to collect its output
         // result, or if another caller has already done it. Do this inside the
         // readers lock, to avoid racing to fill the result.
@@ -829,7 +829,7 @@ impl Handle {
         // collected it. Return a reference.
         match self.result.borrow().expect("result not filled") {
             &Ok(ref output) => Ok(output),
-            &Err(ref err) => Err(clone_os_error(err)),
+            &Err(ref err) => Err(clone_io_error(err)),
         }
     }
 
@@ -838,12 +838,11 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// If it's still running, return `Ok(None)`.
     pub fn try_wait(&self) -> io::Result<Option<&Output>> {
-        if self.inner.try_wait()?.is_none() {
-            return Ok(None);
+        if self.inner.wait(WaitMode::Nonblocking)?.is_none() {
+            Ok(None)
+        } else {
+            self.wait().map(Some)
         }
-        // The expression has finished. Use a regular wait to collect the
-        // result, since it won't block now.
-        self.wait().map(Some)
     }
 
     /// Wait for the running expression to finish, and then return a
@@ -863,6 +862,12 @@ impl Handle {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum WaitMode {
+    Blocking,
+    Nonblocking,
+}
+
 enum HandleInner {
     // Cmd and Sh expressions both yield this guy.
     Child(SharedChild, String),
@@ -873,62 +878,26 @@ enum HandleInner {
     Pipe(Box<HandleInner>, Box<io::Result<HandleInner>>),
     // Then requires a background thread to wait on the left side and start the
     // right side.
-    Then(Arc<ThenState>, ThenWaiter),
+    Then(Box<ThenState>),
     Input(Box<HandleInner>, WriterThread),
     Unchecked(Box<HandleInner>),
 }
 
 impl HandleInner {
-    fn wait(&self) -> io::Result<ExpressionStatus> {
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
         match *self {
             HandleInner::Child(ref shared_child, ref command_string) => {
-                wait_child(shared_child, command_string)
+                wait_child(shared_child, command_string, mode)
             }
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
-                wait_pipe(left_handle, right_start_result)
+                wait_pipe(left_handle, right_start_result, mode)
             }
-            HandleInner::Then(_, ref wait_thread) => {
-                // There's already a thread waiting. Just use its result.
-                match wait_thread.join() {
-                    &Ok(ref status) => Ok(status.clone()),
-                    &Err(ref err) => Err(clone_os_error(err)),
-                }
-            }
+            HandleInner::Then(ref then_state) => then_state.wait(mode),
             HandleInner::Input(ref inner_handle, ref writer_thread) => {
-                wait_input(inner_handle, writer_thread)
+                wait_input(inner_handle, writer_thread, mode)
             }
             HandleInner::Unchecked(ref inner_handle) => {
-                let mut status = inner_handle.wait()?;
-                status.checked = false;
-                Ok(status)
-            }
-        }
-    }
-
-    fn try_wait(&self) -> io::Result<Option<ExpressionStatus>> {
-        match *self {
-            HandleInner::Child(ref shared_child, ref command_str) => {
-                try_wait_child(shared_child, command_str)
-            }
-            HandleInner::Pipe(ref left_handle, ref right_start_result) => {
-                try_wait_pipe(left_handle, right_start_result)
-            }
-            HandleInner::Then(ref then_state, ref wait_thread) => {
-                let maybe_status = try_wait_then(then_state.clone())?;
-                if maybe_status.is_some() {
-                    wait_thread.join();
-                }
-                Ok(maybe_status)
-            }
-            HandleInner::Input(ref inner_handle, ref writer_thread) => {
-                if inner_handle.try_wait()?.is_none() {
-                    Ok(None)
-                } else {
-                    wait_input(inner_handle, writer_thread).map(Some)
-                }
-            }
-            HandleInner::Unchecked(ref inner_handle) => {
-                Ok(inner_handle.try_wait()?.map(|mut status| {
+                Ok(inner_handle.wait(mode)?.map(|mut status| {
                     status.checked = false;
                     status
                 }))
@@ -942,7 +911,7 @@ impl HandleInner {
             HandleInner::Pipe(ref left_handle, ref right_start_result) => {
                 kill_pipe(left_handle, right_start_result)
             }
-            HandleInner::Then(ref then_state, _) => kill_then(then_state.clone()),
+            HandleInner::Then(ref then_state) => then_state.kill(),
             HandleInner::Input(ref inner_handle, _) => inner_handle.kill(),
             HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
         }
@@ -964,7 +933,9 @@ impl ExpressionInner {
             Cmd(ref argv) => start_argv(argv, context),
             Sh(ref command) => start_sh(command, context),
             Pipe(ref left, ref right) => start_pipe(left, right, context),
-            Then(ref left, ref right) => start_then(left, right, context),
+            Then(ref left, ref right) => {
+                Ok(HandleInner::Then(Box::new(ThenState::start(left, right.clone(), context)?)))
+            }
             Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
         }
     }
@@ -1046,18 +1017,15 @@ fn start_sh(command: &OsString, context: IoContext) -> io::Result<HandleInner> {
     start_argv(&shell_command_argv(command.clone()), context)
 }
 
-fn wait_child(shared_child: &SharedChild, command_string: &str) -> io::Result<ExpressionStatus> {
-    Ok(ExpressionStatus {
-        status: shared_child.wait()?,
-        checked: true,
-        command: command_string.to_owned(),
-    })
-}
-
-fn try_wait_child(shared_child: &SharedChild,
-                  command_string: &str)
-                  -> io::Result<Option<ExpressionStatus>> {
-    if let Some(status) = shared_child.try_wait()? {
+fn wait_child(shared_child: &SharedChild,
+              command_string: &str,
+              mode: WaitMode)
+              -> io::Result<Option<ExpressionStatus>> {
+    let maybe_status = match mode {
+        WaitMode::Blocking => Some(shared_child.wait()?),
+        WaitMode::Nonblocking => shared_child.try_wait()?,
+    };
+    if let Some(status) = maybe_status {
         Ok(Some(ExpressionStatus {
             status: status,
             checked: true,
@@ -1094,22 +1062,23 @@ fn start_pipe(left: &Expression,
 // call wait on *both* sides (if they're running), to make sure that errors on
 // one side don't cause us to leave zombie processes on the other side.
 fn wait_pipe(left_handle: &HandleInner,
-             right_start_result: &io::Result<HandleInner>)
-             -> io::Result<ExpressionStatus> {
+             right_start_result: &io::Result<HandleInner>,
+             mode: WaitMode)
+             -> io::Result<Option<ExpressionStatus>> {
     // Even if the right side never started, the left side did. Wait for it.
     // Don't short circuit until after we wait on the right side though.
-    let left_wait_result = left_handle.wait();
+    let left_wait_result = left_handle.wait(mode);
 
     // Now if the right side never started at all, we just return that error,
     // regardless of how the left turned out. (Recall that if the left never
     // started, we won't get here at all.)
     let right_handle = match *right_start_result {
         Ok(ref handle) => handle,
-        Err(ref err) => return Err(clone_os_error(err)),
+        Err(ref err) => return Err(clone_io_error(err)),
     };
 
     // The right side did start, so we need to wait on it.
-    let right_wait_result = right_handle.wait();
+    let right_wait_result = right_handle.wait(mode);
 
     // Now we deal with errors from either of those waits. The left wait
     // happened first, so that one takes precedence. Note that this is the
@@ -1121,47 +1090,19 @@ fn wait_pipe(left_handle: &HandleInner,
     Ok(pipe_status_precedence(left_status, right_status))
 }
 
-// See wait_pipe comment above.
-fn try_wait_pipe(left_handle: &HandleInner,
-                 right_start_result: &io::Result<HandleInner>)
-                 -> io::Result<Option<ExpressionStatus>> {
-    // Even if the right side never started, the left side did. Wait for it.
-    // Don't short circuit until after we wait on the right side though.
-    let left_wait_result = left_handle.try_wait();
-
-    // Now if the right side never started at all, we just return that error,
-    // regardless of how the left turned out. (Recall that if the left never
-    // started, we won't get here at all.)
-    let right_handle = match *right_start_result {
-        Ok(ref handle) => handle,
-        Err(ref err) => return Err(clone_os_error(err)),
+// The rules of precedence are:
+// 1) If either side unfinished, the result is unfinished.
+// 2) Checked errors trump unchecked errors.
+// 3) Any errors trump success.
+// 4) All else equal, the right side wins.
+fn pipe_status_precedence(left_maybe_status: Option<ExpressionStatus>,
+                          right_maybe_status: Option<ExpressionStatus>)
+                          -> Option<ExpressionStatus> {
+    let (left_status, right_status) = match (left_maybe_status, right_maybe_status) {
+        (Some(left), Some(right)) => (left, right),
+        _ => return None,
     };
-
-    // The right side did start, so we need to wait on it.
-    let right_wait_result = right_handle.try_wait();
-
-    // Now we deal with errors from either of those waits. The left wait
-    // happened first, so that one takes precedence. Note that this is the
-    // reverse order of exit status precedence.
-    let left_maybe_status = left_wait_result?;
-    let right_maybe_status = right_wait_result?;
-
-    // Return None if either process is still running, otherwise use the same
-    // precedence rules as wait_pipe.
-    Ok(match (left_maybe_status, right_maybe_status) {
-        (None, _) | (_, None) => None,
-        (Some(left), Some(right)) => Some(pipe_status_precedence(left, right)),
-    })
-}
-
-fn pipe_status_precedence(left_status: ExpressionStatus,
-                          right_status: ExpressionStatus)
-                          -> ExpressionStatus {
-    // The rules of precedence are:
-    // 1) Checked errors trump unchecked errors.
-    // 2) Unchecked errors trump success.
-    // 3) All else equal, right side wins.
-    if right_status.is_checked_error() {
+    Some(if right_status.is_checked_error() {
         right_status
     } else if left_status.is_checked_error() {
         left_status
@@ -1169,7 +1110,7 @@ fn pipe_status_precedence(left_status: ExpressionStatus,
         right_status
     } else {
         left_status
-    }
+    })
 }
 
 // As with wait_pipe, we need to call kill on both sides even if the left side
@@ -1188,107 +1129,151 @@ fn kill_pipe(left_handle: &HandleInner,
     }
 }
 
-fn start_then(left: &Expression,
-              right: &Expression,
-              context: IoContext)
-              -> io::Result<HandleInner> {
-    let left_context = context.try_clone()?;
-    let left_handle = left.0.start(left_context)?;
-    let then_state = Arc::new(ThenState {
-        left_handle: left_handle,
-        right_expression: Mutex::new(Some((right.clone(), context))),
-        right_handle: AtomicLazyCell::new(),
-    });
-    let state_clone = then_state.clone();
-    let wait_thread = std::thread::spawn(move || wait_then(state_clone));
-    Ok(HandleInner::Then(then_state, SharedThread::new(wait_thread)))
+// A "then" expression must start the right side as soon as the left is
+// finished, even if the original caller isn't waiting on it yet. We do that
+// with a background thread.
+struct ThenState {
+    shared_state: Arc<ThenSharedState>,
+    background_waiter: SharedThread<io::Result<ExpressionStatus>>,
 }
 
-fn wait_then(state: Arc<ThenState>) -> io::Result<ExpressionStatus> {
-    let left_status = state.left_handle.wait()?;
-    if left_status.is_checked_error() {
-        // The expression_lock contains writer pipes for the right side. If the
-        // right side isn't going to start, we must close them, or reading
-        // output will deadlock.
-        *state.right_expression.lock().unwrap() = None;
-        return Ok(left_status);
+impl ThenState {
+    fn start(left: &Expression, right: Expression, context: IoContext) -> io::Result<ThenState> {
+        let left_context = context.try_clone()?;
+        let left_handle = left.0.start(left_context)?;
+        let shared = Arc::new(ThenSharedState {
+            left_handle: left_handle,
+            right_lock: Mutex::new(Some((right, context))),
+            right_cell: AtomicLazyCell::new(),
+        });
+        let clone = shared.clone();
+        let background_waiter = std::thread::spawn(move || {
+            Ok(clone.wait(WaitMode::Blocking)?.expect("blocking wait can't return None"))
+        });
+        Ok(ThenState {
+            shared_state: shared,
+            background_waiter: SharedThread::new(background_waiter),
+        })
     }
-    let mut expression_lock = state.right_expression.lock().unwrap();
-    if let Some((expression, context)) = expression_lock.take() {
-        let right_start_result = expression.0.start(context);
-        state.right_handle.fill(right_start_result).map_err(|_| ()).unwrap();
-    }
-    drop(expression_lock);
-    match state.right_handle.borrow() {
-        Some(&Ok(ref handle)) => handle.wait(),
-        Some(&Err(ref err)) => Err(clone_os_error(err)),
-        // The expression was killed before starting the right side.
-        None => Ok(left_status),
-    }
-}
 
-fn try_wait_then(state: Arc<ThenState>) -> io::Result<Option<ExpressionStatus>> {
-    let left_status = state.left_handle.try_wait()?;
-    match left_status {
-        Some(ref status) => {
-            if status.is_checked_error() {
-                return Ok(Some(status.clone()));
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // ThenSharedState does most of the heavy lifting. We just need to join
+        // the background waiter if the expression is finished. Similar to
+        // wait_input, blocking mode *must* clean up even in the presence of
+        // errors, but we *must not* do a potentially blocking join if we're in
+        // nonblocking mode.
+        match (self.shared_state.wait(mode), mode) {
+            (Ok(None), _) => Ok(None),
+            (Ok(Some(status)), _) => {
+                self.background_waiter.join().as_ref().map_err(clone_io_error)?;
+                Ok(Some(status))
+            }
+            (Err(err), WaitMode::Blocking) => {
+                let _ = self.background_waiter.join();
+                Err(err)
+            }
+            (Err(err), WaitMode::Nonblocking) => {
+                // No potentially blocking waits in nonblocking mode!
+                Err(err)
             }
         }
-        None => return Ok(None),
     }
-    let mut expression_lock = state.right_expression.lock().unwrap();
-    if let Some((expression, context)) = expression_lock.take() {
-        let right_start_result = expression.0.start(context);
-        state.right_handle.fill(right_start_result).map_err(|_| ()).unwrap();
-    }
-    drop(expression_lock);
-    match state.right_handle.borrow() {
-        Some(&Ok(ref handle)) => handle.try_wait(),
-        Some(&Err(ref err)) => Err(clone_os_error(err)),
-        // The expression was killed before starting the right side.
-        None => Ok(left_status),
+
+    fn kill(&self) -> io::Result<()> {
+        self.shared_state.kill()
     }
 }
 
-fn kill_then(state: Arc<ThenState>) -> io::Result<()> {
-    // First lock and clear the right expression, so that it can't be started.
-    let mut expression_lock = state.right_expression.lock().unwrap();
-    *expression_lock = None;
-
-    // Kill the left side. (It might already have exited though.)
-    state.left_handle.kill()?;
-
-    // And finally kill the right if it's running.
-    if let Some(&Ok(ref handle)) = state.right_handle.borrow() {
-        handle.kill()?;
-    }
-    Ok(())
-}
-
-// TODO: Is all this really necessary?
-struct ThenState {
+// This is the state that gets shared with the background waiter thread.
+struct ThenSharedState {
     left_handle: HandleInner,
-    // Right expression gets emptied when either:
-    // 1) the right side is started, or
-    // 2) the expression is killed while the left is running
-    right_expression: Mutex<Option<(Expression, IoContext)>>,
-    right_handle: AtomicLazyCell<io::Result<HandleInner>>,
+    right_lock: Mutex<Option<(Expression, IoContext)>>,
+    right_cell: AtomicLazyCell<io::Result<HandleInner>>,
 }
 
-type ThenWaiter = SharedThread<io::Result<ExpressionStatus>>;
+impl ThenSharedState {
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // Wait for the left side to finish. If the left side hasn't finished
+        // yet (in nonblocking mode), short-circuit.
+        let left_status = match self.left_handle.wait(mode)? {
+            Some(status) => status,
+            None => return Ok(None),
+        };
+
+        // The left side has finished, so now we *must* try to take ownership of
+        // the right IoContext. If we get it, and if the left side isn't a
+        // checked error, then we'll start the right child. But no matter what,
+        // we can't leave that IoContext alive. There are write pipes in it that
+        // will deadlock the top level wait otherwise.
+        //
+        // We also need to keep holding this lock until we finish starting the
+        // right side. Kill will take the same lock, and that avoids the race
+        // condition where one thread gets the right context, kill happens, and
+        // *then* the first thread starts the right.
+        let mut right_lock_guard = self.right_lock.lock().unwrap();
+        let maybe_expression_context = right_lock_guard.take();
+
+        // Checked errors on the left side will short-circuit the right. As
+        // noted above, this will still drop the right IoContext, if any.
+        if left_status.is_checked_error() {
+            return Ok(Some(left_status));
+        }
+
+        // Now if we got the right expression above, we're responsible for
+        // starting it. Otherwise either it's already been started, or this
+        // expression has been killed.
+        if let Some((expression, context)) = maybe_expression_context {
+            let right_start_result = expression.0.start(context);
+            self.right_cell
+                .fill(right_start_result)
+                .map_err(|_| "right_cell unexpectedly filled")
+                .unwrap();
+        }
+
+        // Release the right lock. Kills may now happen on other threads. It's
+        // important that we don't hold this lock during waits.
+        drop(right_lock_guard);
+
+        // Wait on the right side, if it was started. There are two ways it
+        // might not have been started:
+        // 1) Start might've returned an error. We'll just clone it.
+        // 2) The expression might've been killed before we started the right
+        //    side. We'll return the left side's result. Note that it's possible
+        //    that the kill happened precisely in between the left exit and the
+        //    right start, in which case the left exit status could actually be
+        //    success.
+        match self.right_cell.borrow() {
+            Some(&Ok(ref handle)) => handle.wait(mode),
+            Some(&Err(ref err)) => Err(clone_io_error(err)),
+            None => Ok(Some(left_status)),
+        }
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        // Lock and clear the right context first, so that it can't be started
+        // if it hasn't been already. This is important because if the left side
+        // is unchecked, a waiting thread will ignore its killed exit status and
+        // try to start the right side anyway.
+        let mut right_lock_guard = self.right_lock.lock().unwrap();
+        *right_lock_guard = None;
+
+        // Try to kill both sides, even if the first kill fails for some reason.
+        let left_result = self.left_handle.kill();
+        if let Some(&Ok(ref handle)) = self.right_cell.borrow() {
+            let right_result = handle.kill();
+            left_result.and(right_result)
+        } else {
+            left_result
+        }
+    }
+}
 
 fn start_io(io_inner: &IoExpressionInner,
             expr_inner: &Expression,
             mut context: IoContext)
             -> io::Result<HandleInner> {
     match *io_inner {
-        Input(ref v) => {
-            let (reader, thread) = pipe_with_writer_thread(v)?;
-            context.stdin = IoValue::File(reader);
-            let inner_handle = expr_inner.0.start(context)?;
-            return Ok(HandleInner::Input(Box::new(inner_handle), thread));
-        }
+        Input(ref v) => return start_input(expr_inner, context, v.clone()),
         Stdin(ref p) => {
             context.stdin = IoValue::File(File::open(p)?);
         }
@@ -1343,22 +1328,59 @@ fn start_io(io_inner: &IoExpressionInner,
     expr_inner.0.start(context)
 }
 
-fn wait_input(inner_handle: &HandleInner,
-              writer_thread: &WriterThread)
-              -> io::Result<ExpressionStatus> {
-    // We need to join both the running inner expression and the input thread,
-    // even if one or the other returns an error, or else we'll leave zombies.
-    let child_result = inner_handle.wait();
-    let writer_result = writer_thread.join();
+fn start_input(expression: &Expression,
+               mut context: IoContext,
+               input: Arc<Vec<u8>>)
+               -> io::Result<HandleInner> {
+    let (reader, mut writer) = os_pipe::pipe()?;
+    context.stdin = IoValue::File(File::from_file(reader));
+    let inner = expression.0.start(context)?;
+    // We only spawn the writer thread if the expression started successfully,
+    // so that start errors won't leak a zombie thread.
+    let thread = std::thread::spawn(move || writer.write_all(&input));
+    Ok(HandleInner::Input(Box::new(inner), SharedThread::new(thread)))
+}
 
-    // Child errors take priority. Also we ignore broken pipe errors from the
-    // writer thread, since that will happen if the child exits without reading
-    // its input.
-    let status = child_result?;
-    match writer_result {
-        &Ok(()) => Ok(status),
-        &Err(ref err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(status),
-        &Err(ref err) => Err(clone_os_error(err)),
+fn wait_input(inner_handle: &HandleInner,
+              writer_thread: &WriterThread,
+              mode: WaitMode)
+              -> io::Result<Option<ExpressionStatus>> {
+    // We're responsible for joining the writer thread and not leaving a zombie.
+    // But waiting on the inner child can return an error, and in that case we
+    // don't know whether the child is still running or not. The rule in
+    // nonblocking mode is "clean up as much as we can, but never block," so we
+    // can't wait on the writer thread. But the rule in blocking mode is "clean
+    // up everything, even if some cleanup returns errors," so we must wait
+    // regardless of what's going on with the child.
+    match (inner_handle.wait(mode), mode) {
+        (Ok(None), _) => Ok(None),
+        (Ok(Some(status)), _) => {
+            // Join the writer thread. Broken pipe errors here are expected if
+            // the child exited without reading all of its input, so we suppress
+            // them. Return other errors though.
+            match *writer_thread.join() {
+                Ok(()) => Ok(Some(status)),
+                Err(ref err) => {
+                    if err.kind() == io::ErrorKind::BrokenPipe {
+                        Ok(Some(status))
+                    } else {
+                        Err(clone_io_error(err))
+                    }
+                }
+            }
+        }
+        (Err(err), WaitMode::Blocking) => {
+            // Who knows what's up with the child. Join the writer thread and
+            // ignore its errors, since we already have an error to report. It's
+            // ok if this blocks.
+            let _ = writer_thread.join();
+            Err(err)
+        }
+        (Err(err), WaitMode::Nonblocking) => {
+            // Who knows what's up with the child. Don't try to join the writer
+            // thread, because it could block.
+            Err(err)
+        }
     }
 }
 
@@ -1562,22 +1584,12 @@ fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
 
 type WriterThread = SharedThread<io::Result<()>>;
 
-fn pipe_with_writer_thread(input: &Arc<Vec<u8>>) -> io::Result<(File, WriterThread)> {
-    let (reader, mut writer) = os_pipe::pipe()?;
-    let new_arc = input.clone();
-    let thread = std::thread::spawn(move || {
-        writer.write_all(&new_arc)?;
-        Ok(())
-    });
-    Ok((File::from_file(reader), SharedThread::new(thread)))
-}
-
 fn trim_right_newlines(s: &str) -> &str {
     s.trim_right_matches(|c| c == '\n' || c == '\r')
 }
 
 // io::Error doesn't implement clone directly, so we kind of hack it together.
-fn clone_os_error(error: &io::Error) -> io::Error {
+fn clone_io_error(error: &io::Error) -> io::Error {
     if let Some(code) = error.raw_os_error() {
         io::Error::from_raw_os_error(code)
     } else {
@@ -1639,7 +1651,7 @@ impl<T> SharedThread<T> {
         let mut handle_lock = self.handle.lock().expect("shared thread handle poisoned");
         if let Some(handle) = handle_lock.take() {
             let ret = handle.join().expect("panic on shared thread");
-            self.result.fill(ret).map_err(|_| ()).expect("result lazycell unexpectedly full");
+            self.result.fill(ret).map_err(|_| "result lazycell unexpectedly full").unwrap();
         }
         self.result.borrow().expect("result lazycell unexpectedly empty")
     }
