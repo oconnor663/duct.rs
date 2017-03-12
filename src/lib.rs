@@ -941,49 +941,8 @@ impl ExpressionInner {
     }
 }
 
-fn maybe_canonicalize_exe_path(exe_name: &OsStr, context: &IoContext) -> io::Result<OsString> {
-    // There's a tricky interaction between exe paths and `dir`. Exe
-    // paths can be relative, and so we have to ask: Is an exe path
-    // interpreted relative to the parent's cwd, or the child's? The
-    // answer is that it's platform dependent! >.< (Windows uses the
-    // parent's cwd, but because of the fork-chdir-exec pattern, Unix
-    // usually uses the child's.)
-    //
-    // We want to use the parent's cwd consistently, because that saves
-    // the caller from having to worry about whether `dir` will have
-    // side effects, and because it's easy for the caller to use
-    // Path::join if they want to. That means that when `dir` is in use,
-    // we need to detect exe names that are relative paths, and
-    // absolutify them. We want to do that as little as possible though,
-    // both because canonicalization can fail, and because we prefer to
-    // let the caller control the child's argv[0].
-    //
-    // We never want to absolutify a name like "emacs", because that's
-    // probably a program in the PATH rather than a local file. So we
-    // look for slashes in the name to determine what's a filepath and
-    // what isn't. Note that anything given as a std::path::Path will
-    // always have a slash by the time we get here, because we
-    // specialize the ToExecutable trait to prepend a ./ to them when
-    // they're relative. This leaves the case where Windows users might
-    // pass a local file like "foo.bat" as a string, which we can't
-    // distinguish from a global program name. However, because the
-    // Windows has the preferred "relative to parent's cwd" behavior
-    // already, this case actually works without our help. (The thing
-    // Windows users have to watch out for instead is local files
-    // shadowing global program names, which I don't think we can or
-    // should prevent.)
-
-    let has_separator = exe_name.to_string_lossy().chars().any(std::path::is_separator);
-    let is_relative = Path::new(exe_name).is_relative();
-    if context.dir.is_some() && has_separator && is_relative {
-        Path::new(exe_name).canonicalize().map(Into::into)
-    } else {
-        Ok(exe_name.to_owned())
-    }
-}
-
 fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<HandleInner> {
-    let exe = maybe_canonicalize_exe_path(&argv[0], &context)?;
+    let exe = canonicalize_exe_path_for_dir(&argv[0], &context)?;
     let mut command = Command::new(exe);
     command.args(&argv[1..]);
     // TODO: Avoid unnecessary dup'ing here.
@@ -1406,91 +1365,6 @@ enum IoExpressionInner {
     Unchecked,
 }
 
-// We want to allow Path("foo") to refer to the local file "./foo" on
-// Unix, and we want to *prevent* Path("echo") from referring to the
-// global "echo" command on either Unix or Windows. Prepend a dot to all
-// relative paths to accomplish both of those.
-fn sanitize_exe_path<T: Into<PathBuf>>(path: T) -> PathBuf {
-    let path_buf = path.into();
-    // Don't try to be too clever with checking parent(). The parent of "foo" is
-    // Some(""). See https://github.com/rust-lang/rust/issues/36861. Also we
-    // don't strictly need the has_root check, because joining a leading dot is
-    // a no-op in that case, but explicitly checking it is clearer.
-    if path_buf.is_absolute() || path_buf.has_root() {
-        path_buf
-    } else {
-        Path::new(".").join(path_buf)
-    }
-}
-
-/// `duct` provides several impls of this trait to handle the difference between
-/// [`Path`](https://doc.rust-lang.org/std/path/struct.Path.html)/[`PathBuf`](https://doc.rust-lang.org/std/path/struct.PathBuf.html)
-/// and other types of strings. In particular, `duct` automatically prepends a
-/// leading dot to relative paths (though not other string types) before
-/// executing them. This is required for single-component relative paths to work
-/// at all on Unix, and it prevents aliasing with programs in the global `PATH`
-/// on both Unix and Windows. See the trait bounds on [`cmd`](fn.cmd.html) and
-/// [`sh`](fn.sh.html).
-pub trait ToExecutable {
-    fn to_executable(self) -> OsString;
-}
-
-// TODO: Get rid of most of these impls once specialization lands.
-
-impl<'a> ToExecutable for &'a Path {
-    fn to_executable(self) -> OsString {
-        sanitize_exe_path(self).into()
-    }
-}
-
-impl ToExecutable for PathBuf {
-    fn to_executable(self) -> OsString {
-        sanitize_exe_path(self).into()
-    }
-}
-
-impl<'a> ToExecutable for &'a PathBuf {
-    fn to_executable(self) -> OsString {
-        sanitize_exe_path(&**self).into()
-    }
-}
-
-impl<'a> ToExecutable for &'a str {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl ToExecutable for String {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl<'a> ToExecutable for &'a String {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl<'a> ToExecutable for &'a OsStr {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl ToExecutable for OsString {
-    fn to_executable(self) -> OsString {
-        self
-    }
-}
-
-impl<'a> ToExecutable for &'a OsString {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
 // An IoContext represents the file descriptors child processes are talking to at execution time.
 // It's initialized in run(), with dups of the stdin/stdout/stderr pipes, and then passed down to
 // sub-expressions. Compound expressions will clone() it, and redirections will modify it.
@@ -1570,33 +1444,6 @@ impl IoValue {
     }
 }
 
-type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
-
-fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
-    let (mut reader, writer) = os_pipe::pipe()?;
-    let thread = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output)?;
-        Ok(output)
-    });
-    Ok((File::from_file(writer), thread))
-}
-
-type WriterThread = SharedThread<io::Result<()>>;
-
-fn trim_right_newlines(s: &str) -> &str {
-    s.trim_right_matches(|c| c == '\n' || c == '\r')
-}
-
-// io::Error doesn't implement clone directly, so we kind of hack it together.
-fn clone_io_error(error: &io::Error) -> io::Error {
-    if let Some(code) = error.raw_os_error() {
-        io::Error::from_raw_os_error(code)
-    } else {
-        io::Error::new(error.kind(), error.to_string())
-    }
-}
-
 // This struct keeps track of a child exit status, whether or not it's been
 // unchecked(), and what the command was that gave it (for error messages).
 #[derive(Clone, Debug)]
@@ -1629,6 +1476,151 @@ impl ExpressionStatus {
     #[cfg(windows)]
     fn exit_code_string(&self) -> String {
         self.status.code().unwrap().to_string()
+    }
+}
+
+fn canonicalize_exe_path_for_dir(exe_name: &OsStr, context: &IoContext) -> io::Result<OsString> {
+    // There's a tricky interaction between exe paths and `dir`. Exe
+    // paths can be relative, and so we have to ask: Is an exe path
+    // interpreted relative to the parent's cwd, or the child's? The
+    // answer is that it's platform dependent! >.< (Windows uses the
+    // parent's cwd, but because of the fork-chdir-exec pattern, Unix
+    // usually uses the child's.)
+    //
+    // We want to use the parent's cwd consistently, because that saves
+    // the caller from having to worry about whether `dir` will have
+    // side effects, and because it's easy for the caller to use
+    // Path::join if they want to. That means that when `dir` is in use,
+    // we need to detect exe names that are relative paths, and
+    // absolutify them. We want to do that as little as possible though,
+    // both because canonicalization can fail, and because we prefer to
+    // let the caller control the child's argv[0].
+    //
+    // We never want to absolutify a name like "emacs", because that's
+    // probably a program in the PATH rather than a local file. So we
+    // look for slashes in the name to determine what's a filepath and
+    // what isn't. Note that anything given as a std::path::Path will
+    // always have a slash by the time we get here, because we
+    // specialize the ToExecutable trait to prepend a ./ to them when
+    // they're relative. This leaves the case where Windows users might
+    // pass a local file like "foo.bat" as a string, which we can't
+    // distinguish from a global program name. However, because the
+    // Windows has the preferred "relative to parent's cwd" behavior
+    // already, this case actually works without our help. (The thing
+    // Windows users have to watch out for instead is local files
+    // shadowing global program names, which I don't think we can or
+    // should prevent.)
+
+    let has_separator = exe_name.to_string_lossy().chars().any(std::path::is_separator);
+    let is_relative = Path::new(exe_name).is_relative();
+    if context.dir.is_some() && has_separator && is_relative {
+        Path::new(exe_name).canonicalize().map(Into::into)
+    } else {
+        Ok(exe_name.to_owned())
+    }
+}
+
+// We want to allow Path("foo") to refer to the local file "./foo" on
+// Unix, and we want to *prevent* Path("echo") from referring to the
+// global "echo" command on either Unix or Windows. Prepend a dot to all
+// relative paths to accomplish both of those.
+fn dotify_relative_exe_path(path: &Path) -> PathBuf {
+    // This is a no-op if path is absolute or begins with a Windows prefix.
+    Path::new(".").join(path)
+}
+
+/// `duct` provides several impls of this trait to handle the difference between
+/// [`Path`](https://doc.rust-lang.org/std/path/struct.Path.html)/[`PathBuf`](https://doc.rust-lang.org/std/path/struct.PathBuf.html)
+/// and other types of strings. In particular, `duct` automatically prepends a
+/// leading dot to relative paths (though not other string types) before
+/// executing them. This is required for single-component relative paths to work
+/// at all on Unix, and it prevents aliasing with programs in the global `PATH`
+/// on both Unix and Windows. See the trait bounds on [`cmd`](fn.cmd.html) and
+/// [`sh`](fn.sh.html).
+pub trait ToExecutable {
+    fn to_executable(self) -> OsString;
+}
+
+// TODO: Get rid of most of these impls once specialization lands.
+
+impl<'a> ToExecutable for &'a Path {
+    fn to_executable(self) -> OsString {
+        dotify_relative_exe_path(self).into()
+    }
+}
+
+impl ToExecutable for PathBuf {
+    fn to_executable(self) -> OsString {
+        dotify_relative_exe_path(&self).into()
+    }
+}
+
+impl<'a> ToExecutable for &'a PathBuf {
+    fn to_executable(self) -> OsString {
+        dotify_relative_exe_path(self).into()
+    }
+}
+
+impl<'a> ToExecutable for &'a str {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl ToExecutable for String {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl<'a> ToExecutable for &'a String {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl<'a> ToExecutable for &'a OsStr {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl ToExecutable for OsString {
+    fn to_executable(self) -> OsString {
+        self
+    }
+}
+
+impl<'a> ToExecutable for &'a OsString {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
+
+fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
+    let (mut reader, writer) = os_pipe::pipe()?;
+    let thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output)?;
+        Ok(output)
+    });
+    Ok((File::from_file(writer), thread))
+}
+
+type WriterThread = SharedThread<io::Result<()>>;
+
+fn trim_right_newlines(s: &str) -> &str {
+    s.trim_right_matches(|c| c == '\n' || c == '\r')
+}
+
+// io::Error doesn't implement clone directly, so we kind of hack it together.
+fn clone_io_error(error: &io::Error) -> io::Error {
+    if let Some(code) = error.raw_os_error() {
+        io::Error::from_raw_os_error(code)
+    } else {
+        io::Error::new(error.kind(), error.to_string())
     }
 }
 
