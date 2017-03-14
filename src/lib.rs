@@ -862,12 +862,6 @@ impl Handle {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum WaitMode {
-    Blocking,
-    Nonblocking,
-}
-
 enum HandleInner {
     // Cmd and Sh expressions both yield this guy.
     Child(SharedChild, String),
@@ -1121,21 +1115,11 @@ impl ThenState {
         // wait_input, blocking mode *must* clean up even in the presence of
         // errors, but we *must not* do a potentially blocking join if we're in
         // nonblocking mode.
-        match (self.shared_state.wait(mode), mode) {
-            (Ok(None), _) => Ok(None),
-            (Ok(Some(status)), _) => {
-                self.background_waiter.join().as_ref().map_err(clone_io_error)?;
-                Ok(Some(status))
-            }
-            (Err(err), WaitMode::Blocking) => {
-                let _ = self.background_waiter.join();
-                Err(err)
-            }
-            (Err(err), WaitMode::Nonblocking) => {
-                // No potentially blocking waits in nonblocking mode!
-                Err(err)
-            }
+        let wait_res = self.shared_state.wait(mode);
+        if mode.should_join_background_thread(&wait_res) {
+            self.background_waiter.join().as_ref().map_err(clone_io_error)?;
         }
+        wait_res
     }
 
     fn kill(&self) -> io::Result<()> {
@@ -1311,36 +1295,19 @@ fn wait_input(inner_handle: &HandleInner,
     // can't wait on the writer thread. But the rule in blocking mode is "clean
     // up everything, even if some cleanup returns errors," so we must wait
     // regardless of what's going on with the child.
-    match (inner_handle.wait(mode), mode) {
-        (Ok(None), _) => Ok(None),
-        (Ok(Some(status)), _) => {
-            // Join the writer thread. Broken pipe errors here are expected if
-            // the child exited without reading all of its input, so we suppress
-            // them. Return other errors though.
-            match *writer_thread.join() {
-                Ok(()) => Ok(Some(status)),
-                Err(ref err) => {
-                    if err.kind() == io::ErrorKind::BrokenPipe {
-                        Ok(Some(status))
-                    } else {
-                        Err(clone_io_error(err))
-                    }
-                }
+    let wait_res = inner_handle.wait(mode);
+    if mode.should_join_background_thread(&wait_res) {
+        // Join the writer thread. Broken pipe errors here are expected if
+        // the child exited without reading all of its input, so we suppress
+        // them. Return other errors though.
+        match *writer_thread.join() {
+            Err(ref err) if err.kind() != io::ErrorKind::BrokenPipe => {
+                return Err(clone_io_error(err));
             }
-        }
-        (Err(err), WaitMode::Blocking) => {
-            // Who knows what's up with the child. Join the writer thread and
-            // ignore its errors, since we already have an error to report. It's
-            // ok if this blocks.
-            let _ = writer_thread.join();
-            Err(err)
-        }
-        (Err(err), WaitMode::Nonblocking) => {
-            // Who knows what's up with the child. Don't try to join the writer
-            // thread, because it could block.
-            Err(err)
+            _ => {}
         }
     }
+    wait_res
 }
 
 #[derive(Debug)]
@@ -1646,6 +1613,28 @@ impl<T> SharedThread<T> {
             self.result.fill(ret).map_err(|_| "result lazycell unexpectedly full").unwrap();
         }
         self.result.borrow().expect("result lazycell unexpectedly empty")
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum WaitMode {
+    Blocking,
+    Nonblocking,
+}
+
+impl WaitMode {
+    fn should_join_background_thread(&self,
+                                     expression_result: &io::Result<Option<ExpressionStatus>>)
+                                     -> bool {
+        // Nonblocking waits can only join associated background threads if the
+        // running expression is finished (that is, when the thread is
+        // guaranteed to finish soon). Blocking waits should always join, even
+        // in the presence of errors.
+        match (self, expression_result) {
+            (&WaitMode::Blocking, _) => true,
+            (_, &Ok(Some(_))) => true,
+            _ => false,
+        }
     }
 }
 
