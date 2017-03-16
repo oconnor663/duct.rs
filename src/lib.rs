@@ -869,10 +869,10 @@ enum HandleInner {
     // and we return an error immediately. But if the right side fails to start,
     // the caller still needs to wait on the left, and we must return a handle.
     // Thus the handle preserves the right side's errors here.
-    Pipe(Box<HandleInner>, Box<io::Result<HandleInner>>),
+    Pipe(Box<PipeHandle>),
     // Then requires a background thread to wait on the left side and start the
     // right side.
-    Then(Box<ThenState>),
+    Then(Box<ThenHandle>),
     Input(Box<HandleInner>, WriterThread),
     Unchecked(Box<HandleInner>),
 }
@@ -883,10 +883,8 @@ impl HandleInner {
             HandleInner::Child(ref shared_child, ref command_string) => {
                 wait_child(shared_child, command_string, mode)
             }
-            HandleInner::Pipe(ref left_handle, ref right_start_result) => {
-                wait_pipe(left_handle, right_start_result, mode)
-            }
-            HandleInner::Then(ref then_state) => then_state.wait(mode),
+            HandleInner::Pipe(ref pipe_handle) => pipe_handle.wait(mode),
+            HandleInner::Then(ref then_handle) => then_handle.wait(mode),
             HandleInner::Input(ref inner_handle, ref writer_thread) => {
                 wait_input(inner_handle, writer_thread, mode)
             }
@@ -902,10 +900,8 @@ impl HandleInner {
     fn kill(&self) -> io::Result<()> {
         match *self {
             HandleInner::Child(ref shared_child, _) => shared_child.kill(),
-            HandleInner::Pipe(ref left_handle, ref right_start_result) => {
-                kill_pipe(left_handle, right_start_result)
-            }
-            HandleInner::Then(ref then_state) => then_state.kill(),
+            HandleInner::Pipe(ref pipe_handle) => pipe_handle.kill(),
+            HandleInner::Then(ref then_handle) => then_handle.kill(),
             HandleInner::Input(ref inner_handle, _) => inner_handle.kill(),
             HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
         }
@@ -926,9 +922,11 @@ impl ExpressionInner {
         match *self {
             Cmd(ref argv) => start_argv(argv, context),
             Sh(ref command) => start_sh(command, context),
-            Pipe(ref left, ref right) => start_pipe(left, right, context),
+            Pipe(ref left, ref right) => {
+                Ok(HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?)))
+            }
             Then(ref left, ref right) => {
-                Ok(HandleInner::Then(Box::new(ThenState::start(left, right.clone(), context)?)))
+                Ok(HandleInner::Then(Box::new(ThenHandle::start(left, right.clone(), context)?)))
             }
             Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
         }
@@ -989,58 +987,77 @@ fn wait_child(shared_child: &SharedChild,
     }
 }
 
-fn start_pipe(left: &Expression,
-              right: &Expression,
-              context: IoContext)
-              -> io::Result<HandleInner> {
-    let (reader, writer) = os_pipe::pipe()?;
-    let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-    left_context.stdout = IoValue::File(File::from_file(writer));
-    let mut right_context = context;
-    right_context.stdin = IoValue::File(File::from_file(reader));
-
-    // Errors starting the left side just short-circuit us.
-    let left_handle = left.0.start(left_context)?;
-
-    // Now the left has started, and we *must* return a handle. No more
-    // short-circuiting.
-    let right_result = right.0.start(right_context);
-
-    Ok(HandleInner::Pipe(Box::new(left_handle), Box::new(right_result)))
+struct PipeHandle {
+    left_handle: HandleInner,
+    right_start_result: io::Result<HandleInner>,
 }
 
-// Waiting on a pipe expression is tricky. The right side might've failed to
-// start before we even got here. Or we might hit an error waiting on the left
-// side, before we try to wait on the right. No matter what happens, we must
-// call wait on *both* sides (if they're running), to make sure that errors on
-// one side don't cause us to leave zombie processes on the other side.
-fn wait_pipe(left_handle: &HandleInner,
-             right_start_result: &io::Result<HandleInner>,
-             mode: WaitMode)
-             -> io::Result<Option<ExpressionStatus>> {
-    // Even if the right side never started, the left side did. Wait for it.
-    // Don't short circuit until after we wait on the right side though.
-    let left_wait_result = left_handle.wait(mode);
+impl PipeHandle {
+    fn start(left: &Expression, right: &Expression, context: IoContext) -> io::Result<PipeHandle> {
+        let (reader, writer) = os_pipe::pipe()?;
+        let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+        left_context.stdout = IoValue::File(File::from_file(writer));
+        let mut right_context = context;
+        right_context.stdin = IoValue::File(File::from_file(reader));
 
-    // Now if the right side never started at all, we just return that error,
-    // regardless of how the left turned out. (Recall that if the left never
-    // started, we won't get here at all.)
-    let right_handle = match *right_start_result {
-        Ok(ref handle) => handle,
-        Err(ref err) => return Err(clone_io_error(err)),
-    };
+        // Errors starting the left side just short-circuit us.
+        let left_handle = left.0.start(left_context)?;
 
-    // The right side did start, so we need to wait on it.
-    let right_wait_result = right_handle.wait(mode);
+        // Now the left has started, and we *must* return a handle. No more
+        // short-circuiting.
+        let right_result = right.0.start(right_context);
 
-    // Now we deal with errors from either of those waits. The left wait
-    // happened first, so that one takes precedence. Note that this is the
-    // reverse order of exit status precedence.
-    let left_status = left_wait_result?;
-    let right_status = right_wait_result?;
+        Ok(PipeHandle {
+            left_handle: left_handle,
+            right_start_result: right_result,
+        })
+    }
 
-    // Now return one of the two statuses.
-    Ok(pipe_status_precedence(left_status, right_status))
+    // Waiting on a pipe expression is tricky. The right side might've failed to
+    // start before we even got here. Or we might hit an error waiting on the
+    // left side, before we try to wait on the right. No matter what happens, we
+    // must call wait on *both* sides (if they're running), to make sure that
+    // errors on one side don't cause us to leave zombie processes on the other
+    // side.
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // Even if the right side never started, the left side did. Wait for it.
+        // Don't short circuit until after we wait on the right side though.
+        let left_wait_result = self.left_handle.wait(mode);
+
+        // Now if the right side never started at all, we just return that
+        // error, regardless of how the left turned out. (Recall that if the
+        // left never started, we won't get here at all.)
+        let right_handle = match self.right_start_result {
+            Ok(ref handle) => handle,
+            Err(ref err) => return Err(clone_io_error(err)),
+        };
+
+        // The right side did start, so we need to wait on it.
+        let right_wait_result = right_handle.wait(mode);
+
+        // Now we deal with errors from either of those waits. The left wait
+        // happened first, so that one takes precedence. Note that this is the
+        // reverse order of exit status precedence.
+        let left_status = left_wait_result?;
+        let right_status = right_wait_result?;
+
+        // Now return one of the two statuses.
+        Ok(pipe_status_precedence(left_status, right_status))
+    }
+
+    // As with wait, we need to call kill on both sides even if the left side
+    // returns an error. But if the right side never started, we'll ignore it.
+    fn kill(&self) -> io::Result<()> {
+        let left_kill_result = self.left_handle.kill();
+        if let Ok(ref right_handle) = self.right_start_result {
+            let right_kill_result = right_handle.kill();
+            // As with wait, the left side happened first, so its errors take
+            // precedence.
+            left_kill_result.and(right_kill_result)
+        } else {
+            left_kill_result
+        }
+    }
 }
 
 // The rules of precedence are:
@@ -1066,35 +1083,19 @@ fn pipe_status_precedence(left_maybe_status: Option<ExpressionStatus>,
     })
 }
 
-// As with wait_pipe, we need to call kill on both sides even if the left side
-// returns an error. But if the right side never started, we'll ignore it.
-fn kill_pipe(left_handle: &HandleInner,
-             right_start_result: &io::Result<HandleInner>)
-             -> io::Result<()> {
-    let left_kill_result = left_handle.kill();
-    if let Ok(ref right_handle) = *right_start_result {
-        let right_kill_result = right_handle.kill();
-        // As with wait, the left side happened first, so its errors take
-        // precedence.
-        left_kill_result.and(right_kill_result)
-    } else {
-        left_kill_result
-    }
-}
-
 // A "then" expression must start the right side as soon as the left is
 // finished, even if the original caller isn't waiting on it yet. We do that
 // with a background thread.
-struct ThenState {
-    shared_state: Arc<ThenSharedState>,
+struct ThenHandle {
+    shared_state: Arc<ThenHandleInner>,
     background_waiter: SharedThread<io::Result<ExpressionStatus>>,
 }
 
-impl ThenState {
-    fn start(left: &Expression, right: Expression, context: IoContext) -> io::Result<ThenState> {
+impl ThenHandle {
+    fn start(left: &Expression, right: Expression, context: IoContext) -> io::Result<ThenHandle> {
         let left_context = context.try_clone()?;
         let left_handle = left.0.start(left_context)?;
-        let shared = Arc::new(ThenSharedState {
+        let shared = Arc::new(ThenHandleInner {
             left_handle: left_handle,
             right_lock: Mutex::new(Some((right, context))),
             right_cell: AtomicLazyCell::new(),
@@ -1103,14 +1104,14 @@ impl ThenState {
         let background_waiter = std::thread::spawn(move || {
             Ok(clone.wait(WaitMode::Blocking)?.expect("blocking wait can't return None"))
         });
-        Ok(ThenState {
+        Ok(ThenHandle {
             shared_state: shared,
             background_waiter: SharedThread::new(background_waiter),
         })
     }
 
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        // ThenSharedState does most of the heavy lifting. We just need to join
+        // ThenHandleInner does most of the heavy lifting. We just need to join
         // the background waiter if the expression is finished. Similar to
         // wait_input, blocking mode *must* clean up even in the presence of
         // errors, but we *must not* do a potentially blocking join if we're in
@@ -1128,13 +1129,13 @@ impl ThenState {
 }
 
 // This is the state that gets shared with the background waiter thread.
-struct ThenSharedState {
+struct ThenHandleInner {
     left_handle: HandleInner,
     right_lock: Mutex<Option<(Expression, IoContext)>>,
     right_cell: AtomicLazyCell<io::Result<HandleInner>>,
 }
 
-impl ThenSharedState {
+impl ThenHandleInner {
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
         // Wait for the left side to finish. If the left side hasn't finished
         // yet (in nonblocking mode), short-circuit.
