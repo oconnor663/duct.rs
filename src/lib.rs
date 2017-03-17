@@ -864,7 +864,7 @@ impl Handle {
 
 enum HandleInner {
     // Cmd and Sh expressions both yield this guy.
-    Child(SharedChild, String),
+    Child(Box<ChildHandle>),
     // If the left side of a pipe fails to start, there's nothing to wait for,
     // and we return an error immediately. But if the right side fails to start,
     // the caller still needs to wait on the left, and we must return a handle.
@@ -874,15 +874,13 @@ enum HandleInner {
     // right side.
     Then(Box<ThenHandle>),
     Input(Box<InputHandle>),
-    Unchecked(Box<HandleInner>),
+    Unchecked(Box<UncheckedHandle>),
 }
 
 impl HandleInner {
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
         match *self {
-            HandleInner::Child(ref shared_child, ref command_string) => {
-                wait_child(shared_child, command_string, mode)
-            }
+            HandleInner::Child(ref child_handle) => child_handle.wait(mode),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.wait(mode),
             HandleInner::Then(ref then_handle) => then_handle.wait(mode),
             HandleInner::Input(ref input_handle) => input_handle.wait(mode),
@@ -897,7 +895,7 @@ impl HandleInner {
 
     fn kill(&self) -> io::Result<()> {
         match *self {
-            HandleInner::Child(ref shared_child, _) => shared_child.kill(),
+            HandleInner::Child(ref child_handle) => child_handle.kill(),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.kill(),
             HandleInner::Then(ref then_handle) => then_handle.kill(),
             HandleInner::Input(ref input_handle) => input_handle.kill(),
@@ -918,8 +916,8 @@ enum ExpressionInner {
 impl ExpressionInner {
     fn start(&self, context: IoContext) -> io::Result<HandleInner> {
         match *self {
-            Cmd(ref argv) => start_argv(argv, context),
-            Sh(ref command) => start_sh(command, context),
+            Cmd(ref argv) => Ok(HandleInner::Child(Box::new(start_argv(argv, context)?))),
+            Sh(ref command) => Ok(HandleInner::Child(Box::new(start_sh(command, context)?))),
             Pipe(ref left, ref right) => {
                 Ok(HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?)))
             }
@@ -931,7 +929,7 @@ impl ExpressionInner {
     }
 }
 
-fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<HandleInner> {
+fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> {
     let exe = canonicalize_exe_path_for_dir(&argv[0], &context)?;
     let mut command = Command::new(exe);
     command.args(&argv[1..]);
@@ -948,7 +946,10 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<HandleInner> 
     }
     let shared_child = SharedChild::spawn(&mut command)?;
     let command_string = format!("{:?}", argv);
-    Ok(HandleInner::Child(shared_child, command_string))
+    Ok(ChildHandle {
+        child: shared_child,
+        command_string: command_string,
+    })
 }
 
 #[cfg(unix)]
@@ -962,26 +963,34 @@ fn shell_command_argv(command: OsString) -> [OsString; 3] {
     [comspec, OsStr::new("/C").to_owned(), command]
 }
 
-fn start_sh(command: &OsString, context: IoContext) -> io::Result<HandleInner> {
+fn start_sh(command: &OsString, context: IoContext) -> io::Result<ChildHandle> {
     start_argv(&shell_command_argv(command.clone()), context)
 }
 
-fn wait_child(shared_child: &SharedChild,
-              command_string: &str,
-              mode: WaitMode)
-              -> io::Result<Option<ExpressionStatus>> {
-    let maybe_status = match mode {
-        WaitMode::Blocking => Some(shared_child.wait()?),
-        WaitMode::Nonblocking => shared_child.try_wait()?,
-    };
-    if let Some(status) = maybe_status {
-        Ok(Some(ExpressionStatus {
-            status: status,
-            checked: true,
-            command: command_string.to_owned(),
-        }))
-    } else {
-        Ok(None)
+struct ChildHandle {
+    child: shared_child::SharedChild,
+    command_string: String,
+}
+
+impl ChildHandle {
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        let maybe_status = match mode {
+            WaitMode::Blocking => Some(self.child.wait()?),
+            WaitMode::Nonblocking => self.child.try_wait()?,
+        };
+        if let Some(status) = maybe_status {
+            Ok(Some(ExpressionStatus {
+                status: status,
+                checked: true,
+                command: self.command_string.clone(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        self.child.kill()
     }
 }
 
@@ -1210,56 +1219,6 @@ impl ThenHandleInner {
     }
 }
 
-struct InputHandle {
-    inner_handle: HandleInner,
-    writer_thread: WriterThread,
-}
-
-impl InputHandle {
-    fn start(expression: &Expression,
-             mut context: IoContext,
-             input: Arc<Vec<u8>>)
-             -> io::Result<InputHandle> {
-        let (reader, mut writer) = os_pipe::pipe()?;
-        context.stdin = IoValue::File(File::from_file(reader));
-        let inner = expression.0.start(context)?;
-        // We only spawn the writer thread if the expression started successfully,
-        // so that start errors won't leak a zombie thread.
-        let thread = std::thread::spawn(move || writer.write_all(&input));
-        Ok(InputHandle {
-            inner_handle: inner,
-            writer_thread: SharedThread::new(thread),
-        })
-    }
-
-    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        // We're responsible for joining the writer thread and not leaving a zombie.
-        // But waiting on the inner child can return an error, and in that case we
-        // don't know whether the child is still running or not. The rule in
-        // nonblocking mode is "clean up as much as we can, but never block," so we
-        // can't wait on the writer thread. But the rule in blocking mode is "clean
-        // up everything, even if some cleanup returns errors," so we must wait
-        // regardless of what's going on with the child.
-        let wait_res = self.inner_handle.wait(mode);
-        if mode.should_join_background_thread(&wait_res) {
-            // Join the writer thread. Broken pipe errors here are expected if
-            // the child exited without reading all of its input, so we suppress
-            // them. Return other errors though.
-            match *self.writer_thread.join() {
-                Err(ref err) if err.kind() != io::ErrorKind::BrokenPipe => {
-                    return Err(clone_io_error(err));
-                }
-                _ => {}
-            }
-        }
-        wait_res
-    }
-
-    fn kill(&self) -> io::Result<()> {
-        self.inner_handle.kill()
-    }
-}
-
 fn start_io(io_inner: &IoExpressionInner,
             expr_inner: &Expression,
             mut context: IoContext)
@@ -1318,10 +1277,79 @@ fn start_io(io_inner: &IoExpressionInner,
         }
         Unchecked => {
             let inner_handle = expr_inner.0.start(context)?;
-            return Ok(HandleInner::Unchecked(Box::new(inner_handle)));
+            return Ok(HandleInner::Unchecked(Box::new(UncheckedHandle { inner: inner_handle })));
         }
     }
     expr_inner.0.start(context)
+}
+
+struct InputHandle {
+    inner_handle: HandleInner,
+    writer_thread: WriterThread,
+}
+
+impl InputHandle {
+    fn start(expression: &Expression,
+             mut context: IoContext,
+             input: Arc<Vec<u8>>)
+             -> io::Result<InputHandle> {
+        let (reader, mut writer) = os_pipe::pipe()?;
+        context.stdin = IoValue::File(File::from_file(reader));
+        let inner = expression.0.start(context)?;
+        // We only spawn the writer thread if the expression started
+        // successfully, so that start errors won't leak a zombie thread.
+        let thread = std::thread::spawn(move || writer.write_all(&input));
+        Ok(InputHandle {
+            inner_handle: inner,
+            writer_thread: SharedThread::new(thread),
+        })
+    }
+
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // We're responsible for joining the writer thread and not leaving a zombie.
+        // But waiting on the inner child can return an error, and in that case we
+        // don't know whether the child is still running or not. The rule in
+        // nonblocking mode is "clean up as much as we can, but never block," so we
+        // can't wait on the writer thread. But the rule in blocking mode is "clean
+        // up everything, even if some cleanup returns errors," so we must wait
+        // regardless of what's going on with the child.
+        let wait_res = self.inner_handle.wait(mode);
+        if mode.should_join_background_thread(&wait_res) {
+            // Join the writer thread. Broken pipe errors here are expected if
+            // the child exited without reading all of its input, so we suppress
+            // them. Return other errors though.
+            match *self.writer_thread.join() {
+                Err(ref err) if err.kind() != io::ErrorKind::BrokenPipe => {
+                    return Err(clone_io_error(err));
+                }
+                _ => {}
+            }
+        }
+        wait_res
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        self.inner_handle.kill()
+    }
+}
+
+struct UncheckedHandle {
+    inner: HandleInner,
+}
+
+impl UncheckedHandle {
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        if let Some(mut status) = self.inner.wait(mode)? {
+            status.checked = false;
+            Ok(Some(status))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        self.inner.kill()
+    }
 }
 
 #[derive(Debug)]
