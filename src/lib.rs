@@ -862,9 +862,34 @@ impl Handle {
     }
 }
 
+#[derive(Debug)]
+enum ExpressionInner {
+    Cmd(Vec<OsString>),
+    Sh(OsString),
+    Pipe(Expression, Expression),
+    Then(Expression, Expression),
+    Io(IoExpressionInner, Expression),
+}
+
+impl ExpressionInner {
+    fn start(&self, context: IoContext) -> io::Result<HandleInner> {
+        Ok(match *self {
+            Cmd(ref argv) => HandleInner::Child(start_argv(argv, context)?),
+            Sh(ref command) => HandleInner::Child(start_sh(command, context)?),
+            Pipe(ref left, ref right) => {
+                HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
+            }
+            Then(ref left, ref right) => {
+                HandleInner::Then(Box::new(ThenHandle::start(left, right.clone(), context)?))
+            }
+            Io(ref io_inner, ref expr) => start_io(io_inner, expr, context)?,
+        })
+    }
+}
+
 enum HandleInner {
     // Cmd and Sh expressions both yield this guy.
-    Child(Box<ChildHandle>),
+    Child(ChildHandle),
     // If the left side of a pipe fails to start, there's nothing to wait for,
     // and we return an error immediately. But if the right side fails to start,
     // the caller still needs to wait on the left, and we must return a handle.
@@ -874,7 +899,7 @@ enum HandleInner {
     // right side.
     Then(Box<ThenHandle>),
     Input(Box<InputHandle>),
-    Unchecked(Box<UncheckedHandle>),
+    Unchecked(Box<HandleInner>),
 }
 
 impl HandleInner {
@@ -900,31 +925,6 @@ impl HandleInner {
             HandleInner::Then(ref then_handle) => then_handle.kill(),
             HandleInner::Input(ref input_handle) => input_handle.kill(),
             HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum ExpressionInner {
-    Cmd(Vec<OsString>),
-    Sh(OsString),
-    Pipe(Expression, Expression),
-    Then(Expression, Expression),
-    Io(IoExpressionInner, Expression),
-}
-
-impl ExpressionInner {
-    fn start(&self, context: IoContext) -> io::Result<HandleInner> {
-        match *self {
-            Cmd(ref argv) => Ok(HandleInner::Child(Box::new(start_argv(argv, context)?))),
-            Sh(ref command) => Ok(HandleInner::Child(Box::new(start_sh(command, context)?))),
-            Pipe(ref left, ref right) => {
-                Ok(HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?)))
-            }
-            Then(ref left, ref right) => {
-                Ok(HandleInner::Then(Box::new(ThenHandle::start(left, right.clone(), context)?)))
-            }
-            Io(ref io_inner, ref expr) => start_io(io_inner, expr, context),
         }
     }
 }
@@ -1277,7 +1277,7 @@ fn start_io(io_inner: &IoExpressionInner,
         }
         Unchecked => {
             let inner_handle = expr_inner.0.start(context)?;
-            return Ok(HandleInner::Unchecked(Box::new(UncheckedHandle { inner: inner_handle })));
+            return Ok(HandleInner::Unchecked(Box::new(inner_handle)));
         }
     }
     expr_inner.0.start(context)
@@ -1330,25 +1330,6 @@ impl InputHandle {
 
     fn kill(&self) -> io::Result<()> {
         self.inner_handle.kill()
-    }
-}
-
-struct UncheckedHandle {
-    inner: HandleInner,
-}
-
-impl UncheckedHandle {
-    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        if let Some(mut status) = self.inner.wait(mode)? {
-            status.checked = false;
-            Ok(Some(status))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn kill(&self) -> io::Result<()> {
-        self.inner.kill()
     }
 }
 
