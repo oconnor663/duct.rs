@@ -57,10 +57,10 @@ fn test_sh() {
 
 #[test]
 fn test_start() {
-    let handle1 = cmd!(path_to_exe("echo"), "hi").stdout_capture().start();
-    let handle2 = cmd!(path_to_exe("echo"), "lo").stdout_capture().start();
-    let output1 = handle1.wait().unwrap();
-    let output2 = handle2.wait().unwrap();
+    let handle1 = cmd!(path_to_exe("echo"), "hi").stdout_capture().start().unwrap();
+    let handle2 = cmd!(path_to_exe("echo"), "lo").stdout_capture().start().unwrap();
+    let output1 = handle1.output().unwrap();
+    let output2 = handle2.output().unwrap();
     assert_eq!("hi", str::from_utf8(&output1.stdout).unwrap().trim());
     assert_eq!("lo", str::from_utf8(&output2.stdout).unwrap().trim());
 }
@@ -132,6 +132,29 @@ fn test_pipe() {
 }
 
 #[test]
+fn test_pipe_with_kill() {
+    // Make sure both sides get killed.
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
+    let handle = sleep_cmd.pipe(sleep_cmd.clone()).unchecked().start().unwrap();
+    handle.kill().unwrap();
+    handle.wait().unwrap();
+}
+
+#[test]
+fn test_pipe_start() {
+    let nonexistent_cmd = cmd!(path_to_exe("nonexistent!!!"));
+
+    // Errors starting the left side of a pipe are returned immediately.
+    let res = nonexistent_cmd.pipe(true_cmd()).start();
+    assert!(res.is_err());
+
+    // Errors starting the right side are retained.
+    let handle = true_cmd().pipe(nonexistent_cmd).start().unwrap();
+    // But they show up during wait().
+    assert!(handle.wait().is_err());
+}
+
+#[test]
 fn test_then() {
     let output = true_cmd().then(sh("echo lo")).read().unwrap();
     assert_eq!("lo", output);
@@ -142,6 +165,75 @@ fn test_then() {
 
     let result = false_cmd().then(true_cmd()).run();
     assert!(result.is_err());
+}
+
+#[test]
+fn test_then_closes_handles() {
+    // Run a then expression that will short circuit because of a status error
+    // on the left, and which also captures output. Waiting on it will deadlock
+    // if we fail to close the write pipes before returning.
+    let expr = false_cmd().then(true_cmd()).unchecked().stdout_capture();
+    let handle = expr.start().unwrap();
+    handle.wait().unwrap();
+
+    // Do the same thing with try_wait. Right now this will always work if the
+    // first check above worked, because wait is both running on a background
+    // thread and called by try_wait for cleanup. But its nice to test it.
+    let handle = expr.start().unwrap();
+    loop {
+        match handle.try_wait().unwrap() {
+            // We might get None a few times before the children exit, which is
+            // why we're doing this in a loop.
+            None => continue,
+            // Getting here without deadlocking is what we're testing for.
+            Some(_) => break,
+        }
+    }
+}
+
+#[test]
+fn test_then_with_kill() {
+    // Kill should prevent the second command from starting. Test this with two
+    // long-running commands. The first command is unchecked, so the exit status
+    // alone won't short circuit the expression.
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
+    let handle = sleep_cmd.unchecked().then(sleep_cmd.clone()).start().unwrap();
+    handle.kill().unwrap();
+    handle.wait().unwrap();
+}
+
+#[test]
+fn test_nonblocking_waits() {
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
+    // Build a big ol' thing with pipe and then.
+    let handle = sleep_cmd.then(sleep_cmd.clone())
+        .pipe(sleep_cmd.then(sleep_cmd.clone()))
+        .unchecked()
+        .start()
+        .unwrap();
+    // Make sure try_wait doesn't block on it.
+    assert!(handle.try_wait().unwrap().is_none());
+    handle.kill().unwrap();
+    handle.wait().unwrap();
+}
+
+#[test]
+fn test_then_makes_progress() {
+    // The right side of a then expression must start even if the caller isn't
+    // waiting. This is what we use the background thread for. Read from a pipe
+    // of our own to test that both sides are writing and exiting before the
+    // wait.
+    let (mut read, write) = ::os_pipe::pipe().unwrap();
+    let handle = cmd!(path_to_exe("echo"), "hi")
+        .then(cmd!(path_to_exe("echo"), "lo"))
+        .stdout_file(File::from_file(write))
+        .start()
+        .unwrap();
+    // Read *before* waiting.
+    let mut output = String::new();
+    read.read_to_string(&mut output).unwrap();
+    assert_eq!(output, "hi\nlo\n");
+    handle.wait().unwrap();
 }
 
 #[test]
@@ -303,15 +395,6 @@ fn test_broken_pipe() {
     // error. We need to swallow that error, rather than returning it.
     let myvec = vec![0; 1_000_000];
     true_cmd().input(myvec).run().unwrap();
-}
-
-#[test]
-fn test_suppress_broken_pipe() {
-    let broken_pipe_error = Err(io::Error::new(io::ErrorKind::BrokenPipe, ""));
-    assert!(::suppress_broken_pipe_errors(broken_pipe_error).is_ok());
-
-    let other_error = Err(io::Error::new(io::ErrorKind::Other, ""));
-    assert!(::suppress_broken_pipe_errors(other_error).is_err());
 }
 
 #[test]

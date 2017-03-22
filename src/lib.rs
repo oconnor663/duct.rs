@@ -64,9 +64,15 @@
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
 //! ```
 
+extern crate lazycell;
+use lazycell::AtomicLazyCell;
+
+// Two utility crates build mainly to work for duct.
 extern crate os_pipe;
+extern crate shared_child;
 
 use os_pipe::FromFile;
+use shared_child::SharedChild;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -76,7 +82,7 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 use std::thread::JoinHandle;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // enums defined below
 use ExpressionInner::*;
@@ -231,22 +237,7 @@ impl Expression {
     /// # }
     /// ```
     pub fn run(&self) -> io::Result<Output> {
-        let (context, stdout_reader, stderr_reader) = IoContext::new()?;
-        let status = self.0.exec(context)?;
-        // These unwraps propagate any panics from the other thread,
-        // but regular errors return normally.
-        let stdout_vec = stdout_reader.join().unwrap()?;
-        let stderr_vec = stderr_reader.join().unwrap()?;
-        let output = Output {
-            status: status.status,
-            stdout: stdout_vec,
-            stderr: stderr_vec,
-        };
-        if status.is_checked_error() {
-            Err(io::Error::new(io::ErrorKind::Other, status.message()))
-        } else {
-            Ok(output)
-        }
+        self.start()?.output()
     }
 
     /// Execute an expression, capture its standard output, and return the
@@ -282,10 +273,23 @@ impl Expression {
     }
 
     /// Start running an expression, and immediately return a
-    /// [`WaitHandle`](struct.WaitHandle.html). This is equivalent to
-    /// [`run`](struct.Expression.html#method.run), except it doesn't block the
-    /// current thread until you call
-    /// [`wait`](struct.WaitHandle.html#method.wait) on the handle.
+    /// [`Handle`](struct.Handle.html) that represents all the child processes.
+    /// This is analogous to the
+    /// [`spawn`](https://doc.rust-lang.org/std/process/struct.Command.html#method.spawn)
+    /// method in the standard library. The `Handle` may be shared between
+    /// multiple threads.
+    ///
+    /// # Errors
+    ///
+    /// In addition to all the errors prossible with
+    /// [`std::process::Command::spawn`](https://doc.rust-lang.org/std/process/struct.Command.html#method.spawn),
+    /// `start` can return errors from opening pipes and files. However, `start`
+    /// will never return an error if a child process has already started. In
+    /// particular, if the left side of a pipe expression starts successfully,
+    /// `start` will always return `Ok`. Any errors that happen on the right
+    /// side will be saved and returned later by the wait methods. That makes it
+    /// safe for callers to short circuit on `start` errors without the risk of
+    /// leaking processes.
     ///
     /// # Example
     ///
@@ -293,39 +297,20 @@ impl Expression {
     /// # #[macro_use] extern crate duct;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
-    /// let handle = cmd!("echo", "hi").stdout_capture().start();
+    /// let handle = cmd!("echo", "hi").stdout_capture().start().unwrap();
     /// let output = handle.wait().unwrap();
     /// assert_eq!(b"hi\n".to_vec(), output.stdout);
     /// # }
     /// # }
     /// ```
-    pub fn start(&self) -> WaitHandle {
-        // Note that this returns a `WaitHandle` directly, not an
-        // `io::Result<WaitHandle>`. That means that even IO errors that happen
-        // during spawn (like a misspelled program name) won't show up until you
-        // `wait` on the handle. The reason we can't report spawn errors
-        // immediately is that it wouldn't work well with
-        // [`then`](struct.Expression.html#method.then) and
-        // [`pipe`](struct.Expression.html#method.pipe).
-        //
-        // The problem with `then` is that spawn errors in the right child don't
-        // happen on the main thread. Instead there's a worker thread waiting on
-        // the left child to finish, and it's that worker's job to spawn the
-        // right child. The only way to return errors at that point is through
-        // the WaitHandle, so a "return spawn errors immediately" design would
-        // be inconsistent at best.
-        //
-        // The problem with `pipe` is worse. Both children start immediately, so
-        // if a spawn error happens on the right, the left is already running.
-        // Someone has to wait on it, or we'll leak a zombie process. But the
-        // left child might take a long time to finish, and it's not ok for
-        // `start` to block. Instead, we need the caller to `wait` as usual, so
-        // that we can do this cleanup.
-        //
-        // Implementation note: This is currently implemented with a background
-        // thread, so it's not as efficient as it could be.
-        let clone = Expression(self.0.clone());
-        WaitHandle(std::thread::spawn(move || clone.run()))
+    pub fn start(&self) -> io::Result<Handle> {
+        // TODO: SUBSTANTIAL COMMENTS ABOUT ERROR BEHAVIOR
+        let (context, stdout_reader, stderr_reader) = IoContext::new()?;
+        Ok(Handle {
+            inner: self.0.start(context)?,
+            result: AtomicLazyCell::new(),
+            readers: Mutex::new(Some((stdout_reader, stderr_reader))),
+        })
     }
 
     /// Join two expressions into a pipe, with the standard output of the left
@@ -353,10 +338,13 @@ impl Expression {
 
     /// Chain two expressions together to run in series, like `&&` in the shell.
     /// If the left child returns a non-zero exit status, the right child
-    /// doesn't run. (You can use
+    /// doesn't run. You can use
     /// [`unchecked`](struct.Expression.html#method.unchecked) on the left child
-    /// to make sure the right child always runs.) The exit status of this
-    /// expression is the status of the last child that ran.
+    /// to make sure the right child always runs. The exit status of this
+    /// expression is the status of the last child that ran. Note that
+    /// [`kill`](struct.Handle.html#method.kill) will prevent the right side
+    /// from starting if it hasn't already, even if the left side is
+    /// `unchecked`.
     ///
     /// # Example
     ///
@@ -521,7 +509,7 @@ impl Expression {
     /// available on the `stdout` field of the
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
     /// object returned by [`run`](struct.Expression.html#method.run) or
-    /// [`wait`](struct.WaitHandle.html#method.wait). In the simplest cases,
+    /// [`wait`](struct.Handle.html#method.wait). In the simplest cases,
     /// [`read`](struct.Expression.html#method.read) can be more convenient.
     ///
     /// # Example
@@ -622,7 +610,7 @@ impl Expression {
     /// Capture the error output of an expression. The captured bytes will be
     /// available on the `stderr` field of the `Output` object returned by
     /// [`run`](struct.Expression.html#method.run) or
-    /// [`wait`](struct.WaitHandle.html#method.wait).
+    /// [`wait`](struct.Handle.html#method.wait).
     ///
     /// # Example
     ///
@@ -783,17 +771,94 @@ impl Expression {
     }
 }
 
-/// Returned by the [`start`](struct.Expression.html#method.start) method.
-/// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait) on
-/// the handle is equivalent to [`run`](struct.Expression.html#method.run).
-pub struct WaitHandle(JoinHandle<io::Result<Output>>);
+/// A handle to a running expression, returned by the
+/// [`start`](struct.Expression.html#method.start) method. Calling `start`
+/// followed by [`output`](struct.Handle.html#method.output) on the handle is
+/// equivalent to [`run`](struct.Expression.html#method.run). Note that unlike
+/// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
+/// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
+/// `Handle` may be shared between multiple threads.
+///
+/// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
+/// crate for implementation details behind making handles thread safe.
+pub struct Handle {
+    inner: HandleInner,
+    result: AtomicLazyCell<io::Result<Output>>,
+    readers: Mutex<Option<(ReaderThread, ReaderThread)>>,
+}
 
-impl WaitHandle {
-    /// Wait for the running expression to finish, and return its output.
-    /// Calling `start` followed by [`wait`](struct.WaitHandle.html#method.wait)
-    /// is equivalent to [`run`](struct.Expression.html#method.run).
-    pub fn wait(self) -> io::Result<Output> {
-        self.0.join().unwrap()
+impl Handle {
+    /// Wait for the running expression to finish, and return a reference to its
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
+    /// Multiple threads may wait at the same time.
+    pub fn wait(&self) -> io::Result<&Output> {
+        let status = self.inner.wait(WaitMode::Blocking)?.expect("blocking wait can't return None");
+        // The expression has exited. See if we need to collect its output
+        // result, or if another caller has already done it. Do this inside the
+        // readers lock, to avoid racing to fill the result.
+        let mut readers_lock = self.readers.lock().expect("readers lock poisoned");
+        if !self.result.filled() {
+            // We're holding the readers lock, and we're the thread that needs
+            // to collect the output. Take the reader threads and join them.
+            let (stdout_reader, stderr_reader) = readers_lock.take()
+                .expect("readers taken without filling result");
+            let stdout_result = stdout_reader.join().expect("stdout reader panic");
+            let stderr_result = stderr_reader.join().expect("stderr reader panic");
+            let final_result = match (stdout_result, stderr_result) {
+                // The highest priority result is IO errors in the reader
+                // threads.
+                (Err(err), _) | (_, Err(err)) => Err(err),
+
+                // Then checked status errors.
+                _ if status.is_checked_error() => {
+                    Err(io::Error::new(io::ErrorKind::Other, status.message()))
+                }
+
+                // And finally the successful output.
+                (Ok(stdout), Ok(stderr)) => {
+                    Ok(Output {
+                        status: status.status,
+                        stdout: stdout,
+                        stderr: stderr,
+                    })
+                }
+            };
+            self.result.fill(final_result).expect("result already filled outside the readers lock");
+        }
+        // The result has been collected, whether or not we were the caller that
+        // collected it. Return a reference.
+        match self.result.borrow().expect("result not filled") {
+            &Ok(ref output) => Ok(output),
+            &Err(ref err) => Err(clone_io_error(err)),
+        }
+    }
+
+    /// Check whether the running expression is finished. If it is, return a
+    /// reference to its
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
+    /// If it's still running, return `Ok(None)`.
+    pub fn try_wait(&self) -> io::Result<Option<&Output>> {
+        if self.inner.wait(WaitMode::Nonblocking)?.is_none() {
+            Ok(None)
+        } else {
+            self.wait().map(Some)
+        }
+    }
+
+    /// Wait for the running expression to finish, and then return a
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
+    /// object containing the results, including any captured output. This
+    /// consumes the `Handle`. Calling
+    /// [`start`](struct.Expression.html#method.start) followed by `output` is
+    /// equivalent to [`run`](struct.Expression.html#method.run).
+    pub fn output(self) -> io::Result<Output> {
+        self.wait()?;
+        self.result.into_inner().expect("wait didn't set the result")
+    }
+
+    /// Kill the running expression.
+    pub fn kill(&self) -> io::Result<()> {
+        self.inner.kill()
     }
 }
 
@@ -807,60 +872,65 @@ enum ExpressionInner {
 }
 
 impl ExpressionInner {
-    fn exec(&self, context: IoContext) -> io::Result<ExpressionStatus> {
+    fn start(&self, context: IoContext) -> io::Result<HandleInner> {
+        Ok(match *self {
+            Cmd(ref argv) => HandleInner::Child(start_argv(argv, context)?),
+            Sh(ref command) => HandleInner::Child(start_sh(command, context)?),
+            Pipe(ref left, ref right) => {
+                HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
+            }
+            Then(ref left, ref right) => {
+                HandleInner::Then(Box::new(ThenHandle::start(left, right.clone(), context)?))
+            }
+            Io(ref io_inner, ref expr) => start_io(io_inner, expr, context)?,
+        })
+    }
+}
+
+enum HandleInner {
+    // Cmd and Sh expressions both yield this guy.
+    Child(ChildHandle),
+    // If the left side of a pipe fails to start, there's nothing to wait for,
+    // and we return an error immediately. But if the right side fails to start,
+    // the caller still needs to wait on the left, and we must return a handle.
+    // Thus the handle preserves the right side's errors here.
+    Pipe(Box<PipeHandle>),
+    // Then requires a background thread to wait on the left side and start the
+    // right side.
+    Then(Box<ThenHandle>),
+    Input(Box<InputHandle>),
+    Unchecked(Box<HandleInner>),
+}
+
+impl HandleInner {
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
         match *self {
-            Cmd(ref argv) => exec_argv(argv, context),
-            Sh(ref command) => exec_sh(command, context),
-            Pipe(ref left, ref right) => exec_pipe(left, right, context),
-            Then(ref left, ref right) => exec_then(left, right, context),
-            Io(ref io_inner, ref expr) => exec_io(io_inner, expr, context),
+            HandleInner::Child(ref child_handle) => child_handle.wait(mode),
+            HandleInner::Pipe(ref pipe_handle) => pipe_handle.wait(mode),
+            HandleInner::Then(ref then_handle) => then_handle.wait(mode),
+            HandleInner::Input(ref input_handle) => input_handle.wait(mode),
+            HandleInner::Unchecked(ref inner_handle) => {
+                Ok(inner_handle.wait(mode)?.map(|mut status| {
+                    status.checked = false;
+                    status
+                }))
+            }
+        }
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        match *self {
+            HandleInner::Child(ref child_handle) => child_handle.kill(),
+            HandleInner::Pipe(ref pipe_handle) => pipe_handle.kill(),
+            HandleInner::Then(ref then_handle) => then_handle.kill(),
+            HandleInner::Input(ref input_handle) => input_handle.kill(),
+            HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
         }
     }
 }
 
-fn maybe_canonicalize_exe_path(exe_name: &OsStr, context: &IoContext) -> io::Result<OsString> {
-    // There's a tricky interaction between exe paths and `dir`. Exe
-    // paths can be relative, and so we have to ask: Is an exe path
-    // interpreted relative to the parent's cwd, or the child's? The
-    // answer is that it's platform dependent! >.< (Windows uses the
-    // parent's cwd, but because of the fork-chdir-exec pattern, Unix
-    // usually uses the child's.)
-    //
-    // We want to use the parent's cwd consistently, because that saves
-    // the caller from having to worry about whether `dir` will have
-    // side effects, and because it's easy for the caller to use
-    // Path::join if they want to. That means that when `dir` is in use,
-    // we need to detect exe names that are relative paths, and
-    // absolutify them. We want to do that as little as possible though,
-    // both because canonicalization can fail, and because we prefer to
-    // let the caller control the child's argv[0].
-    //
-    // We never want to absolutify a name like "emacs", because that's
-    // probably a program in the PATH rather than a local file. So we
-    // look for slashes in the name to determine what's a filepath and
-    // what isn't. Note that anything given as a std::path::Path will
-    // always have a slash by the time we get here, because we
-    // specialize the ToExecutable trait to prepend a ./ to them when
-    // they're relative. This leaves the case where Windows users might
-    // pass a local file like "foo.bat" as a string, which we can't
-    // distinguish from a global program name. However, because the
-    // Windows has the preferred "relative to parent's cwd" behavior
-    // already, this case actually works without our help. (The thing
-    // Windows users have to watch out for instead is local files
-    // shadowing global program names, which I don't think we can or
-    // should prevent.)
-
-    let has_separator = exe_name.to_string_lossy().chars().any(std::path::is_separator);
-    let is_relative = Path::new(exe_name).is_relative();
-    if context.dir.is_some() && has_separator && is_relative {
-        Path::new(exe_name).canonicalize().map(Into::into)
-    } else {
-        Ok(exe_name.to_owned())
-    }
-}
-
-fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExpressionStatus> {
-    let exe = maybe_canonicalize_exe_path(&argv[0], &context)?;
+fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> {
+    let exe = canonicalize_exe_path_for_dir(&argv[0], &context)?;
     let mut command = Command::new(exe);
     command.args(&argv[1..]);
     // TODO: Avoid unnecessary dup'ing here.
@@ -874,10 +944,11 @@ fn exec_argv(argv: &[OsString], context: IoContext) -> io::Result<ExpressionStat
     for (name, val) in context.env {
         command.env(name, val);
     }
-    Ok(ExpressionStatus {
-        status: command.status()?,
-        checked: true,
-        command: format!("{:?}", argv),
+    let shared_child = SharedChild::spawn(&mut command)?;
+    let command_string = format!("{:?}", argv);
+    Ok(ChildHandle {
+        child: shared_child,
+        command_string: command_string,
     })
 }
 
@@ -892,34 +963,123 @@ fn shell_command_argv(command: OsString) -> [OsString; 3] {
     [comspec, OsStr::new("/C").to_owned(), command]
 }
 
-fn exec_sh(command: &OsString, context: IoContext) -> io::Result<ExpressionStatus> {
-    exec_argv(&shell_command_argv(command.clone()), context)
+fn start_sh(command: &OsString, context: IoContext) -> io::Result<ChildHandle> {
+    start_argv(&shell_command_argv(command.clone()), context)
 }
 
-fn exec_pipe(left: &Expression,
-             right: &Expression,
-             context: IoContext)
-             -> io::Result<ExpressionStatus> {
-    let (reader, writer) = os_pipe::pipe()?;
-    let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-    left_context.stdout = IoValue::File(File::from_file(writer));
-    let mut right_context = context;
-    right_context.stdin = IoValue::File(File::from_file(reader));
+struct ChildHandle {
+    child: shared_child::SharedChild,
+    command_string: String,
+}
 
-    let left_clone = Expression(left.0.clone());
-    let left_joiner = std::thread::spawn(move || left_clone.0.exec(left_context));
-    let right_result = right.0.exec(right_context);
-    let left_result = left_joiner.join().unwrap();
+impl ChildHandle {
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        let maybe_status = match mode {
+            WaitMode::Blocking => Some(self.child.wait()?),
+            WaitMode::Nonblocking => self.child.try_wait()?,
+        };
+        if let Some(status) = maybe_status {
+            Ok(Some(ExpressionStatus {
+                status: status,
+                checked: true,
+                command: self.command_string.clone(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 
-    // First return any IO errors, with the right side taking precedence.
-    let right_status = right_result?;
-    let left_status = left_result?;
+    fn kill(&self) -> io::Result<()> {
+        self.child.kill()
+    }
+}
 
-    // Now return one of the two statuses. The rules of precedence are:
-    // 1) Checked errors trump unchecked errors.
-    // 2) Unchecked errors trump success.
-    // 3) All else equal, right side wins.
-    Ok(if right_status.is_checked_error() {
+struct PipeHandle {
+    left_handle: HandleInner,
+    right_start_result: io::Result<HandleInner>,
+}
+
+impl PipeHandle {
+    fn start(left: &Expression, right: &Expression, context: IoContext) -> io::Result<PipeHandle> {
+        let (reader, writer) = os_pipe::pipe()?;
+        let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+        left_context.stdout = IoValue::File(File::from_file(writer));
+        let mut right_context = context;
+        right_context.stdin = IoValue::File(File::from_file(reader));
+
+        // Errors starting the left side just short-circuit us.
+        let left_handle = left.0.start(left_context)?;
+
+        // Now the left has started, and we *must* return a handle. No more
+        // short-circuiting.
+        let right_result = right.0.start(right_context);
+
+        Ok(PipeHandle {
+            left_handle: left_handle,
+            right_start_result: right_result,
+        })
+    }
+
+    // Waiting on a pipe expression is tricky. The right side might've failed to
+    // start before we even got here. Or we might hit an error waiting on the
+    // left side, before we try to wait on the right. No matter what happens, we
+    // must call wait on *both* sides (if they're running), to make sure that
+    // errors on one side don't cause us to leave zombie processes on the other
+    // side.
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // Even if the right side never started, the left side did. Wait for it.
+        // Don't short circuit until after we wait on the right side though.
+        let left_wait_result = self.left_handle.wait(mode);
+
+        // Now if the right side never started at all, we just return that
+        // error, regardless of how the left turned out. (Recall that if the
+        // left never started, we won't get here at all.)
+        let right_handle = match self.right_start_result {
+            Ok(ref handle) => handle,
+            Err(ref err) => return Err(clone_io_error(err)),
+        };
+
+        // The right side did start, so we need to wait on it.
+        let right_wait_result = right_handle.wait(mode);
+
+        // Now we deal with errors from either of those waits. The left wait
+        // happened first, so that one takes precedence. Note that this is the
+        // reverse order of exit status precedence.
+        let left_status = left_wait_result?;
+        let right_status = right_wait_result?;
+
+        // Now return one of the two statuses.
+        Ok(pipe_status_precedence(left_status, right_status))
+    }
+
+    // As with wait, we need to call kill on both sides even if the left side
+    // returns an error. But if the right side never started, we'll ignore it.
+    fn kill(&self) -> io::Result<()> {
+        let left_kill_result = self.left_handle.kill();
+        if let Ok(ref right_handle) = self.right_start_result {
+            let right_kill_result = right_handle.kill();
+            // As with wait, the left side happened first, so its errors take
+            // precedence.
+            left_kill_result.and(right_kill_result)
+        } else {
+            left_kill_result
+        }
+    }
+}
+
+// The rules of precedence are:
+// 1) If either side unfinished, the result is unfinished.
+// 2) Checked errors trump unchecked errors.
+// 3) Any errors trump success.
+// 4) All else equal, the right side wins.
+fn pipe_status_precedence(left_maybe_status: Option<ExpressionStatus>,
+                          right_maybe_status: Option<ExpressionStatus>)
+                          -> Option<ExpressionStatus> {
+    let (left_status, right_status) = match (left_maybe_status, right_maybe_status) {
+        (Some(left), Some(right)) => (left, right),
+        _ => return None,
+    };
+    Some(if right_status.is_checked_error() {
         right_status
     } else if left_status.is_checked_error() {
         left_status
@@ -930,37 +1090,246 @@ fn exec_pipe(left: &Expression,
     })
 }
 
-fn exec_then(left: &Expression,
-             right: &Expression,
-             context: IoContext)
-             -> io::Result<ExpressionStatus> {
-    let status = left.0.exec(context.try_clone()?)?;
-    if status.is_checked_error() {
-        // Checked status errors are `Ok` because they're not literally IO
-        // errors, but we short circuit and bubble them up.
-        Ok(status)
-    } else {
-        right.0.exec(context)
+// A "then" expression must start the right side as soon as the left is
+// finished, even if the original caller isn't waiting on it yet. We do that
+// with a background thread.
+struct ThenHandle {
+    shared_state: Arc<ThenHandleInner>,
+    background_waiter: SharedThread<io::Result<ExpressionStatus>>,
+}
+
+impl ThenHandle {
+    fn start(left: &Expression, right: Expression, context: IoContext) -> io::Result<ThenHandle> {
+        let left_context = context.try_clone()?;
+        let left_handle = left.0.start(left_context)?;
+        let shared = Arc::new(ThenHandleInner {
+            left_handle: left_handle,
+            right_lock: Mutex::new(Some((right, context))),
+            right_cell: AtomicLazyCell::new(),
+        });
+        let clone = shared.clone();
+        let background_waiter = std::thread::spawn(move || {
+            Ok(clone.wait(WaitMode::Blocking)?.expect("blocking wait can't return None"))
+        });
+        Ok(ThenHandle {
+            shared_state: shared,
+            background_waiter: SharedThread::new(background_waiter),
+        })
+    }
+
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // ThenHandleInner does most of the heavy lifting. We just need to join
+        // the background waiter if the expression is finished. Similar to
+        // wait_input, blocking mode *must* clean up even in the presence of
+        // errors, but we *must not* do a potentially blocking join if we're in
+        // nonblocking mode.
+        let wait_res = self.shared_state.wait(mode);
+        if mode.should_join_background_thread(&wait_res) {
+            self.background_waiter.join().as_ref().map_err(clone_io_error)?;
+        }
+        wait_res
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        self.shared_state.kill()
     }
 }
 
-fn exec_io(io_inner: &IoExpressionInner,
-           expr: &Expression,
-           context: IoContext)
-           -> io::Result<ExpressionStatus> {
-    {
-        let (new_context, maybe_writer_thread) = io_inner.update_context(context)?;
-        let exec_result = expr.0.exec(new_context);
-        let writer_result = join_maybe_writer_thread(maybe_writer_thread);
-        // Propagate any exec errors first.
-        let mut exec_status = exec_result?;
-        // Then propagate any writer thread errors.
-        writer_result?;
-        // Finally, implement unchecked() status suppression here.
-        if let &Unchecked = io_inner {
-            exec_status.checked = false;
+// This is the state that gets shared with the background waiter thread.
+struct ThenHandleInner {
+    left_handle: HandleInner,
+    right_lock: Mutex<Option<(Expression, IoContext)>>,
+    right_cell: AtomicLazyCell<io::Result<HandleInner>>,
+}
+
+impl ThenHandleInner {
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // Wait for the left side to finish. If the left side hasn't finished
+        // yet (in nonblocking mode), short-circuit.
+        let left_status = match self.left_handle.wait(mode)? {
+            Some(status) => status,
+            None => return Ok(None),
+        };
+
+        // The left side has finished, so now we *must* try to take ownership of
+        // the right IoContext. If we get it, and if the left side isn't a
+        // checked error, then we'll start the right child. But no matter what,
+        // we can't leave that IoContext alive. There are write pipes in it that
+        // will deadlock the top level wait otherwise.
+        //
+        // We also need to keep holding this lock until we finish starting the
+        // right side. Kill will take the same lock, and that avoids the race
+        // condition where one thread gets the right context, kill happens, and
+        // *then* the first thread starts the right.
+        let mut right_lock_guard = self.right_lock.lock().unwrap();
+        let maybe_expression_context = right_lock_guard.take();
+
+        // Checked errors on the left side will short-circuit the right. As
+        // noted above, this will still drop the right IoContext, if any.
+        if left_status.is_checked_error() {
+            return Ok(Some(left_status));
         }
-        Ok(exec_status)
+
+        // Now if we got the right expression above, we're responsible for
+        // starting it. Otherwise either it's already been started, or this
+        // expression has been killed.
+        if let Some((expression, context)) = maybe_expression_context {
+            let right_start_result = expression.0.start(context);
+            self.right_cell
+                .fill(right_start_result)
+                .map_err(|_| "right_cell unexpectedly filled")
+                .unwrap();
+        }
+
+        // Release the right lock. Kills may now happen on other threads. It's
+        // important that we don't hold this lock during waits.
+        drop(right_lock_guard);
+
+        // Wait on the right side, if it was started. There are two ways it
+        // might not have been started:
+        // 1) Start might've returned an error. We'll just clone it.
+        // 2) The expression might've been killed before we started the right
+        //    side. We'll return the left side's result. Note that it's possible
+        //    that the kill happened precisely in between the left exit and the
+        //    right start, in which case the left exit status could actually be
+        //    success.
+        match self.right_cell.borrow() {
+            Some(&Ok(ref handle)) => handle.wait(mode),
+            Some(&Err(ref err)) => Err(clone_io_error(err)),
+            None => Ok(Some(left_status)),
+        }
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        // Lock and clear the right context first, so that it can't be started
+        // if it hasn't been already. This is important because if the left side
+        // is unchecked, a waiting thread will ignore its killed exit status and
+        // try to start the right side anyway.
+        let mut right_lock_guard = self.right_lock.lock().unwrap();
+        *right_lock_guard = None;
+
+        // Try to kill both sides, even if the first kill fails for some reason.
+        let left_result = self.left_handle.kill();
+        if let Some(&Ok(ref handle)) = self.right_cell.borrow() {
+            let right_result = handle.kill();
+            left_result.and(right_result)
+        } else {
+            left_result
+        }
+    }
+}
+
+fn start_io(io_inner: &IoExpressionInner,
+            expr_inner: &Expression,
+            mut context: IoContext)
+            -> io::Result<HandleInner> {
+    match *io_inner {
+        Input(ref v) => {
+            return Ok(HandleInner::Input(Box::new(InputHandle::start(expr_inner,
+                                                                     context,
+                                                                     v.clone())?)))
+        }
+        Stdin(ref p) => {
+            context.stdin = IoValue::File(File::open(p)?);
+        }
+        StdinFile(ref f) => {
+            context.stdin = IoValue::File(f.try_clone()?);
+        }
+        StdinNull => {
+            context.stdin = IoValue::Null;
+        }
+        Stdout(ref p) => {
+            context.stdout = IoValue::File(File::create(p)?);
+        }
+        StdoutFile(ref f) => {
+            context.stdout = IoValue::File(f.try_clone()?);
+        }
+        StdoutNull => {
+            context.stdout = IoValue::Null;
+        }
+        StdoutCapture => {
+            context.stdout = IoValue::File(context.stdout_capture.try_clone()?);
+        }
+        StdoutToStderr => {
+            context.stdout = context.stderr.try_clone()?;
+        }
+        Stderr(ref p) => {
+            context.stderr = IoValue::File(File::create(p)?);
+        }
+        StderrFile(ref f) => {
+            context.stderr = IoValue::File(f.try_clone()?);
+        }
+        StderrNull => {
+            context.stderr = IoValue::Null;
+        }
+        StderrCapture => context.stderr = IoValue::File(context.stderr_capture.try_clone()?),
+        StderrToStdout => {
+            context.stderr = context.stdout.try_clone()?;
+        }
+        Dir(ref p) => {
+            context.dir = Some(p.clone());
+        }
+        Env(ref name, ref val) => {
+            context.env.insert(name.clone(), val.clone());
+        }
+        FullEnv(ref map) => {
+            context.env = map.clone();
+        }
+        Unchecked => {
+            let inner_handle = expr_inner.0.start(context)?;
+            return Ok(HandleInner::Unchecked(Box::new(inner_handle)));
+        }
+    }
+    expr_inner.0.start(context)
+}
+
+struct InputHandle {
+    inner_handle: HandleInner,
+    writer_thread: WriterThread,
+}
+
+impl InputHandle {
+    fn start(expression: &Expression,
+             mut context: IoContext,
+             input: Arc<Vec<u8>>)
+             -> io::Result<InputHandle> {
+        let (reader, mut writer) = os_pipe::pipe()?;
+        context.stdin = IoValue::File(File::from_file(reader));
+        let inner = expression.0.start(context)?;
+        // We only spawn the writer thread if the expression started
+        // successfully, so that start errors won't leak a zombie thread.
+        let thread = std::thread::spawn(move || writer.write_all(&input));
+        Ok(InputHandle {
+            inner_handle: inner,
+            writer_thread: SharedThread::new(thread),
+        })
+    }
+
+    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
+        // We're responsible for joining the writer thread and not leaving a zombie.
+        // But waiting on the inner child can return an error, and in that case we
+        // don't know whether the child is still running or not. The rule in
+        // nonblocking mode is "clean up as much as we can, but never block," so we
+        // can't wait on the writer thread. But the rule in blocking mode is "clean
+        // up everything, even if some cleanup returns errors," so we must wait
+        // regardless of what's going on with the child.
+        let wait_res = self.inner_handle.wait(mode);
+        if mode.should_join_background_thread(&wait_res) {
+            // Join the writer thread. Broken pipe errors here are expected if
+            // the child exited without reading all of its input, so we suppress
+            // them. Return other errors though.
+            match *self.writer_thread.join() {
+                Err(ref err) if err.kind() != io::ErrorKind::BrokenPipe => {
+                    return Err(clone_io_error(err));
+                }
+                _ => {}
+            }
+        }
+        wait_res
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        self.inner_handle.kill()
     }
 }
 
@@ -984,154 +1353,6 @@ enum IoExpressionInner {
     Env(OsString, OsString),
     FullEnv(HashMap<OsString, OsString>),
     Unchecked,
-}
-
-impl IoExpressionInner {
-    fn update_context(&self,
-                      mut context: IoContext)
-                      -> io::Result<(IoContext, Option<WriterThread>)> {
-        let mut maybe_thread = None;
-        match *self {
-            Input(ref v) => {
-                let (reader, thread) = pipe_with_writer_thread(v)?;
-                context.stdin = IoValue::File(reader);
-                maybe_thread = Some(thread)
-            }
-            Stdin(ref p) => {
-                context.stdin = IoValue::File(File::open(p)?);
-            }
-            StdinFile(ref f) => {
-                context.stdin = IoValue::File(f.try_clone()?);
-            }
-            StdinNull => {
-                context.stdin = IoValue::Null;
-            }
-            Stdout(ref p) => {
-                context.stdout = IoValue::File(File::create(p)?);
-            }
-            StdoutFile(ref f) => {
-                context.stdout = IoValue::File(f.try_clone()?);
-            }
-            StdoutNull => {
-                context.stdout = IoValue::Null;
-            }
-            StdoutCapture => context.stdout = IoValue::File(context.stdout_capture.try_clone()?),
-            StdoutToStderr => {
-                context.stdout = context.stderr.try_clone()?;
-            }
-            Stderr(ref p) => {
-                context.stderr = IoValue::File(File::create(p)?);
-            }
-            StderrFile(ref f) => {
-                context.stderr = IoValue::File(f.try_clone()?);
-            }
-            StderrNull => {
-                context.stderr = IoValue::Null;
-            }
-            StderrCapture => context.stderr = IoValue::File(context.stderr_capture.try_clone()?),
-            StderrToStdout => {
-                context.stderr = context.stdout.try_clone()?;
-            }
-            Dir(ref p) => {
-                context.dir = Some(p.clone());
-            }
-            Env(ref name, ref val) => {
-                context.env.insert(name.clone(), val.clone());
-            }
-            FullEnv(ref map) => {
-                context.env = map.clone();
-            }
-            Unchecked => {
-                // No-op. Unchecked is handled in exec_io().
-            }
-        }
-        Ok((context, maybe_thread))
-    }
-}
-
-// We want to allow Path("foo") to refer to the local file "./foo" on
-// Unix, and we want to *prevent* Path("echo") from referring to the
-// global "echo" command on either Unix or Windows. Prepend a dot to all
-// relative paths to accomplish both of those.
-fn sanitize_exe_path<T: Into<PathBuf>>(path: T) -> PathBuf {
-    let path_buf = path.into();
-    // Don't try to be too clever with checking parent(). The parent of "foo" is
-    // Some(""). See https://github.com/rust-lang/rust/issues/36861. Also we
-    // don't strictly need the has_root check, because joining a leading dot is
-    // a no-op in that case, but explicitly checking it is clearer.
-    if path_buf.is_absolute() || path_buf.has_root() {
-        path_buf
-    } else {
-        Path::new(".").join(path_buf)
-    }
-}
-
-/// `duct` provides several impls of this trait to handle the difference between
-/// [`Path`](https://doc.rust-lang.org/std/path/struct.Path.html)/[`PathBuf`](https://doc.rust-lang.org/std/path/struct.PathBuf.html)
-/// and other types of strings. In particular, `duct` automatically prepends a
-/// leading dot to relative paths (though not other string types) before
-/// executing them. This is required for single-component relative paths to work
-/// at all on Unix, and it prevents aliasing with programs in the global `PATH`
-/// on both Unix and Windows. See the trait bounds on [`cmd`](fn.cmd.html) and
-/// [`sh`](fn.sh.html).
-pub trait ToExecutable {
-    fn to_executable(self) -> OsString;
-}
-
-// TODO: Get rid of most of these impls once specialization lands.
-
-impl<'a> ToExecutable for &'a Path {
-    fn to_executable(self) -> OsString {
-        sanitize_exe_path(self).into()
-    }
-}
-
-impl ToExecutable for PathBuf {
-    fn to_executable(self) -> OsString {
-        sanitize_exe_path(self).into()
-    }
-}
-
-impl<'a> ToExecutable for &'a PathBuf {
-    fn to_executable(self) -> OsString {
-        sanitize_exe_path(&**self).into()
-    }
-}
-
-impl<'a> ToExecutable for &'a str {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl ToExecutable for String {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl<'a> ToExecutable for &'a String {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl<'a> ToExecutable for &'a OsStr {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
-}
-
-impl ToExecutable for OsString {
-    fn to_executable(self) -> OsString {
-        self
-    }
-}
-
-impl<'a> ToExecutable for &'a OsString {
-    fn to_executable(self) -> OsString {
-        self.into()
-    }
 }
 
 // An IoContext represents the file descriptors child processes are talking to at execution time.
@@ -1213,55 +1434,6 @@ impl IoValue {
     }
 }
 
-type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
-
-fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
-    let (mut reader, writer) = os_pipe::pipe()?;
-    let thread = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output)?;
-        Ok(output)
-    });
-    Ok((File::from_file(writer), thread))
-}
-
-type WriterThread = JoinHandle<io::Result<()>>;
-
-fn pipe_with_writer_thread(input: &Arc<Vec<u8>>) -> io::Result<(File, WriterThread)> {
-    let (reader, mut writer) = os_pipe::pipe()?;
-    let new_arc = input.clone();
-    let thread = std::thread::spawn(move || {
-        writer.write_all(&new_arc)?;
-        Ok(())
-    });
-    Ok((File::from_file(reader), thread))
-}
-
-fn join_maybe_writer_thread(maybe_writer_thread: Option<WriterThread>) -> io::Result<()> {
-    if let Some(thread) = maybe_writer_thread {
-        // A broken pipe error happens if the process on the other end exits before
-        // we're done writing. We ignore those but return any other errors to the
-        // caller.
-        suppress_broken_pipe_errors(thread.join().unwrap())
-    } else {
-        Ok(())
-    }
-}
-
-// This is split out to make it easier to get test coverage.
-fn suppress_broken_pipe_errors(r: io::Result<()>) -> io::Result<()> {
-    if let &Err(ref io_error) = &r {
-        if io_error.kind() == io::ErrorKind::BrokenPipe {
-            return Ok(());
-        }
-    }
-    r
-}
-
-fn trim_right_newlines(s: &str) -> &str {
-    s.trim_right_matches(|c| c == '\n' || c == '\r')
-}
-
 // This struct keeps track of a child exit status, whether or not it's been
 // unchecked(), and what the command was that gave it (for error messages).
 #[derive(Clone, Debug)]
@@ -1294,6 +1466,198 @@ impl ExpressionStatus {
     #[cfg(windows)]
     fn exit_code_string(&self) -> String {
         self.status.code().unwrap().to_string()
+    }
+}
+
+fn canonicalize_exe_path_for_dir(exe_name: &OsStr, context: &IoContext) -> io::Result<OsString> {
+    // There's a tricky interaction between exe paths and `dir`. Exe
+    // paths can be relative, and so we have to ask: Is an exe path
+    // interpreted relative to the parent's cwd, or the child's? The
+    // answer is that it's platform dependent! >.< (Windows uses the
+    // parent's cwd, but because of the fork-chdir-exec pattern, Unix
+    // usually uses the child's.)
+    //
+    // We want to use the parent's cwd consistently, because that saves
+    // the caller from having to worry about whether `dir` will have
+    // side effects, and because it's easy for the caller to use
+    // Path::join if they want to. That means that when `dir` is in use,
+    // we need to detect exe names that are relative paths, and
+    // absolutify them. We want to do that as little as possible though,
+    // both because canonicalization can fail, and because we prefer to
+    // let the caller control the child's argv[0].
+    //
+    // We never want to absolutify a name like "emacs", because that's
+    // probably a program in the PATH rather than a local file. So we
+    // look for slashes in the name to determine what's a filepath and
+    // what isn't. Note that anything given as a std::path::Path will
+    // always have a slash by the time we get here, because we
+    // specialize the ToExecutable trait to prepend a ./ to them when
+    // they're relative. This leaves the case where Windows users might
+    // pass a local file like "foo.bat" as a string, which we can't
+    // distinguish from a global program name. However, because the
+    // Windows has the preferred "relative to parent's cwd" behavior
+    // already, this case actually works without our help. (The thing
+    // Windows users have to watch out for instead is local files
+    // shadowing global program names, which I don't think we can or
+    // should prevent.)
+
+    let has_separator = exe_name.to_string_lossy().chars().any(std::path::is_separator);
+    let is_relative = Path::new(exe_name).is_relative();
+    if context.dir.is_some() && has_separator && is_relative {
+        Path::new(exe_name).canonicalize().map(Into::into)
+    } else {
+        Ok(exe_name.to_owned())
+    }
+}
+
+// We want to allow Path("foo") to refer to the local file "./foo" on
+// Unix, and we want to *prevent* Path("echo") from referring to the
+// global "echo" command on either Unix or Windows. Prepend a dot to all
+// relative paths to accomplish both of those.
+fn dotify_relative_exe_path(path: &Path) -> PathBuf {
+    // This is a no-op if path is absolute or begins with a Windows prefix.
+    Path::new(".").join(path)
+}
+
+/// `duct` provides several impls of this trait to handle the difference between
+/// [`Path`](https://doc.rust-lang.org/std/path/struct.Path.html)/[`PathBuf`](https://doc.rust-lang.org/std/path/struct.PathBuf.html)
+/// and other types of strings. In particular, `duct` automatically prepends a
+/// leading dot to relative paths (though not other string types) before
+/// executing them. This is required for single-component relative paths to work
+/// at all on Unix, and it prevents aliasing with programs in the global `PATH`
+/// on both Unix and Windows. See the trait bounds on [`cmd`](fn.cmd.html) and
+/// [`sh`](fn.sh.html).
+pub trait ToExecutable {
+    fn to_executable(self) -> OsString;
+}
+
+// TODO: Get rid of most of these impls once specialization lands.
+
+impl<'a> ToExecutable for &'a Path {
+    fn to_executable(self) -> OsString {
+        dotify_relative_exe_path(self).into()
+    }
+}
+
+impl ToExecutable for PathBuf {
+    fn to_executable(self) -> OsString {
+        dotify_relative_exe_path(&self).into()
+    }
+}
+
+impl<'a> ToExecutable for &'a PathBuf {
+    fn to_executable(self) -> OsString {
+        dotify_relative_exe_path(self).into()
+    }
+}
+
+impl<'a> ToExecutable for &'a str {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl ToExecutable for String {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl<'a> ToExecutable for &'a String {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl<'a> ToExecutable for &'a OsStr {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+impl ToExecutable for OsString {
+    fn to_executable(self) -> OsString {
+        self
+    }
+}
+
+impl<'a> ToExecutable for &'a OsString {
+    fn to_executable(self) -> OsString {
+        self.into()
+    }
+}
+
+type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
+
+fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
+    let (mut reader, writer) = os_pipe::pipe()?;
+    let thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output)?;
+        Ok(output)
+    });
+    Ok((File::from_file(writer), thread))
+}
+
+type WriterThread = SharedThread<io::Result<()>>;
+
+fn trim_right_newlines(s: &str) -> &str {
+    s.trim_right_matches(|c| c == '\n' || c == '\r')
+}
+
+// io::Error doesn't implement clone directly, so we kind of hack it together.
+fn clone_io_error(error: &io::Error) -> io::Error {
+    if let Some(code) = error.raw_os_error() {
+        io::Error::from_raw_os_error(code)
+    } else {
+        io::Error::new(error.kind(), error.to_string())
+    }
+}
+
+struct SharedThread<T> {
+    result: AtomicLazyCell<T>,
+    handle: Mutex<Option<JoinHandle<T>>>,
+}
+
+// A thread that sticks its result in a lazy cell, so that multiple callers can see it.
+impl<T> SharedThread<T> {
+    fn new(handle: JoinHandle<T>) -> Self {
+        SharedThread {
+            result: AtomicLazyCell::new(),
+            handle: Mutex::new(Some(handle)),
+        }
+    }
+
+    // If the other thread panicked, this will panic.
+    fn join(&self) -> &T {
+        let mut handle_lock = self.handle.lock().expect("shared thread handle poisoned");
+        if let Some(handle) = handle_lock.take() {
+            let ret = handle.join().expect("panic on shared thread");
+            self.result.fill(ret).map_err(|_| "result lazycell unexpectedly full").unwrap();
+        }
+        self.result.borrow().expect("result lazycell unexpectedly empty")
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum WaitMode {
+    Blocking,
+    Nonblocking,
+}
+
+impl WaitMode {
+    fn should_join_background_thread(&self,
+                                     expression_result: &io::Result<Option<ExpressionStatus>>)
+                                     -> bool {
+        // Nonblocking waits can only join associated background threads if the
+        // running expression is finished (that is, when the thread is
+        // guaranteed to finish soon). Blocking waits should always join, even
+        // in the presence of errors.
+        match (self, expression_result) {
+            (&WaitMode::Blocking, _) => true,
+            (_, &Ok(Some(_))) => true,
+            _ => false,
+        }
     }
 }
 
