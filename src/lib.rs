@@ -71,7 +71,7 @@ use lazycell::AtomicLazyCell;
 extern crate os_pipe;
 extern crate shared_child;
 
-use os_pipe::FromFile;
+use os_pipe::IntoStdio;
 use shared_child::SharedChild;
 
 use std::collections::HashMap;
@@ -83,6 +83,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 use std::thread::JoinHandle;
 use std::sync::{Arc, Mutex};
+
+#[cfg(windows)]
+use std::os::windows::prelude::*;
+#[cfg(not(windows))]
+use std::os::unix::prelude::*;
 
 // enums defined below
 use ExpressionInner::*;
@@ -188,7 +193,7 @@ pub fn sh<T: ToExecutable>(command: T) -> Expression {
 }
 
 /// The central objects in `duct`, Expressions are created with
-/// [`cmd`](fn.cmd.html), [`cmd!`](macro.cmd.html), or [`sh`](fn.sh.html), then
+/// [`cmd`](fn.cmd.html), [`cmd!`](macro.cmd.html), or [`sh`](fn.sh.html),
 /// combined with [`pipe`](struct.Expression.html#method.pipe) or
 /// [`then`](struct.Expression.html#method.then), and finally executed with
 /// [`start`](struct.Expression.html#method.start),
@@ -406,7 +411,7 @@ impl Expression {
         Self::new(Io(Stdin(path.into()), self.clone()))
     }
 
-    /// Use an already opened file as input for an expression.
+    /// Use an already opened file or pipe as input for an expression.
     ///
     /// # Example
     ///
@@ -414,12 +419,17 @@ impl Expression {
     /// # use duct::sh;
     /// # if cfg!(not(windows)) {
     /// let input_file = std::fs::File::open("/dev/zero").unwrap();
-    /// let output = sh("head -c 3").stdin_file(input_file).read().unwrap();
+    /// let output = sh("head -c 3").stdin_handle(input_file).read().unwrap();
     /// assert_eq!("\0\0\0", output);
     /// # }
     /// ```
-    pub fn stdin_file(&self, file: File) -> Self {
-        Self::new(Io(StdinFile(file), self.clone()))
+    #[cfg(not(windows))]
+    pub fn stdin_handle<T: IntoRawFd>(&self, handle: T) -> Self {
+        Self::new(Io(StdinHandle(into_file(handle)), self.clone()))
+    }
+    #[cfg(windows)]
+    pub fn stdin_handle<T: IntoRawHandle>(&self, handle: T) -> Self {
+        Self::new(Io(StdinHandle(into_file(handle)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as input for an expression.
@@ -463,7 +473,7 @@ impl Expression {
         Self::new(Io(Stdout(path.into()), self.clone()))
     }
 
-    /// Use an already opened file as output for an expression.
+    /// Use an already opened file or pipe as output for an expression.
     ///
     /// # Example
     ///
@@ -475,15 +485,20 @@ impl Expression {
     /// # if cfg!(not(windows)) {
     /// let path = cmd!("mktemp").read().unwrap();
     /// let file = std::fs::File::create(&path).unwrap();
-    /// sh("echo wee").stdout_file(file).run().unwrap();
+    /// sh("echo wee").stdout_handle(file).run().unwrap();
     /// let mut output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut output).unwrap();
     /// assert_eq!("wee\n", output);
     /// # }
     /// # }
     /// ```
-    pub fn stdout_file(&self, file: File) -> Self {
-        Self::new(Io(StdoutFile(file), self.clone()))
+    #[cfg(not(windows))]
+    pub fn stdout_handle<T: IntoRawFd>(&self, handle: T) -> Self {
+        Self::new(Io(StdoutHandle(into_file(handle)), self.clone()))
+    }
+    #[cfg(windows)]
+    pub fn stdout_handle<T: IntoRawHandle>(&self, handle: T) -> Self {
+        Self::new(Io(StdoutHandle(into_file(handle)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as output for an expression.
@@ -571,7 +586,7 @@ impl Expression {
         Self::new(Io(Stderr(path.into()), self.clone()))
     }
 
-    /// Use an already opened file as error output for an expression.
+    /// Use an already opened file or pipe as error output for an expression.
     ///
     /// # Example
     ///
@@ -583,15 +598,20 @@ impl Expression {
     /// # if cfg!(not(windows)) {
     /// let path = cmd!("mktemp").read().unwrap();
     /// let file = std::fs::File::create(&path).unwrap();
-    /// sh("echo wee >&2").stderr_file(file).run().unwrap();
+    /// sh("echo wee >&2").stderr_handle(file).run().unwrap();
     /// let mut error_output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut error_output).unwrap();
     /// assert_eq!("wee\n", error_output);
     /// # }
     /// # }
     /// ```
-    pub fn stderr_file(&self, file: File) -> Self {
-        Self::new(Io(StderrFile(file.into()), self.clone()))
+    #[cfg(not(windows))]
+    pub fn stderr_handle<T: IntoRawFd>(&self, handle: T) -> Self {
+        Self::new(Io(StderrHandle(into_file(handle)), self.clone()))
+    }
+    #[cfg(windows)]
+    pub fn stderr_handle<T: IntoRawHandle>(&self, handle: T) -> Self {
+        Self::new(Io(StderrHandle(into_file(handle)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as error output for an expression.
@@ -712,14 +732,11 @@ impl Expression {
     /// # if cfg!(not(windows)) {
     /// let mut env_map: HashMap<_, _> = std::env::vars().collect();
     /// env_map.insert("FOO".into(), "bar".into());
-    /// let output = sh("echo $FOO").full_env(env_map).read().unwrap();
-    /// assert_eq!("bar", output);
-    ///
-    /// // The IntoIterator/Into<OsString> bounds are pretty flexible. A shared
-    /// // reference works here too.
-    /// # let mut env_map: HashMap<_, _> = std::env::vars().collect();
-    /// # env_map.insert("FOO".into(), "bar".into());
     /// let output = sh("echo $FOO").full_env(&env_map).read().unwrap();
+    /// assert_eq!("bar", output);
+    /// // The IntoIterator/Into<OsString> bounds are pretty flexible. Passing
+    /// // by value works here too.
+    /// let output = sh("echo $FOO").full_env(env_map).read().unwrap();
     /// assert_eq!("bar", output);
     /// # }
     /// ```
@@ -1003,9 +1020,9 @@ impl PipeHandle {
     fn start(left: &Expression, right: &Expression, context: IoContext) -> io::Result<PipeHandle> {
         let (reader, writer) = os_pipe::pipe()?;
         let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
-        left_context.stdout = IoValue::File(File::from_file(writer));
+        left_context.stdout = IoValue::Handle(into_file(writer));
         let mut right_context = context;
-        right_context.stdin = IoValue::File(File::from_file(reader));
+        right_context.stdin = IoValue::Handle(into_file(reader));
 
         // Errors starting the left side just short-circuit us.
         let left_handle = left.0.start(left_context)?;
@@ -1230,39 +1247,41 @@ fn start_io(io_inner: &IoExpressionInner,
                                                                      v.clone())?)))
         }
         Stdin(ref p) => {
-            context.stdin = IoValue::File(File::open(p)?);
+            context.stdin = IoValue::Handle(File::open(p)?);
         }
-        StdinFile(ref f) => {
-            context.stdin = IoValue::File(f.try_clone()?);
+        StdinHandle(ref f) => {
+            context.stdin = IoValue::Handle(f.try_clone()?);
         }
         StdinNull => {
             context.stdin = IoValue::Null;
         }
         Stdout(ref p) => {
-            context.stdout = IoValue::File(File::create(p)?);
+            context.stdout = IoValue::Handle(File::create(p)?);
         }
-        StdoutFile(ref f) => {
-            context.stdout = IoValue::File(f.try_clone()?);
+        StdoutHandle(ref f) => {
+            context.stdout = IoValue::Handle(f.try_clone()?);
         }
         StdoutNull => {
             context.stdout = IoValue::Null;
         }
         StdoutCapture => {
-            context.stdout = IoValue::File(context.stdout_capture.try_clone()?);
+            context.stdout = IoValue::Handle(into_file(context.stdout_capture_pipe.try_clone()?));
         }
         StdoutToStderr => {
             context.stdout = context.stderr.try_clone()?;
         }
         Stderr(ref p) => {
-            context.stderr = IoValue::File(File::create(p)?);
+            context.stderr = IoValue::Handle(File::create(p)?);
         }
-        StderrFile(ref f) => {
-            context.stderr = IoValue::File(f.try_clone()?);
+        StderrHandle(ref f) => {
+            context.stderr = IoValue::Handle(f.try_clone()?);
         }
         StderrNull => {
             context.stderr = IoValue::Null;
         }
-        StderrCapture => context.stderr = IoValue::File(context.stderr_capture.try_clone()?),
+        StderrCapture => {
+            context.stderr = IoValue::Handle(into_file(context.stderr_capture_pipe.try_clone()?));
+        }
         StderrToStdout => {
             context.stderr = context.stdout.try_clone()?;
         }
@@ -1294,7 +1313,7 @@ impl InputHandle {
              input: Arc<Vec<u8>>)
              -> io::Result<InputHandle> {
         let (reader, mut writer) = os_pipe::pipe()?;
-        context.stdin = IoValue::File(File::from_file(reader));
+        context.stdin = IoValue::Handle(into_file(reader));
         let inner = expression.0.start(context)?;
         // We only spawn the writer thread if the expression started
         // successfully, so that start errors won't leak a zombie thread.
@@ -1337,15 +1356,15 @@ impl InputHandle {
 enum IoExpressionInner {
     Input(Arc<Vec<u8>>),
     Stdin(PathBuf),
-    StdinFile(File),
+    StdinHandle(File),
     StdinNull,
     Stdout(PathBuf),
-    StdoutFile(File),
+    StdoutHandle(File),
     StdoutNull,
     StdoutCapture,
     StdoutToStderr,
     Stderr(PathBuf),
-    StderrFile(File),
+    StderrHandle(File),
     StderrNull,
     StderrCapture,
     StderrToStdout,
@@ -1363,8 +1382,8 @@ struct IoContext {
     stdin: IoValue,
     stdout: IoValue,
     stderr: IoValue,
-    stdout_capture: File,
-    stderr_capture: File,
+    stdout_capture_pipe: os_pipe::PipeWriter,
+    stderr_capture_pipe: os_pipe::PipeWriter,
     dir: Option<PathBuf>,
     env: HashMap<OsString, OsString>,
 }
@@ -1372,8 +1391,8 @@ struct IoContext {
 impl IoContext {
     // Returns (context, stdout_reader, stderr_reader).
     fn new() -> io::Result<(IoContext, ReaderThread, ReaderThread)> {
-        let (stdout_capture, stdout_reader) = pipe_with_reader_thread()?;
-        let (stderr_capture, stderr_reader) = pipe_with_reader_thread()?;
+        let (stdout_capture_pipe, stdout_reader) = pipe_with_reader_thread()?;
+        let (stderr_capture_pipe, stderr_reader) = pipe_with_reader_thread()?;
         let mut env = HashMap::new();
         for (name, val) in std::env::vars_os() {
             env.insert(name, val);
@@ -1382,8 +1401,8 @@ impl IoContext {
             stdin: IoValue::ParentStdin,
             stdout: IoValue::ParentStdout,
             stderr: IoValue::ParentStderr,
-            stdout_capture: stdout_capture,
-            stderr_capture: stderr_capture,
+            stdout_capture_pipe: stdout_capture_pipe,
+            stderr_capture_pipe: stderr_capture_pipe,
             dir: None,
             env: env,
         };
@@ -1395,8 +1414,8 @@ impl IoContext {
             stdin: self.stdin.try_clone()?,
             stdout: self.stdout.try_clone()?,
             stderr: self.stderr.try_clone()?,
-            stdout_capture: self.stdout_capture.try_clone()?,
-            stderr_capture: self.stderr_capture.try_clone()?,
+            stdout_capture_pipe: self.stdout_capture_pipe.try_clone()?,
+            stderr_capture_pipe: self.stderr_capture_pipe.try_clone()?,
             dir: self.dir.clone(),
             env: self.env.clone(),
         })
@@ -1409,7 +1428,10 @@ enum IoValue {
     ParentStdout,
     ParentStderr,
     Null,
-    File(File),
+    // We store all handles as File, even when they're e.g. anonymous pipes,
+    // using the into_file() conversion below. The File type is a very thin
+    // wrapper around the raw handle, but it gives us try_clone() and drop().
+    Handle(File),
 }
 
 impl IoValue {
@@ -1419,7 +1441,7 @@ impl IoValue {
             &IoValue::ParentStdout => IoValue::ParentStdout,
             &IoValue::ParentStderr => IoValue::ParentStderr,
             &IoValue::Null => IoValue::Null,
-            &IoValue::File(ref f) => IoValue::File(f.try_clone()?),
+            &IoValue::Handle(ref f) => IoValue::Handle(f.try_clone()?),
         })
     }
 
@@ -1429,9 +1451,18 @@ impl IoValue {
             IoValue::ParentStdout => os_pipe::parent_stdout(),
             IoValue::ParentStderr => os_pipe::parent_stderr(),
             IoValue::Null => Ok(Stdio::null()),
-            IoValue::File(f) => Ok(Stdio::from_file(f)),
+            IoValue::Handle(f) => Ok(f.into_stdio()),
         }
     }
+}
+
+#[cfg(windows)]
+fn into_file<T: IntoRawHandle>(handle: T) -> File {
+    unsafe { File::from_raw_handle(handle.into_raw_handle()) }
+}
+#[cfg(not(windows))]
+fn into_file<T: IntoRawFd>(handle: T) -> File {
+    unsafe { File::from_raw_fd(handle.into_raw_fd()) }
 }
 
 // This struct keeps track of a child exit status, whether or not it's been
@@ -1589,14 +1620,14 @@ impl<'a> ToExecutable for &'a OsString {
 
 type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 
-fn pipe_with_reader_thread() -> io::Result<(File, ReaderThread)> {
+fn pipe_with_reader_thread() -> io::Result<(os_pipe::PipeWriter, ReaderThread)> {
     let (mut reader, writer) = os_pipe::pipe()?;
     let thread = std::thread::spawn(move || {
         let mut output = Vec::new();
         reader.read_to_end(&mut output)?;
         Ok(output)
     });
-    Ok((File::from_file(writer), thread))
+    Ok((writer, thread))
 }
 
 type WriterThread = SharedThread<io::Result<()>>;
