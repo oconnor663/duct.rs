@@ -796,6 +796,12 @@ impl Expression {
 /// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
 /// `Handle` may be shared between multiple threads.
 ///
+/// Like `std::process::Child`, `Handle` does not implement `Drop`. If a
+/// `Handle` goes out of scope without calling
+/// [`wait`](struct.Handle.html#method.wait) or similar, child processes and
+/// background threads will keep running, and they'll [leave
+/// zombies](https://en.wikipedia.org/wiki/Resource_leak#Causes) when they exit.
+///
 /// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
 /// crate for implementation details behind making handles thread safe.
 pub struct Handle {
