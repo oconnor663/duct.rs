@@ -1556,14 +1556,20 @@ fn dotify_relative_exe_path(path: &Path) -> PathBuf {
     Path::new(".").join(path)
 }
 
-/// `duct` provides several impls of this trait to handle the difference between
-/// [`Path`](https://doc.rust-lang.org/std/path/struct.Path.html)/[`PathBuf`](https://doc.rust-lang.org/std/path/struct.PathBuf.html)
-/// and other types of strings. In particular, `duct` automatically prepends a
-/// leading dot to relative paths (though not other string types) before
-/// executing them. This is required for single-component relative paths to work
-/// at all on Unix, and it prevents aliasing with programs in the global `PATH`
-/// on both Unix and Windows. See the trait bounds on [`cmd`](fn.cmd.html) and
-/// [`sh`](fn.sh.html).
+/// An implementation detail of [`cmd`](fn.cmd.html) and [`sh`](fn.sh.html), to
+/// distinguish paths from other string types.
+///
+/// `Path("foo.sh")` means the file named `foo.sh` in the current directory.
+/// However if you try to execute that path with
+/// [`std::process::Command`](https://doc.rust-lang.org/std/process/struct.Command.html),
+/// Unix will get upset that it doesn't have a leading `./`. Rust knows that the
+/// string is a path, but that distinction gets lost by the time execution
+/// happens.
+///
+/// To execute relative paths correctly, Rust prepends the `./` to them
+/// automatically. This trait captures the distinction between the path types
+/// and other types of strings, which don't get modified. See the trait bounds
+/// on [`cmd`](fn.cmd.html) and [`sh`](fn.sh.html).
 pub trait ToExecutable {
     fn to_executable(self) -> OsString;
 }
