@@ -2,6 +2,7 @@ extern crate tempdir;
 use self::tempdir::TempDir;
 
 use super::{sh, Expression};
+use std;
 use std::collections::HashMap;
 use std::env;
 use std::env::consts::EXE_EXTENSION;
@@ -12,7 +13,7 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
-use std::sync::{Once, ONCE_INIT};
+use std::sync::{Arc, Once, ONCE_INIT};
 
 fn path_to_exe(name: &str) -> PathBuf {
     // This project defines some associated binaries for testing, and we shell out to them in
@@ -198,6 +199,18 @@ fn test_then_with_kill() {
     let handle = sleep_cmd.unchecked().then(sleep_cmd.clone()).start().unwrap();
     handle.kill().unwrap();
     handle.wait().unwrap();
+}
+
+#[test]
+fn test_multiple_threads() {
+    // Wait on the sleep command in a background thread, while the main thread
+    // kills it.
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
+    let handle = Arc::new(sleep_cmd.unchecked().start().unwrap());
+    let arc_clone = handle.clone();
+    let wait_thread = std::thread::spawn(move || { arc_clone.wait().unwrap(); });
+    handle.kill().unwrap();
+    wait_thread.join().unwrap();
 }
 
 #[test]
