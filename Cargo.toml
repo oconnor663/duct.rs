@@ -1,6 +1,6 @@
 [package]
 name = "duct"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["oconnor663@gmail.com"]
 description = "a library for creating shell pipelines"
 repository = "https://github.com/oconnor663/duct.rs"
