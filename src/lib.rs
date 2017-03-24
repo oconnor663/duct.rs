@@ -357,7 +357,6 @@ impl Expression {
     /// # }
     /// ```
     pub fn start(&self) -> io::Result<Handle> {
-        // TODO: SUBSTANTIAL COMMENTS ABOUT ERROR BEHAVIOR
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         Ok(Handle {
             inner: self.0.start(context)?,
