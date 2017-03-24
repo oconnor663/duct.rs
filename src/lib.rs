@@ -202,11 +202,59 @@ pub fn sh<T: ToExecutable>(command: T) -> Expression {
 /// methods to control their execution, like
 /// [`input`](struct.Expression.html#method.input),
 /// [`env`](struct.Expression.html#method.env), and
-/// [`unchecked`](struct.Expression.html#method.unchecked). Expressions are
-/// immutable, and they do a lot of
+/// [`unchecked`](struct.Expression.html#method.unchecked).
+///
+/// Expressions are immutable, and they do a lot of
 /// [`Arc`](https://doc.rust-lang.org/std/sync/struct.Arc.html) sharing
-/// internally, so all of these methods take `&self` and return a new
+/// internally, so all of the methods below take `&self` and return a new
 /// `Expression` cheaply.
+///
+/// Expressions using `then` and `pipe` form trees, and the order in which you
+/// call different methods can matter, just like it matters where you put
+/// redirections in Bash. For example, each of these expressions suppresses
+/// output differently:
+///
+/// ```
+/// # #[macro_use] extern crate duct;
+/// # fn main() {
+/// // Only suppress output from the left side.
+/// let suppress_foo = cmd!("echo", "foo").stdout_null().then(cmd!("echo", "bar"));
+/// assert_eq!(suppress_foo.read().unwrap(), "bar");
+///
+/// // Only suppress output from the right side.
+/// let suppress_bar = cmd!("echo", "foo").then(cmd!("echo", "bar").stdout_null());
+/// assert_eq!(suppress_bar.read().unwrap(), "foo");
+///
+/// // Suppress output from both sides.
+/// let suppress_both = cmd!("echo", "foo").then(cmd!("echo", "bar")).stdout_null();
+/// assert_eq!(suppress_both.read().unwrap(), "");
+/// # }
+/// ```
+///
+/// This version is exactly the same, but with temporary variables to make it
+/// easier to see what's going on:
+///
+/// ```
+/// # #[macro_use] extern crate duct;
+/// # fn main() {
+/// let foo = cmd!("echo", "foo");
+/// let bar = cmd!("echo", "bar");
+///
+/// let foo_null = foo.stdout_null();
+/// let bar_null = bar.stdout_null();
+///
+/// // Note that you can pass expressions by reference, when you're using them
+/// // more than once.
+/// let suppress_foo = foo_null.then(&bar);
+/// assert_eq!(suppress_foo.read().unwrap(), "bar");
+///
+/// let suppress_bar = foo.then(&bar_null);
+/// assert_eq!(suppress_bar.read().unwrap(), "foo");
+///
+/// let suppress_both = foo.then(bar).stdout_null();
+/// assert_eq!(suppress_both.read().unwrap(), "");
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Expression(Arc<ExpressionInner>);
