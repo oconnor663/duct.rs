@@ -196,7 +196,7 @@ fn test_then_with_kill() {
     // long-running commands. The first command is unchecked, so the exit status
     // alone won't short circuit the expression.
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
-    let handle = sleep_cmd.unchecked().then(sleep_cmd.clone()).start().unwrap();
+    let handle = sleep_cmd.unchecked().then(&sleep_cmd).start().unwrap();
     handle.kill().unwrap();
     handle.wait().unwrap();
 }
@@ -217,8 +217,8 @@ fn test_multiple_threads() {
 fn test_nonblocking_waits() {
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
     // Build a big ol' thing with pipe and then.
-    let handle = sleep_cmd.then(sleep_cmd.clone())
-        .pipe(sleep_cmd.then(sleep_cmd.clone()))
+    let handle = sleep_cmd.then(&sleep_cmd)
+        .pipe(sleep_cmd.then(&sleep_cmd))
         .unchecked()
         .start()
         .unwrap();

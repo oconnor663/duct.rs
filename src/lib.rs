@@ -337,8 +337,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn pipe(&self, right: Expression) -> Expression {
-        Self::new(Pipe(self.clone(), right.clone()))
+    pub fn pipe<T: Into<Expression>>(&self, right: T) -> Expression {
+        Self::new(Pipe(self.clone(), right.into()))
     }
 
     /// Chain two expressions together to run in series, like `&&` in the shell.
@@ -367,8 +367,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn then(&self, right: Expression) -> Expression {
-        Self::new(Then(self.clone(), right.clone()))
+    pub fn then<T: Into<Expression>>(&self, right: T) -> Expression {
+        Self::new(Then(self.clone(), right.into()))
     }
 
     /// Use bytes or a string as input for an expression, like `<<<` in the
@@ -785,6 +785,14 @@ impl Expression {
 
     fn new(inner: ExpressionInner) -> Expression {
         Expression(Arc::new(inner))
+    }
+}
+
+// Implemening Into<Expression> for references lets us accept both references
+// and values in `pipe` and `then`.
+impl<'a> From<&'a Expression> for Expression {
+    fn from(expr: &Expression) -> Expression {
+        expr.clone()
     }
 }
 
