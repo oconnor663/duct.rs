@@ -1,6 +1,6 @@
 [root]
 name = "duct"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "error-chain 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazycell 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
