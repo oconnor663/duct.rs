@@ -359,10 +359,10 @@ impl Expression {
     pub fn start(&self) -> io::Result<Handle> {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         Ok(Handle {
-            inner: self.0.start(context)?,
-            result: AtomicLazyCell::new(),
-            readers: Mutex::new(Some((stdout_reader, stderr_reader))),
-        })
+               inner: self.0.start(context)?,
+               result: AtomicLazyCell::new(),
+               readers: Mutex::new(Some((stdout_reader, stderr_reader))),
+           })
     }
 
     /// Join two expressions into a pipe, with the standard output of the left
@@ -792,9 +792,7 @@ impl Expression {
               U: Into<OsString>,
               V: Into<OsString>
     {
-        let env_map = name_vals.into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
+        let env_map = name_vals.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
 
@@ -870,7 +868,9 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// Multiple threads may wait at the same time.
     pub fn wait(&self) -> io::Result<&Output> {
-        let status = self.inner.wait(WaitMode::Blocking)?.expect("blocking wait can't return None");
+        let status = self.inner
+            .wait(WaitMode::Blocking)?
+            .expect("blocking wait can't return None");
         // The expression has exited. See if we need to collect its output
         // result, or if another caller has already done it. Do this inside the
         // readers lock, to avoid racing to fill the result.
@@ -878,8 +878,8 @@ impl Handle {
         if !self.result.filled() {
             // We're holding the readers lock, and we're the thread that needs
             // to collect the output. Take the reader threads and join them.
-            let (stdout_reader, stderr_reader) = readers_lock.take()
-                .expect("readers taken without filling result");
+            let (stdout_reader, stderr_reader) =
+                readers_lock.take().expect("readers taken without filling result");
             let stdout_result = stdout_reader.join().expect("stdout reader panic");
             let stderr_result = stderr_reader.join().expect("stderr reader panic");
             let final_result = match (stdout_result, stderr_result) {
@@ -895,10 +895,10 @@ impl Handle {
                 // And finally the successful output.
                 (Ok(stdout), Ok(stderr)) => {
                     Ok(Output {
-                        status: status.status,
-                        stdout: stdout,
-                        stderr: stderr,
-                    })
+                           status: status.status,
+                           stdout: stdout,
+                           stderr: stderr,
+                       })
                 }
             };
             self.result.fill(final_result).expect("result already filled outside the readers lock");
@@ -916,7 +916,9 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// If it's still running, return `Ok(None)`.
     pub fn try_wait(&self) -> io::Result<Option<&Output>> {
-        if self.inner.wait(WaitMode::Nonblocking)?.is_none() {
+        if self.inner
+               .wait(WaitMode::Nonblocking)?
+               .is_none() {
             Ok(None)
         } else {
             self.wait().map(Some)
@@ -952,16 +954,16 @@ enum ExpressionInner {
 impl ExpressionInner {
     fn start(&self, context: IoContext) -> io::Result<HandleInner> {
         Ok(match *self {
-            Cmd(ref argv) => HandleInner::Child(start_argv(argv, context)?),
-            Sh(ref command) => HandleInner::Child(start_sh(command, context)?),
-            Pipe(ref left, ref right) => {
-                HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
-            }
-            Then(ref left, ref right) => {
-                HandleInner::Then(Box::new(ThenHandle::start(left, right.clone(), context)?))
-            }
-            Io(ref io_inner, ref expr) => start_io(io_inner, expr, context)?,
-        })
+               Cmd(ref argv) => HandleInner::Child(start_argv(argv, context)?),
+               Sh(ref command) => HandleInner::Child(start_sh(command, context)?),
+               Pipe(ref left, ref right) => {
+                   HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
+               }
+               Then(ref left, ref right) => {
+                   HandleInner::Then(Box::new(ThenHandle::start(left, right.clone(), context)?))
+               }
+               Io(ref io_inner, ref expr) => start_io(io_inner, expr, context)?,
+           })
     }
 }
 
@@ -989,9 +991,9 @@ impl HandleInner {
             HandleInner::Input(ref input_handle) => input_handle.wait(mode),
             HandleInner::Unchecked(ref inner_handle) => {
                 Ok(inner_handle.wait(mode)?.map(|mut status| {
-                    status.checked = false;
-                    status
-                }))
+                                                    status.checked = false;
+                                                    status
+                                                }))
             }
         }
     }
@@ -1025,9 +1027,9 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> 
     let shared_child = SharedChild::spawn(&mut command)?;
     let command_string = format!("{:?}", argv);
     Ok(ChildHandle {
-        child: shared_child,
-        command_string: command_string,
-    })
+           child: shared_child,
+           command_string: command_string,
+       })
 }
 
 #[cfg(unix)]
@@ -1058,10 +1060,10 @@ impl ChildHandle {
         };
         if let Some(status) = maybe_status {
             Ok(Some(ExpressionStatus {
-                status: status,
-                checked: true,
-                command: self.command_string.clone(),
-            }))
+                        status: status,
+                        checked: true,
+                        command: self.command_string.clone(),
+                    }))
         } else {
             Ok(None)
         }
@@ -1080,7 +1082,8 @@ struct PipeHandle {
 impl PipeHandle {
     fn start(left: &Expression, right: &Expression, context: IoContext) -> io::Result<PipeHandle> {
         let (reader, writer) = os_pipe::pipe()?;
-        let mut left_context = context.try_clone()?; // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+        // dup'ing stdin/stdout isn't strictly necessary, but no big deal
+        let mut left_context = context.try_clone()?;
         left_context.stdout = IoValue::Handle(into_file(writer));
         let mut right_context = context;
         right_context.stdin = IoValue::Handle(into_file(reader));
@@ -1093,9 +1096,9 @@ impl PipeHandle {
         let right_result = right.0.start(right_context);
 
         Ok(PipeHandle {
-            left_handle: left_handle,
-            right_start_result: right_result,
-        })
+               left_handle: left_handle,
+               right_start_result: right_result,
+           })
     }
 
     // Waiting on a pipe expression is tricky. The right side might've failed to
@@ -1158,8 +1161,8 @@ fn pipe_status_precedence(left_maybe_status: Option<ExpressionStatus>,
         _ => return None,
     };
     Some(if right_status.is_checked_error() {
-        right_status
-    } else if left_status.is_checked_error() {
+             right_status
+         } else if left_status.is_checked_error() {
         left_status
     } else if !right_status.status.success() {
         right_status
@@ -1181,18 +1184,18 @@ impl ThenHandle {
         let left_context = context.try_clone()?;
         let left_handle = left.0.start(left_context)?;
         let shared = Arc::new(ThenHandleInner {
-            left_handle: left_handle,
-            right_lock: Mutex::new(Some((right, context))),
-            right_cell: AtomicLazyCell::new(),
-        });
+                                  left_handle: left_handle,
+                                  right_lock: Mutex::new(Some((right, context))),
+                                  right_cell: AtomicLazyCell::new(),
+                              });
         let clone = shared.clone();
         let background_waiter = std::thread::spawn(move || {
-            Ok(clone.wait(WaitMode::Blocking)?.expect("blocking wait can't return None"))
-        });
+                                                       Ok(clone.wait(WaitMode::Blocking)?.expect("blocking wait can't return None"))
+                                                   });
         Ok(ThenHandle {
-            shared_state: shared,
-            background_waiter: SharedThread::new(background_waiter),
-        })
+               shared_state: shared,
+               background_waiter: SharedThread::new(background_waiter),
+           })
     }
 
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
@@ -1203,7 +1206,10 @@ impl ThenHandle {
         // nonblocking mode.
         let wait_res = self.shared_state.wait(mode);
         if mode.should_join_background_thread(&wait_res) {
-            self.background_waiter.join().as_ref().map_err(clone_io_error)?;
+            self.background_waiter
+                .join()
+                .as_ref()
+                .map_err(clone_io_error)?;
         }
         wait_res
     }
@@ -1380,9 +1386,9 @@ impl InputHandle {
         // successfully, so that start errors won't leak a zombie thread.
         let thread = std::thread::spawn(move || writer.write_all(&input));
         Ok(InputHandle {
-            inner_handle: inner,
-            writer_thread: SharedThread::new(thread),
-        })
+               inner_handle: inner,
+               writer_thread: SharedThread::new(thread),
+           })
     }
 
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
@@ -1472,14 +1478,14 @@ impl IoContext {
 
     fn try_clone(&self) -> io::Result<IoContext> {
         Ok(IoContext {
-            stdin: self.stdin.try_clone()?,
-            stdout: self.stdout.try_clone()?,
-            stderr: self.stderr.try_clone()?,
-            stdout_capture_pipe: self.stdout_capture_pipe.try_clone()?,
-            stderr_capture_pipe: self.stderr_capture_pipe.try_clone()?,
-            dir: self.dir.clone(),
-            env: self.env.clone(),
-        })
+               stdin: self.stdin.try_clone()?,
+               stdout: self.stdout.try_clone()?,
+               stderr: self.stderr.try_clone()?,
+               stdout_capture_pipe: self.stdout_capture_pipe.try_clone()?,
+               stderr_capture_pipe: self.stderr_capture_pipe.try_clone()?,
+               dir: self.dir.clone(),
+               env: self.env.clone(),
+           })
     }
 }
 
@@ -1498,12 +1504,12 @@ enum IoValue {
 impl IoValue {
     fn try_clone(&self) -> io::Result<IoValue> {
         Ok(match self {
-            &IoValue::ParentStdin => IoValue::ParentStdin,
-            &IoValue::ParentStdout => IoValue::ParentStdout,
-            &IoValue::ParentStderr => IoValue::ParentStderr,
-            &IoValue::Null => IoValue::Null,
-            &IoValue::Handle(ref f) => IoValue::Handle(f.try_clone()?),
-        })
+               &IoValue::ParentStdin => IoValue::ParentStdin,
+               &IoValue::ParentStdout => IoValue::ParentStdout,
+               &IoValue::ParentStderr => IoValue::ParentStderr,
+               &IoValue::Null => IoValue::Null,
+               &IoValue::Handle(ref f) => IoValue::Handle(f.try_clone()?),
+           })
     }
 
     fn into_stdio(self) -> io::Result<Stdio> {
@@ -1552,12 +1558,18 @@ impl ExpressionStatus {
         if self.status.code().is_none() {
             return format!("<signal {}>", self.status.signal().unwrap());
         }
-        self.status.code().unwrap().to_string()
+        self.status
+            .code()
+            .unwrap()
+            .to_string()
     }
 
     #[cfg(windows)]
     fn exit_code_string(&self) -> String {
-        self.status.code().unwrap().to_string()
+        self.status
+            .code()
+            .unwrap()
+            .to_string()
     }
 }
 
@@ -1690,10 +1702,10 @@ type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 fn pipe_with_reader_thread() -> io::Result<(os_pipe::PipeWriter, ReaderThread)> {
     let (mut reader, writer) = os_pipe::pipe()?;
     let thread = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output)?;
-        Ok(output)
-    });
+                                        let mut output = Vec::new();
+                                        reader.read_to_end(&mut output)?;
+                                        Ok(output)
+                                    });
     Ok((writer, thread))
 }
 
@@ -1731,7 +1743,10 @@ impl<T> SharedThread<T> {
         let mut handle_lock = self.handle.lock().expect("shared thread handle poisoned");
         if let Some(handle) = handle_lock.take() {
             let ret = handle.join().expect("panic on shared thread");
-            self.result.fill(ret).map_err(|_| "result lazycell unexpectedly full").unwrap();
+            self.result
+                .fill(ret)
+                .map_err(|_| "result lazycell unexpectedly full")
+                .unwrap();
         }
         self.result.borrow().expect("result lazycell unexpectedly empty")
     }

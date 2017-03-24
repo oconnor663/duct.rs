@@ -96,24 +96,42 @@ fn test_unchecked_in_pipe() {
     let two = cmd!(path_to_exe("status"), "2");
 
     // Right takes precedence over left.
-    let output = one.pipe(two.clone()).unchecked().run().unwrap();
+    let output = one.pipe(two.clone())
+        .unchecked()
+        .run()
+        .unwrap();
     assert_eq!(2, output.status.code().unwrap());
 
     // Except that checked on the left takes precedence over unchecked on
     // the right.
-    let output = one.pipe(two.unchecked()).unchecked().run().unwrap();
+    let output = one.pipe(two.unchecked())
+        .unchecked()
+        .run()
+        .unwrap();
     assert_eq!(1, output.status.code().unwrap());
 
     // Right takes precedence over the left again if they're both unchecked.
-    let output = one.unchecked().pipe(two.unchecked()).unchecked().run().unwrap();
+    let output = one.unchecked()
+        .pipe(two.unchecked())
+        .unchecked()
+        .run()
+        .unwrap();
     assert_eq!(2, output.status.code().unwrap());
 
     // Except that if the right is a success, the left takes precedence.
-    let output = one.unchecked().pipe(zero.unchecked()).unchecked().run().unwrap();
+    let output = one.unchecked()
+        .pipe(zero.unchecked())
+        .unchecked()
+        .run()
+        .unwrap();
     assert_eq!(1, output.status.code().unwrap());
 
     // Even if the right is checked.
-    let output = one.unchecked().pipe(zero).unchecked().run().unwrap();
+    let output = one.unchecked()
+        .pipe(zero)
+        .unchecked()
+        .run()
+        .unwrap();
     assert_eq!(1, output.status.code().unwrap());
 }
 
@@ -134,7 +152,10 @@ fn test_pipe() {
 fn test_pipe_with_kill() {
     // Make sure both sides get killed.
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
-    let handle = sleep_cmd.pipe(sleep_cmd.clone()).unchecked().start().unwrap();
+    let handle = sleep_cmd.pipe(sleep_cmd.clone())
+        .unchecked()
+        .start()
+        .unwrap();
     handle.kill().unwrap();
     handle.wait().unwrap();
 }
@@ -196,7 +217,10 @@ fn test_then_with_kill() {
     // long-running commands. The first command is unchecked, so the exit status
     // alone won't short circuit the expression.
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
-    let handle = sleep_cmd.unchecked().then(&sleep_cmd).start().unwrap();
+    let handle = sleep_cmd.unchecked()
+        .then(&sleep_cmd)
+        .start()
+        .unwrap();
     handle.kill().unwrap();
     handle.wait().unwrap();
 }
@@ -265,10 +289,7 @@ fn test_stderr() {
 
 #[test]
 fn test_null() {
-    let expr = cmd!(path_to_exe("cat"))
-        .stdin_null()
-        .stdout_null()
-        .stderr_null();
+    let expr = cmd!(path_to_exe("cat")).stdin_null().stdout_null().stderr_null();
     let output = expr.read().unwrap();
     assert_eq!("", output);
 }
@@ -279,9 +300,7 @@ fn test_path() {
     let input_file = dir.path().join("input_file");
     let output_file = dir.path().join("output_file");
     File::create(&input_file).unwrap().write_all(b"xxx").unwrap();
-    let expr = cmd!(path_to_exe("x_to_y"))
-        .stdin(&input_file)
-        .stdout(&output_file);
+    let expr = cmd!(path_to_exe("x_to_y")).stdin(&input_file).stdout(&output_file);
     let output = expr.read().unwrap();
     assert_eq!("", output);
     let mut file_output = String::new();
@@ -370,10 +389,7 @@ fn test_dir() {
 
 #[test]
 fn test_env() {
-    let output = cmd!(path_to_exe("print_env"), "foo")
-        .env("foo", "bar")
-        .read()
-        .unwrap();
+    let output = cmd!(path_to_exe("print_env"), "foo").env("foo", "bar").read().unwrap();
     assert_eq!("bar", output);
 }
 
@@ -419,7 +435,5 @@ fn test_path_sanitization() {
     // We don't do any chdir'ing in this process, because the tests runner is multithreaded,
     // and we don't want to screw up anyone else's relative paths. Instead, we shell out to a
     // small test process that does that for us.
-    cmd!(path_to_exe("exe_in_dir"), path_to_exe("status"), "0")
-        .run()
-        .unwrap();
+    cmd!(path_to_exe("exe_in_dir"), path_to_exe("status"), "0").run().unwrap();
 }
