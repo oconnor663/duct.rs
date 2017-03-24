@@ -390,7 +390,7 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn input<T: Into<Vec<u8>>>(&self, input: T) -> Self {
+    pub fn input<T: Into<Vec<u8>>>(&self, input: T) -> Expression {
         Self::new(Io(Input(Arc::new(input.into())), self.clone()))
     }
 
@@ -407,7 +407,7 @@ impl Expression {
     /// assert_eq!("\0\0\0", output);
     /// # }
     /// ```
-    pub fn stdin<T: Into<PathBuf>>(&self, path: T) -> Self {
+    pub fn stdin<T: Into<PathBuf>>(&self, path: T) -> Expression {
         Self::new(Io(Stdin(path.into()), self.clone()))
     }
 
@@ -424,11 +424,11 @@ impl Expression {
     /// # }
     /// ```
     #[cfg(not(windows))]
-    pub fn stdin_handle<T: IntoRawFd>(&self, handle: T) -> Self {
+    pub fn stdin_handle<T: IntoRawFd>(&self, handle: T) -> Expression {
         Self::new(Io(StdinHandle(into_file(handle)), self.clone()))
     }
     #[cfg(windows)]
-    pub fn stdin_handle<T: IntoRawHandle>(&self, handle: T) -> Self {
+    pub fn stdin_handle<T: IntoRawHandle>(&self, handle: T) -> Expression {
         Self::new(Io(StdinHandle(into_file(handle)), self.clone()))
     }
 
@@ -445,7 +445,7 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stdin_null(&self) -> Self {
+    pub fn stdin_null(&self) -> Expression {
         Self::new(Io(StdinNull, self.clone()))
     }
 
@@ -469,7 +469,7 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stdout<T: Into<PathBuf>>(&self, path: T) -> Self {
+    pub fn stdout<T: Into<PathBuf>>(&self, path: T) -> Expression {
         Self::new(Io(Stdout(path.into()), self.clone()))
     }
 
@@ -493,11 +493,11 @@ impl Expression {
     /// # }
     /// ```
     #[cfg(not(windows))]
-    pub fn stdout_handle<T: IntoRawFd>(&self, handle: T) -> Self {
+    pub fn stdout_handle<T: IntoRawFd>(&self, handle: T) -> Expression {
         Self::new(Io(StdoutHandle(into_file(handle)), self.clone()))
     }
     #[cfg(windows)]
-    pub fn stdout_handle<T: IntoRawHandle>(&self, handle: T) -> Self {
+    pub fn stdout_handle<T: IntoRawHandle>(&self, handle: T) -> Expression {
         Self::new(Io(StdoutHandle(into_file(handle)), self.clone()))
     }
 
@@ -516,7 +516,7 @@ impl Expression {
     /// let output = sh("echo foo bar baz").stdout_null().read().unwrap();
     /// assert_eq!("", output);
     /// ```
-    pub fn stdout_null(&self) -> Self {
+    pub fn stdout_null(&self) -> Expression {
         Self::new(Io(StdoutNull, self.clone()))
     }
 
@@ -542,7 +542,7 @@ impl Expression {
     /// assert_eq!("foo", output2)
     /// # }
     /// ```
-    pub fn stdout_capture(&self) -> Self {
+    pub fn stdout_capture(&self) -> Expression {
         Self::new(Io(StdoutCapture, self.clone()))
     }
 
@@ -558,7 +558,7 @@ impl Expression {
     /// assert_eq!(&b"foo\n"[..], &output.stderr[..]);
     /// # }
     /// ```
-    pub fn stdout_to_stderr(&self) -> Self {
+    pub fn stdout_to_stderr(&self) -> Expression {
         Self::new(Io(StdoutToStderr, self.clone()))
     }
 
@@ -582,7 +582,7 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stderr<T: Into<PathBuf>>(&self, path: T) -> Self {
+    pub fn stderr<T: Into<PathBuf>>(&self, path: T) -> Expression {
         Self::new(Io(Stderr(path.into()), self.clone()))
     }
 
@@ -606,11 +606,11 @@ impl Expression {
     /// # }
     /// ```
     #[cfg(not(windows))]
-    pub fn stderr_handle<T: IntoRawFd>(&self, handle: T) -> Self {
+    pub fn stderr_handle<T: IntoRawFd>(&self, handle: T) -> Expression {
         Self::new(Io(StderrHandle(into_file(handle)), self.clone()))
     }
     #[cfg(windows)]
-    pub fn stderr_handle<T: IntoRawHandle>(&self, handle: T) -> Self {
+    pub fn stderr_handle<T: IntoRawHandle>(&self, handle: T) -> Expression {
         Self::new(Io(StderrHandle(into_file(handle)), self.clone()))
     }
 
@@ -623,7 +623,7 @@ impl Expression {
     /// // This echo-to-stderr command won't print anything.
     /// sh("echo foo bar baz >&2").stderr_null().run().unwrap();
     /// ```
-    pub fn stderr_null(&self) -> Self {
+    pub fn stderr_null(&self) -> Expression {
         Self::new(Io(StderrNull, self.clone()))
     }
 
@@ -641,7 +641,7 @@ impl Expression {
     /// assert_eq!(&b"foo\n"[..], &output_obj.stderr[..]);
     /// # }
     /// ```
-    pub fn stderr_capture(&self) -> Self {
+    pub fn stderr_capture(&self) -> Expression {
         Self::new(Io(StderrCapture, self.clone()))
     }
 
@@ -657,7 +657,7 @@ impl Expression {
     /// assert_eq!("foo", error_output);
     /// # }
     /// ```
-    pub fn stderr_to_stdout(&self) -> Self {
+    pub fn stderr_to_stdout(&self) -> Expression {
         Self::new(Io(StderrToStdout, self.clone()))
     }
 
@@ -694,7 +694,7 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn dir<T: Into<PathBuf>>(&self, path: T) -> Self {
+    pub fn dir<T: Into<PathBuf>>(&self, path: T) -> Expression {
         Self::new(Io(Dir(path.into()), self.clone()))
     }
 
@@ -709,7 +709,7 @@ impl Expression {
     /// assert_eq!("bar", output);
     /// # }
     /// ```
-    pub fn env<T, U>(&self, name: T, val: U) -> Self
+    pub fn env<T, U>(&self, name: T, val: U) -> Expression
         where T: Into<OsString>,
               U: Into<OsString>
     {
@@ -740,7 +740,7 @@ impl Expression {
     /// assert_eq!("bar", output);
     /// # }
     /// ```
-    pub fn full_env<T, U, V>(&self, name_vals: T) -> Self
+    pub fn full_env<T, U, V>(&self, name_vals: T) -> Expression
         where T: IntoIterator<Item = (U, V)>,
               U: Into<OsString>,
               V: Into<OsString>
@@ -779,11 +779,11 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn unchecked(&self) -> Self {
+    pub fn unchecked(&self) -> Expression {
         Self::new(Io(Unchecked, self.clone()))
     }
 
-    fn new(inner: ExpressionInner) -> Self {
+    fn new(inner: ExpressionInner) -> Expression {
         Expression(Arc::new(inner))
     }
 }
