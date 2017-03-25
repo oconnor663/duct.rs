@@ -365,11 +365,15 @@ impl Expression {
            })
     }
 
-    /// Join two expressions into a pipe, with the standard output of the left
-    /// hooked up to the standard input of the right, like `|` in the shell. If
-    /// either side of the pipe returns a non-zero exit status, that becomes the
-    /// status of the whole pipe, similar to Bash's `pipefail` option. If both
-    /// sides return non-zero, and one of them is
+    /// Join two expressions into a pipe expression, where the standard output
+    /// of the left will be hooked up to the standard input of the right, like
+    /// `|` in the shell.
+    ///
+    /// # Errors
+    ///
+    /// During execution, if one side of the pipe returns a non-zero exit
+    /// status, that becomes the status of the whole pipe, similar to Bash's
+    /// `pipefail` option. If both sides return non-zero, and one of them is
     /// [`unchecked`](struct.Expression.html#method.unchecked), then the checked
     /// side wins. Otherwise the right side wins.
     ///
@@ -388,9 +392,13 @@ impl Expression {
         Self::new(Pipe(self.clone(), right.into()))
     }
 
-    /// Chain two expressions together to run in series, like `&&` in the shell.
-    /// If the left child returns a non-zero exit status, the right child
-    /// doesn't run. You can use
+    /// Join two expressions together into an "A then B" expression, like `&&`
+    /// in the shell.
+    ///
+    /// # Errors
+    ///
+    /// During execution, if the left child returns a non-zero exit status, the
+    /// right child gets skipped. You can use
     /// [`unchecked`](struct.Expression.html#method.unchecked) on the left child
     /// to make sure the right child always runs. The exit status of this
     /// expression is the status of the last child that ran. Note that
@@ -419,7 +427,7 @@ impl Expression {
     }
 
     /// Use bytes or a string as input for an expression, like `<<<` in the
-    /// shell. A worker thread will be spawned at runtime to write this input.
+    /// shell. A worker thread will write the input at runtime.
     ///
     /// # Example
     ///
@@ -441,8 +449,8 @@ impl Expression {
         Self::new(Io(Input(Arc::new(input.into())), self.clone()))
     }
 
-    /// Open a file at the given path and use it as input for an expression, like
-    /// `<` in the shell.
+    /// Open a file at the given path and use it as input for an expression,
+    /// like `<` in the shell.
     ///
     /// # Example
     ///
