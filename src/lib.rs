@@ -188,6 +188,9 @@ macro_rules! cmd {
 ///
 /// assert_eq!("foo bar baz", output.unwrap());
 /// ```
+#[deprecated(since="0.8.2", note="`sh` is a security risk and will be [removed \
+                                  soon](https://github.com/oconnor663/duct.rs/issues/40), \
+                                  use `cmd!` instead")]
 pub fn sh<T: ToExecutable>(command: T) -> Expression {
     Expression::new(Sh(command.to_executable()))
 }
