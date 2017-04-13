@@ -30,7 +30,10 @@ fn path_to_exe(name: &str) -> PathBuf {
                 "Cargo failed to build associated binaries.");
     });
 
-    Path::new("target").join("debug").join(name).with_extension(EXE_EXTENSION)
+    Path::new("target")
+        .join("debug")
+        .join(name)
+        .with_extension(EXE_EXTENSION)
 }
 
 fn true_cmd() -> Expression {
@@ -56,8 +59,14 @@ fn test_sh() {
 
 #[test]
 fn test_start() {
-    let handle1 = cmd!(path_to_exe("echo"), "hi").stdout_capture().start().unwrap();
-    let handle2 = cmd!(path_to_exe("echo"), "lo").stdout_capture().start().unwrap();
+    let handle1 = cmd!(path_to_exe("echo"), "hi")
+        .stdout_capture()
+        .start()
+        .unwrap();
+    let handle2 = cmd!(path_to_exe("echo"), "lo")
+        .stdout_capture()
+        .start()
+        .unwrap();
     let output1 = handle1.output().unwrap();
     let output2 = handle2.output().unwrap();
     assert_eq!("hi", str::from_utf8(&output1.stdout).unwrap().trim());
@@ -79,7 +88,8 @@ fn test_unchecked() {
     let unchecked_false = false_cmd().unchecked();
     // Unchecked errors shouldn't prevent the right side of `then` from
     // running, and they shouldn't cause `run` to return an error.
-    let output = unchecked_false.then(cmd!(path_to_exe("echo"), "waa"))
+    let output = unchecked_false
+        .then(cmd!(path_to_exe("echo"), "waa"))
         .then(unchecked_false)
         .stdout_capture()
         .run()
@@ -96,18 +106,12 @@ fn test_unchecked_in_pipe() {
     let two = cmd!(path_to_exe("status"), "2");
 
     // Right takes precedence over left.
-    let output = one.pipe(two.clone())
-        .unchecked()
-        .run()
-        .unwrap();
+    let output = one.pipe(two.clone()).unchecked().run().unwrap();
     assert_eq!(2, output.status.code().unwrap());
 
     // Except that checked on the left takes precedence over unchecked on
     // the right.
-    let output = one.pipe(two.unchecked())
-        .unchecked()
-        .run()
-        .unwrap();
+    let output = one.pipe(two.unchecked()).unchecked().run().unwrap();
     assert_eq!(1, output.status.code().unwrap());
 
     // Right takes precedence over the left again if they're both unchecked.
@@ -127,17 +131,16 @@ fn test_unchecked_in_pipe() {
     assert_eq!(1, output.status.code().unwrap());
 
     // Even if the right is checked.
-    let output = one.unchecked()
-        .pipe(zero)
-        .unchecked()
-        .run()
-        .unwrap();
+    let output = one.unchecked().pipe(zero).unchecked().run().unwrap();
     assert_eq!(1, output.status.code().unwrap());
 }
 
 #[test]
 fn test_pipe() {
-    let output = sh("echo xxx").pipe(cmd!(path_to_exe("x_to_y"))).read().unwrap();
+    let output = sh("echo xxx")
+        .pipe(cmd!(path_to_exe("x_to_y")))
+        .read()
+        .unwrap();
     assert_eq!("yyy", output);
 
     // Check that errors on either side are propagated.
@@ -152,7 +155,8 @@ fn test_pipe() {
 fn test_pipe_with_kill() {
     // Make sure both sides get killed.
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
-    let handle = sleep_cmd.pipe(sleep_cmd.clone())
+    let handle = sleep_cmd
+        .pipe(sleep_cmd.clone())
         .unchecked()
         .start()
         .unwrap();
@@ -217,10 +221,7 @@ fn test_then_with_kill() {
     // long-running commands. The first command is unchecked, so the exit status
     // alone won't short circuit the expression.
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
-    let handle = sleep_cmd.unchecked()
-        .then(&sleep_cmd)
-        .start()
-        .unwrap();
+    let handle = sleep_cmd.unchecked().then(&sleep_cmd).start().unwrap();
     handle.kill().unwrap();
     handle.wait().unwrap();
 }
@@ -241,7 +242,8 @@ fn test_multiple_threads() {
 fn test_nonblocking_waits() {
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
     // Build a big ol' thing with pipe and then.
-    let handle = sleep_cmd.then(&sleep_cmd)
+    let handle = sleep_cmd
+        .then(&sleep_cmd)
         .pipe(sleep_cmd.then(&sleep_cmd))
         .unchecked()
         .start()
@@ -289,7 +291,10 @@ fn test_stderr() {
 
 #[test]
 fn test_null() {
-    let expr = cmd!(path_to_exe("cat")).stdin_null().stdout_null().stderr_null();
+    let expr = cmd!(path_to_exe("cat"))
+        .stdin_null()
+        .stdout_null()
+        .stderr_null();
     let output = expr.read().unwrap();
     assert_eq!("", output);
 }
@@ -299,12 +304,20 @@ fn test_path() {
     let dir = TempDir::new("test_path").unwrap();
     let input_file = dir.path().join("input_file");
     let output_file = dir.path().join("output_file");
-    File::create(&input_file).unwrap().write_all(b"xxx").unwrap();
-    let expr = cmd!(path_to_exe("x_to_y")).stdin(&input_file).stdout(&output_file);
+    File::create(&input_file)
+        .unwrap()
+        .write_all(b"xxx")
+        .unwrap();
+    let expr = cmd!(path_to_exe("x_to_y"))
+        .stdin(&input_file)
+        .stdout(&output_file);
     let output = expr.read().unwrap();
     assert_eq!("", output);
     let mut file_output = String::new();
-    File::open(&output_file).unwrap().read_to_string(&mut file_output).unwrap();
+    File::open(&output_file)
+        .unwrap()
+        .read_to_string(&mut file_output)
+        .unwrap();
     assert_eq!("yyy", file_output);
 }
 
@@ -389,7 +402,10 @@ fn test_dir() {
 
 #[test]
 fn test_env() {
-    let output = cmd!(path_to_exe("print_env"), "foo").env("foo", "bar").read().unwrap();
+    let output = cmd!(path_to_exe("print_env"), "foo")
+        .env("foo", "bar")
+        .read()
+        .unwrap();
     assert_eq!("bar", output);
 }
 
@@ -435,5 +451,7 @@ fn test_path_sanitization() {
     // We don't do any chdir'ing in this process, because the tests runner is multithreaded,
     // and we don't want to screw up anyone else's relative paths. Instead, we shell out to a
     // small test process that does that for us.
-    cmd!(path_to_exe("exe_in_dir"), path_to_exe("status"), "0").run().unwrap();
+    cmd!(path_to_exe("exe_in_dir"), path_to_exe("status"), "0")
+        .run()
+        .unwrap();
 }

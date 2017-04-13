@@ -803,7 +803,10 @@ impl Expression {
               U: Into<OsString>,
               V: Into<OsString>
     {
-        let env_map = name_vals.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        let env_map = name_vals
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
 
@@ -890,7 +893,9 @@ impl Handle {
             // We're holding the readers lock, and we're the thread that needs
             // to collect the output. Take the reader threads and join them.
             let (stdout_reader, stderr_reader) =
-                readers_lock.take().expect("readers taken without filling result");
+                readers_lock
+                    .take()
+                    .expect("readers taken without filling result");
             let stdout_result = stdout_reader.join().expect("stdout reader panic");
             let stderr_result = stderr_reader.join().expect("stderr reader panic");
             let final_result = match (stdout_result, stderr_result) {
@@ -912,7 +917,9 @@ impl Handle {
                        })
                 }
             };
-            self.result.fill(final_result).expect("result already filled outside the readers lock");
+            self.result
+                .fill(final_result)
+                .expect("result already filled outside the readers lock");
         }
         // The result has been collected, whether or not we were the caller that
         // collected it. Return a reference.
@@ -927,9 +934,7 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// If it's still running, return `Ok(None)`.
     pub fn try_wait(&self) -> io::Result<Option<&Output>> {
-        if self.inner
-               .wait(WaitMode::Nonblocking)?
-               .is_none() {
+        if self.inner.wait(WaitMode::Nonblocking)?.is_none() {
             Ok(None)
         } else {
             self.wait().map(Some)
@@ -944,7 +949,9 @@ impl Handle {
     /// equivalent to [`run`](struct.Expression.html#method.run).
     pub fn output(self) -> io::Result<Output> {
         self.wait()?;
-        self.result.into_inner().expect("wait didn't set the result")
+        self.result
+            .into_inner()
+            .expect("wait didn't set the result")
     }
 
     /// Kill the running expression.
@@ -1001,10 +1008,12 @@ impl HandleInner {
             HandleInner::Then(ref then_handle) => then_handle.wait(mode),
             HandleInner::Input(ref input_handle) => input_handle.wait(mode),
             HandleInner::Unchecked(ref inner_handle) => {
-                Ok(inner_handle.wait(mode)?.map(|mut status| {
-                                                    status.checked = false;
-                                                    status
-                                                }))
+                Ok(inner_handle
+                       .wait(mode)?
+                       .map(|mut status| {
+                                status.checked = false;
+                                status
+                            }))
             }
         }
     }
@@ -1045,7 +1054,9 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> 
 
 #[cfg(unix)]
 fn shell_command_argv(command: OsString) -> [OsString; 3] {
-    [OsStr::new("/bin/sh").to_owned(), OsStr::new("-c").to_owned(), command]
+    [OsStr::new("/bin/sh").to_owned(),
+     OsStr::new("-c").to_owned(),
+     command]
 }
 
 #[cfg(windows)]
@@ -1174,12 +1185,12 @@ fn pipe_status_precedence(left_maybe_status: Option<ExpressionStatus>,
     Some(if right_status.is_checked_error() {
              right_status
          } else if left_status.is_checked_error() {
-        left_status
-    } else if !right_status.status.success() {
-        right_status
-    } else {
-        left_status
-    })
+             left_status
+         } else if !right_status.status.success() {
+             right_status
+         } else {
+             left_status
+         })
 }
 
 // A "then" expression must start the right side as soon as the left is
@@ -1201,8 +1212,10 @@ impl ThenHandle {
                               });
         let clone = shared.clone();
         let background_waiter = std::thread::spawn(move || {
-                                                       Ok(clone.wait(WaitMode::Blocking)?.expect("blocking wait can't return None"))
-                                                   });
+            Ok(clone
+                   .wait(WaitMode::Blocking)?
+                   .expect("blocking wait can't return None"))
+        });
         Ok(ThenHandle {
                shared_state: shared,
                background_waiter: SharedThread::new(background_waiter),
@@ -1569,18 +1582,12 @@ impl ExpressionStatus {
         if self.status.code().is_none() {
             return format!("<signal {}>", self.status.signal().unwrap());
         }
-        self.status
-            .code()
-            .unwrap()
-            .to_string()
+        self.status.code().unwrap().to_string()
     }
 
     #[cfg(windows)]
     fn exit_code_string(&self) -> String {
-        self.status
-            .code()
-            .unwrap()
-            .to_string()
+        self.status.code().unwrap().to_string()
     }
 }
 
@@ -1616,7 +1623,10 @@ fn canonicalize_exe_path_for_dir(exe_name: &OsStr, context: &IoContext) -> io::R
     // shadowing global program names, which I don't think we can or
     // should prevent.)
 
-    let has_separator = exe_name.to_string_lossy().chars().any(std::path::is_separator);
+    let has_separator = exe_name
+        .to_string_lossy()
+        .chars()
+        .any(std::path::is_separator);
     let is_relative = Path::new(exe_name).is_relative();
     if context.dir.is_some() && has_separator && is_relative {
         Path::new(exe_name).canonicalize().map(Into::into)
@@ -1759,7 +1769,9 @@ impl<T> SharedThread<T> {
                 .map_err(|_| "result lazycell unexpectedly full")
                 .unwrap();
         }
-        self.result.borrow().expect("result lazycell unexpectedly empty")
+        self.result
+            .borrow()
+            .expect("result lazycell unexpectedly empty")
     }
 }
 
