@@ -35,7 +35,7 @@ fn shell_command_argv(command: OsString) -> Vec<OsString> {
     vec![comspec, "/C".into(), command]
 }
 
-fn path_to_exe(name: &str) -> PathBuf {
+pub fn path_to_exe(name: &str) -> PathBuf {
     // This project defines some associated binaries for testing, and we shell out to them in
     // these tests. `cargo test` doesn't automatically build associated binaries, so this
     // function takes care of building them explicitly.
@@ -56,7 +56,7 @@ fn path_to_exe(name: &str) -> PathBuf {
         .with_extension(EXE_EXTENSION)
 }
 
-fn true_cmd() -> Expression {
+pub fn true_cmd() -> Expression {
     cmd!(path_to_exe("status"), "0")
 }
 

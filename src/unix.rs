@@ -59,3 +59,54 @@ impl HandleExt for ThenHandle {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use test::*;
+    use cmd;
+    use super::{libc, HandleExt};
+
+    use std::os::unix::process::ExitStatusExt;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn test_send_signal_from_other_thread() {
+        let sleep_cmd = cmd(path_to_exe("sleep"), &["1000000"]);
+        let handle = Arc::new(sleep_cmd.unchecked().start().unwrap());
+        let handle_clone = handle.clone();
+
+        thread::spawn(move || handle_clone.send_signal(libc::SIGABRT).unwrap());
+        let status = handle.wait().unwrap();
+
+        assert_eq!(Some(libc::SIGABRT), status.status.signal());
+    }
+
+    #[test]
+    fn test_send_signal_to_pipe() {
+        let sleep_cmd = cmd(path_to_exe("sleep"), &["1000000"]);
+        let handle = sleep_cmd.pipe(sleep_cmd.clone()).unchecked().start().unwrap();
+        handle.send_signal(libc::SIGABRT).unwrap();
+        let status = handle.output().unwrap();
+        assert_eq!(Some(libc::SIGABRT), status.status.signal());
+    }
+
+    /// Tests the caveat explained in the documentation for `send_signal`
+    #[test]
+    fn test_signal_then_expression() {
+        let sleep_cmd = cmd(path_to_exe("sleep"), &["1000000"]);
+        let handle = sleep_cmd
+            .unchecked()
+            .then(true_cmd())
+            .unchecked()
+            .start()
+            .unwrap();
+        handle.send_signal(libc::SIGTERM).unwrap();
+        let status = handle.wait().unwrap();
+        // Since the sleep is unchecked the `then` expression will happily start the second
+        // expression and return the status of it upon completion.
+        assert_eq!(None, status.status.signal());
+        assert!(status.status.success());
+    }
+}
