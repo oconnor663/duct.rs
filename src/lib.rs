@@ -12,6 +12,11 @@
 //! - [Crate](https://crates.io/crates/duct)
 //! - [Repo](https://github.com/oconnor663/duct.rs)
 //!
+//! # Changelog
+//!
+//! - Version 0.9 removed the `sh` function. It now lives in its own crate,
+//! `duct_sh`.
+//!
 //! # Example
 //!
 //! `duct` tries to be as concise as possible, so that you don't wish you were
@@ -22,26 +27,26 @@
 //! #[macro_use]
 //! extern crate duct;
 //!
-//! use duct::{cmd, sh};
+//! use duct::cmd;
 //!
 //! fn main() {
 //!     // Read the name of the current git branch. If git exits with an error
 //!     // code here (because we're not in a git repo, for example), `read` will
-//!     // return an error too. `sh` commands run under the real system shell,
-//!     // /bin/sh on Unix or cmd.exe on Windows.
-//!     let current_branch = sh("git symbolic-ref --short HEAD").read().unwrap();
+//!     // return an error too.
+//!     let current_branch = cmd!("git", "symbolic-ref", "--short", "HEAD").read().unwrap();
 //!
 //!     // Log the current branch, with git taking over the terminal as usual.
-//!     // `cmd!` commands are spawned directly, without going through the
-//!     // shell, so there aren't any escaping issues with variable arguments.
-//!     cmd!("git", "log", current_branch).run().unwrap();
+//!     // The `cmd` function works just like the `cmd!` macro, but it takes a
+//!     // collection instead of a variable list of arguments.
+//!     let args = &["log", &current_branch];
+//!     cmd("git", args).run().unwrap();
 //!
 //!     // More complicated expressions become trees. Here's a pipeline with two
 //!     // child processes on the left, just because we can. In Bash this would
 //!     // be: stdout=$((echo -n part one "" && echo part two) | sed s/p/sm/g)
 //!     let part_one = &["-n", "part", "one", ""];
 //!     let stdout = cmd("echo", part_one)
-//!         .then(sh("echo part two"))
+//!         .then(cmd!("echo", "part", "two"))
 //!         .pipe(cmd!("sed", "s/p/sm/g"))
 //!         .read()
 //!         .unwrap();
@@ -53,15 +58,17 @@
 //! internally, and the docs for that one include a [big
 //! example](https://docs.rs/os_pipe#example) that takes a dozen lines of code
 //! to read both stdout and stderr from a child process. `duct` can do that in
-//! one line:
+//! one (moderately long) line:
 //!
 //! ```rust
-//! use duct::sh;
-//!
-//! // This works on Windows too!
-//! let output = sh("echo foo && echo bar >&2").stderr_to_stdout().read().unwrap();
+//! # #[macro_use] extern crate duct;
+//! # fn main() {
+//! # if cfg!(not(windows)) {
+//! let output = cmd!("sh", "-c", "echo foo && echo bar 2>&1").stderr_to_stdout().read().unwrap();
 //!
 //! assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
+//! # }
+//! # }
 //! ```
 
 extern crate lazycell;
@@ -166,38 +173,9 @@ macro_rules! cmd {
     };
 }
 
-/// Create a command from a string of shell code.
-///
-/// This invokes the operating system's shell to execute the string:
-/// `/bin/sh` on Unix-like systems and `cmd.exe` on Windows. This can be
-/// very convenient sometimes, especially in small scripts and examples.
-/// You don't need to quote each argument, and all the operators like
-/// `|` and `>` work as usual.
-///
-/// However, building shell commands at runtime brings up tricky whitespace and
-/// escaping issues, so avoid using `sh` and `format!` together. Prefer
-/// [`cmd!`](macro.cmd.html) instead in those cases. Also note that shell
-/// commands don't tend to be portable between Unix and Windows.
-///
-/// # Example
-///
-/// ```
-/// use duct::sh;
-///
-/// let output = sh("echo foo bar baz").read();
-///
-/// assert_eq!("foo bar baz", output.unwrap());
-/// ```
-#[deprecated(since="0.8.2", note="`sh` is a security risk and will be [removed \
-                                  soon](https://github.com/oconnor663/duct.rs/issues/40), \
-                                  use `cmd!` instead")]
-pub fn sh<T: ToExecutable>(command: T) -> Expression {
-    Expression::new(Sh(command.to_executable()))
-}
-
 /// The central objects in `duct`, Expressions are created with
-/// [`cmd`](fn.cmd.html), [`cmd!`](macro.cmd.html), or [`sh`](fn.sh.html),
-/// combined with [`pipe`](struct.Expression.html#method.pipe) or
+/// [`cmd`](fn.cmd.html) or [`cmd!`](macro.cmd.html), combined with
+/// [`pipe`](struct.Expression.html#method.pipe) or
 /// [`then`](struct.Expression.html#method.then), and finally executed with
 /// [`start`](struct.Expression.html#method.start),
 /// [`run`](struct.Expression.html#method.run), or
@@ -413,14 +391,13 @@ impl Expression {
     ///
     /// ```
     /// # #[macro_use] extern crate duct;
-    /// # use duct::sh;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // Both echoes share the same stdout, so both go through `sed`.
     /// # // NOTE: The shell's builtin echo doesn't support -n on OSX.
     /// let output = cmd!("echo", "-n", "bar")
-    ///     .then(sh("echo baz"))
-    ///     .pipe(sh("sed s/b/f/g")).read();
+    ///     .then(cmd!("echo", "baz"))
+    ///     .pipe(cmd!("sed", "s/b/f/g")).read();
     /// assert_eq!("farfaz", output.unwrap());
     /// # }
     /// # }
@@ -458,11 +435,13 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
-    /// let output = sh("head -c 3").stdin("/dev/zero").read().unwrap();
+    /// let output = cmd!("head", "-c", "3").stdin("/dev/zero").read().unwrap();
     /// assert_eq!("\0\0\0", output);
+    /// # }
     /// # }
     /// ```
     pub fn stdin<T: Into<PathBuf>>(&self, path: T) -> Expression {
@@ -474,11 +453,13 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let input_file = std::fs::File::open("/dev/zero").unwrap();
-    /// let output = sh("head -c 3").stdin_handle(input_file).read().unwrap();
+    /// let output = cmd!("head", "-c", "3").stdin_handle(input_file).read().unwrap();
     /// assert_eq!("\0\0\0", output);
+    /// # }
     /// # }
     /// ```
     #[cfg(not(windows))]
@@ -515,12 +496,11 @@ impl Expression {
     /// ```
     /// # #[macro_use] extern crate duct;
     /// # fn main() {
-    /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
     /// let path = cmd!("mktemp").read().unwrap();
-    /// sh("echo wee").stdout(&path).run().unwrap();
+    /// cmd!("echo", "wee").stdout(&path).run().unwrap();
     /// let mut output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut output).unwrap();
     /// assert_eq!("wee\n", output);
@@ -538,12 +518,11 @@ impl Expression {
     /// ```
     /// # #[macro_use] extern crate duct;
     /// # fn main() {
-    /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
     /// let path = cmd!("mktemp").read().unwrap();
     /// let file = std::fs::File::create(&path).unwrap();
-    /// sh("echo wee").stdout_handle(file).run().unwrap();
+    /// cmd!("echo", "wee").stdout_handle(file).run().unwrap();
     /// let mut output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut output).unwrap();
     /// assert_eq!("wee\n", output);
@@ -564,15 +543,17 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// // This echo command won't print anything.
-    /// sh("echo foo bar baz").stdout_null().run().unwrap();
+    /// cmd!("echo", "foo", "bar", "baz").stdout_null().run().unwrap();
     ///
     /// // And you won't get anything even if you try to read its output! The
     /// // null redirect happens farther down in the expression tree than the
     /// // implicit `stdout_capture`, and so it takes precedence.
-    /// let output = sh("echo foo bar baz").stdout_null().read().unwrap();
+    /// let output = cmd!("echo", "foo", "bar", "baz").stdout_null().read().unwrap();
     /// assert_eq!("", output);
+    /// # }
     /// ```
     pub fn stdout_null(&self) -> Expression {
         Self::new(Io(StdoutNull, self.clone()))
@@ -588,16 +569,18 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // The most direct way to read stdout bytes is `stdout_capture`.
-    /// let output1 = sh("echo foo").stdout_capture().run().unwrap().stdout;
+    /// let output1 = cmd!("echo", "foo").stdout_capture().run().unwrap().stdout;
     /// assert_eq!(&b"foo\n"[..], &output1[..]);
     ///
     /// // The `read` method is a shorthand for `stdout_capture`, and it also
     /// // does string parsing and newline trimming.
-    /// let output2 = sh("echo foo").read().unwrap();
+    /// let output2 = cmd!("echo", "foo").read().unwrap();
     /// assert_eq!("foo", output2)
+    /// # }
     /// # }
     /// ```
     pub fn stdout_capture(&self) -> Expression {
@@ -610,10 +593,12 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # if cfg!(not(windows)) {
-    /// let output = sh("echo foo").stdout_to_stderr().stderr_capture().run().unwrap();
+    /// let output = cmd!("echo", "foo").stdout_to_stderr().stderr_capture().run().unwrap();
     /// assert_eq!(&b"foo\n"[..], &output.stderr[..]);
+    /// # }
     /// # }
     /// ```
     pub fn stdout_to_stderr(&self) -> Expression {
@@ -628,12 +613,11 @@ impl Expression {
     /// ```
     /// # #[macro_use] extern crate duct;
     /// # fn main() {
-    /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
     /// let path = cmd!("mktemp").read().unwrap();
-    /// sh("echo wee >&2").stderr(&path).run().unwrap();
+    /// cmd!("sh", "-c", "echo wee >&2").stderr(&path).run().unwrap();
     /// let mut error_output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut error_output).unwrap();
     /// assert_eq!("wee\n", error_output);
@@ -651,12 +635,11 @@ impl Expression {
     /// ```
     /// # #[macro_use] extern crate duct;
     /// # fn main() {
-    /// # use duct::sh;
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
     /// let path = cmd!("mktemp").read().unwrap();
     /// let file = std::fs::File::create(&path).unwrap();
-    /// sh("echo wee >&2").stderr_handle(file).run().unwrap();
+    /// cmd!("sh", "-c", "echo wee >&2").stderr_handle(file).run().unwrap();
     /// let mut error_output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut error_output).unwrap();
     /// assert_eq!("wee\n", error_output);
@@ -677,9 +660,13 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
     /// // This echo-to-stderr command won't print anything.
-    /// sh("echo foo bar baz >&2").stderr_null().run().unwrap();
+    /// cmd!("sh", "-c", "echo foo bar baz >&2").stderr_null().run().unwrap();
+    /// # }
+    /// # }
     /// ```
     pub fn stderr_null(&self) -> Expression {
         Self::new(Io(StderrNull, self.clone()))
@@ -693,10 +680,12 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # if cfg!(not(windows)) {
-    /// let output_obj = sh("echo foo >&2").stderr_capture().run().unwrap();
+    /// let output_obj = cmd!("sh", "-c", "echo foo >&2").stderr_capture().run().unwrap();
     /// assert_eq!(&b"foo\n"[..], &output_obj.stderr[..]);
+    /// # }
     /// # }
     /// ```
     pub fn stderr_capture(&self) -> Expression {
@@ -709,10 +698,12 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # if cfg!(not(windows)) {
-    /// let error_output = sh("echo foo >&2").stderr_to_stdout().read().unwrap();
+    /// let error_output = cmd!("sh", "-c", "echo foo >&2").stderr_to_stdout().read().unwrap();
     /// assert_eq!("foo", error_output);
+    /// # }
     /// # }
     /// ```
     pub fn stderr_to_stdout(&self) -> Expression {
@@ -761,10 +752,12 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # if cfg!(not(windows)) {
-    /// let output = sh("echo $FOO").env("FOO", "bar").read().unwrap();
+    /// let output = cmd!("sh", "-c", "echo $FOO").env("FOO", "bar").read().unwrap();
     /// assert_eq!("bar", output);
+    /// # }
     /// # }
     /// ```
     pub fn env<T, U>(&self, name: T, val: U) -> Expression
@@ -785,17 +778,19 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # use duct::sh;
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
     /// # use std::collections::HashMap;
     /// # if cfg!(not(windows)) {
     /// let mut env_map: HashMap<_, _> = std::env::vars().collect();
     /// env_map.insert("FOO".into(), "bar".into());
-    /// let output = sh("echo $FOO").full_env(&env_map).read().unwrap();
+    /// let output = cmd!("sh", "-c", "echo $FOO").full_env(&env_map).read().unwrap();
     /// assert_eq!("bar", output);
     /// // The IntoIterator/Into<OsString> bounds are pretty flexible. Passing
     /// // by value works here too.
-    /// let output = sh("echo $FOO").full_env(env_map).read().unwrap();
+    /// let output = cmd!("sh", "-c", "echo $FOO").full_env(env_map).read().unwrap();
     /// assert_eq!("bar", output);
+    /// # }
     /// # }
     /// ```
     pub fn full_env<T, U, V>(&self, name_vals: T) -> Expression
@@ -963,7 +958,6 @@ impl Handle {
 #[derive(Debug)]
 enum ExpressionInner {
     Cmd(Vec<OsString>),
-    Sh(OsString),
     Pipe(Expression, Expression),
     Then(Expression, Expression),
     Io(IoExpressionInner, Expression),
@@ -973,7 +967,6 @@ impl ExpressionInner {
     fn start(&self, context: IoContext) -> io::Result<HandleInner> {
         Ok(match *self {
                Cmd(ref argv) => HandleInner::Child(start_argv(argv, context)?),
-               Sh(ref command) => HandleInner::Child(start_sh(command, context)?),
                Pipe(ref left, ref right) => {
                    HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
                }
@@ -986,7 +979,6 @@ impl ExpressionInner {
 }
 
 enum HandleInner {
-    // Cmd and Sh expressions both yield this guy.
     Child(ChildHandle),
     // If the left side of a pipe fails to start, there's nothing to wait for,
     // and we return an error immediately. But if the right side fails to start,
@@ -1050,23 +1042,6 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> 
            child: shared_child,
            command_string: command_string,
        })
-}
-
-#[cfg(unix)]
-fn shell_command_argv(command: OsString) -> [OsString; 3] {
-    [OsStr::new("/bin/sh").to_owned(),
-     OsStr::new("-c").to_owned(),
-     command]
-}
-
-#[cfg(windows)]
-fn shell_command_argv(command: OsString) -> [OsString; 3] {
-    let comspec = std::env::var_os("COMSPEC").unwrap_or(OsStr::new("cmd.exe").to_owned());
-    [comspec, OsStr::new("/C").to_owned(), command]
-}
-
-fn start_sh(command: &OsString, context: IoContext) -> io::Result<ChildHandle> {
-    start_argv(&shell_command_argv(command.clone()), context)
 }
 
 struct ChildHandle {
@@ -1644,8 +1619,8 @@ fn dotify_relative_exe_path(path: &Path) -> PathBuf {
     Path::new(".").join(path)
 }
 
-/// An implementation detail of [`cmd`](fn.cmd.html) and [`sh`](fn.sh.html), to
-/// distinguish paths from other string types.
+/// An implementation detail of [`cmd`](fn.cmd.html), to distinguish paths from
+/// other string types.
 ///
 /// `Path("foo.sh")` means the file named `foo.sh` in the current directory.
 /// However if you try to execute that path with
@@ -1657,7 +1632,7 @@ fn dotify_relative_exe_path(path: &Path) -> PathBuf {
 /// To execute relative paths correctly, Rust prepends the `./` to them
 /// automatically. This trait captures the distinction between the path types
 /// and other types of strings, which don't get modified. See the trait bounds
-/// on [`cmd`](fn.cmd.html) and [`sh`](fn.sh.html).
+/// on [`cmd`](fn.cmd.html).
 pub trait ToExecutable {
     fn to_executable(self) -> OsString;
 }

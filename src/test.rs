@@ -1,7 +1,7 @@
 extern crate tempdir;
 use self::tempdir::TempDir;
 
-use super::{sh, Expression};
+use super::{cmd, Expression};
 use std;
 use std::collections::HashMap;
 use std::env;
@@ -14,6 +14,26 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 use std::sync::{Arc, Once, ONCE_INIT};
+
+// Include a copy of the sh function, because we have a lot of old tests that
+// use it, and it's a lot easier than managing a circular dependency between
+// duct and duct_sh.
+
+pub fn sh(command: &'static str) -> Expression {
+    let argv = shell_command_argv(command.into());
+    cmd(&argv[0], &argv[1..])
+}
+
+#[cfg(unix)]
+fn shell_command_argv(command: OsString) -> Vec<OsString> {
+    vec!["/bin/sh".into(), "-c".into(), command]
+}
+
+#[cfg(windows)]
+fn shell_command_argv(command: OsString) -> Vec<OsString> {
+    let comspec = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+    vec![comspec, "/C".into(), command]
+}
 
 fn path_to_exe(name: &str) -> PathBuf {
     // This project defines some associated binaries for testing, and we shell out to them in
