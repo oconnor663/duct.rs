@@ -9,7 +9,6 @@ license = "MIT"
 
 [dependencies]
 os_pipe = "^0.5.1"
-error-chain = "^0.8.1"
 shared_child = "^0.3.0"
 lazycell = "^0.5.0"
 
