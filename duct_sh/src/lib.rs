@@ -13,13 +13,14 @@
 //! - Simple `sh` commands are nice when you first write them, but it feels
 //!   annoying to rewrite them as `cmd!` once you need to introduce a variable
 //!   somewhere. That annoyance is pressure to do something evil.
-//! - Legitimate use cases for `sh_dangerous` in small scripts is rare. The
-//!   common use case is something like a build tool, where the user is expected
-//!   to run arbitrary shell commands through the tool. Importing an extra crate
-//!   (or just copying the whole function) is less of a big deal in the source
-//!   code of a build tool than it is in a small script.
+//! - Legitimate use cases for `sh_dangerous` in small scripts are rare. (`cmd!`
+//!   is almost always preferable.) The common use case is something like a
+//!   build tool, where the user is expected to run arbitrary shell commands
+//!   through the tool. Importing an extra crate (or just copying the whole
+//!   function) is less of a big deal in the source code of a build tool than it
+//!   is in a small script.
 //! - Many languages have standard library support for launching shell commands.
-//!   Rust doesn't, and so `duct_sh` is more valuable in Rust than it would by
+//!   Rust doesn't, and so `duct_sh` is more valuable in Rust than it would be
 //!   in say Python.
 
 extern crate duct;

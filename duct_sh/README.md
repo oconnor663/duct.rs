@@ -21,5 +21,5 @@ points in favor:
   (or just copying the whole function) is less of a big deal in the source
   code of a build tool than it is in a small script.
 - Many languages have standard library support for launching shell commands.
-  Rust doesn't, and so `duct_sh` is more valuable in Rust than it would by
+  Rust doesn't, and so `duct_sh` is more valuable in Rust than it would be
   in say Python.
