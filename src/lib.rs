@@ -23,7 +23,7 @@
 //! back writing shell scripts. At the same time, it's explicit about what
 //! happens to output, and strict about error codes in child processes.
 //!
-//! ```rust,no_run
+//! ```no_run
 //! #[macro_use]
 //! extern crate duct;
 //!
@@ -60,7 +60,7 @@
 //! to read both stdout and stderr from a child process. `duct` can do that in
 //! one (moderately long) line:
 //!
-//! ```rust
+//! ```
 //! # #[macro_use] extern crate duct;
 //! # fn main() {
 //! # if cfg!(not(windows)) {

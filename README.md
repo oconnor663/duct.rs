@@ -25,7 +25,7 @@ Python, with an identical API.
 back writing shell scripts. At the same time, it's explicit about what
 happens to output, and strict about error codes in child processes.
 
-```rust,no_run
+```rust
 #[macro_use]
 extern crate duct;
 
@@ -63,12 +63,7 @@ to read both stdout and stderr from a child process. `duct` can do that in
 one (moderately long) line:
 
 ```rust
-# #[macro_use] extern crate duct;
-# fn main() {
-# if cfg!(not(windows)) {
 let output = cmd!("sh", "-c", "echo foo && echo bar 2>&1").stderr_to_stdout().read().unwrap();
 
 assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
-# }
-# }
 ```
