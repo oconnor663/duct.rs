@@ -96,6 +96,10 @@ use std::os::windows::prelude::*;
 #[cfg(not(windows))]
 use std::os::unix::prelude::*;
 
+/// Unix specific extensions to duct.
+#[cfg(unix)]
+pub mod unix;
+
 // enums defined below
 use ExpressionInner::*;
 use IoExpressionInner::*;
