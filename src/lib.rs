@@ -96,7 +96,7 @@ use std::os::windows::prelude::*;
 #[cfg(not(windows))]
 use std::os::unix::prelude::*;
 
-/// Unix specific extensions to duct.
+/// Unix-specific extensions to duct, for sending signals.
 #[cfg(unix)]
 pub mod unix;
 

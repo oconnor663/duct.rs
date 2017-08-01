@@ -1,5 +1,3 @@
-//! Unix-only extensions, for sending signals
-
 extern crate libc;
 
 use std::io;
