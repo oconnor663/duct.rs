@@ -55,7 +55,7 @@ impl HandleExt for ThenHandle {
         match self.shared_state.right_cell.borrow() {
             Some(&Ok(ref right_handle)) => right_handle.send_signal(signal),
             Some(&Err(_)) => Ok(()),
-            None => self.shared_state.left_handle.send_signal(signal)
+            None => self.shared_state.left_handle.send_signal(signal),
         }
     }
 }
@@ -86,7 +86,11 @@ mod tests {
     #[test]
     fn test_send_signal_to_pipe() {
         let sleep_cmd = cmd(path_to_exe("sleep"), &["1000000"]);
-        let handle = sleep_cmd.pipe(sleep_cmd.clone()).unchecked().start().unwrap();
+        let handle = sleep_cmd
+            .pipe(sleep_cmd.clone())
+            .unchecked()
+            .start()
+            .unwrap();
         handle.send_signal(libc::SIGABRT).unwrap();
         let status = handle.output().unwrap();
         assert_eq!(Some(libc::SIGABRT), status.status.signal());

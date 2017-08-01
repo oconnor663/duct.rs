@@ -14,9 +14,11 @@ fn check_executable(path: &Path) {
     let metadata = path.metadata().unwrap();
     let mode = metadata.mode();
     if mode & EXECUTABLE_BIT == 0 {
-        println!("Expected {:?} to be publicly executable, but found mode {:o}.",
-                 path,
-                 mode);
+        println!(
+            "Expected {:?} to be publicly executable, but found mode {:o}.",
+            path,
+            mode
+        );
         exit(1);
     }
 }
@@ -60,9 +62,11 @@ fn main() {
     set_current_dir(exe_parent).unwrap();
 
     // Run the child!
-    println!("executing command {:?} in dir {:?}",
-             exe_name,
-             current_dir().unwrap());
+    println!(
+        "executing command {:?} in dir {:?}",
+        exe_name,
+        current_dir().unwrap()
+    );
     let res = duct::cmd(exe_name, &args_vec[2..]).run();
 
     // Check what the child did, and exit appropriately.

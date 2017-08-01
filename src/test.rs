@@ -46,8 +46,10 @@ pub fn path_to_exe(name: &str) -> PathBuf {
             .arg("--quiet")
             .status()
             .unwrap();
-        assert!(build_status.success(),
-                "Cargo failed to build associated binaries.");
+        assert!(
+            build_status.success(),
+            "Cargo failed to build associated binaries."
+        );
     });
 
     Path::new("target")
@@ -328,9 +330,9 @@ fn test_path() {
         .unwrap()
         .write_all(b"xxx")
         .unwrap();
-    let expr = cmd!(path_to_exe("x_to_y"))
-        .stdin(&input_file)
-        .stdout(&output_file);
+    let expr = cmd!(path_to_exe("x_to_y")).stdin(&input_file).stdout(
+        &output_file,
+    );
     let output = expr.read().unwrap();
     assert_eq!("", output);
     let mut file_output = String::new();
@@ -416,8 +418,10 @@ fn test_dir() {
     // pwd_path isn't totally canonical on Windows, because it
     // doesn't have a prefix. Thus we have to canonicalize both
     // sides. (This also handles symlinks in TMP_DIR.)
-    assert_eq!(pwd_path.canonicalize().unwrap(),
-               dir.path().canonicalize().unwrap());
+    assert_eq!(
+        pwd_path.canonicalize().unwrap(),
+        dir.path().canonicalize().unwrap()
+    );
 }
 
 #[test]
