@@ -15,7 +15,7 @@ points in favor:
 - Simple `sh` commands are nice when you first write them, but it feels
   annoying to rewrite them as `cmd!` once you need to introduce a variable
   somewhere. That annoyance is pressure to do something evil.
-- Legitimate use cases for `sh_dangerous` in small scripts is rare. The
+- Legitimate use cases for `sh_dangerous` in small scripts are rare. The
   common use case is something like a build tool, where the user is expected
   to run arbitrary shell commands through the tool. Importing an extra crate
   (or just copying the whole function) is less of a big deal in the source
