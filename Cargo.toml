@@ -8,12 +8,12 @@ documentation = "https://docs.rs/duct"
 license = "MIT"
 
 [dependencies]
-os_pipe = "^0.5.1"
-shared_child = "^0.3.2"
-lazycell = "^0.5.0"
+os_pipe = "0.6.0"
+shared_child = "0.3.2"
+lazycell = "0.5.1"
 
 [target.'cfg(unix)'.dependencies]
-libc = "^0.2.20"
+libc = "0.2.32"
 
 [dev-dependencies]
-tempdir = "^0.3.4"
+tempdir = "0.3.5"
