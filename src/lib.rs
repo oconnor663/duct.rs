@@ -776,6 +776,30 @@ impl Expression {
         Self::new(Io(Env(name.into(), val.into()), self.clone()))
     }
 
+    /// Remove a variable from the expression's environment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// std::env::set_var("TESTING", "true");
+    /// let output = cmd!("sh", "-c", "echo a${TESTING}b")
+    ///     .env_remove("TESTING")
+    ///     .read()
+    ///     .unwrap();
+    /// assert_eq!("ab", output);
+    /// # }
+    /// # }
+    /// ```
+    pub fn env_remove<T>(&self, name: T) -> Expression
+    where
+        T: Into<OsString>
+    {
+        Self::new(Io(EnvRemove(name.into()), self.clone()))
+    }
+
     /// Set the expression's entire environment, from a collection of name-value
     /// pairs (like a `HashMap`). You can use this method to clear specific
     /// variables for example, by collecting the parent's environment, removing
@@ -1365,6 +1389,9 @@ fn start_io(
         Env(ref name, ref val) => {
             context.env.insert(name.clone(), val.clone());
         }
+        EnvRemove(ref name) => {
+            context.env.remove(name);
+        }
         FullEnv(ref map) => {
             context.env = map.clone();
         }
@@ -1445,6 +1472,7 @@ enum IoExpressionInner {
     StderrToStdout,
     Dir(PathBuf),
     Env(OsString, OsString),
+    EnvRemove(OsString),
     FullEnv(HashMap<OsString, OsString>),
     Unchecked,
 }
