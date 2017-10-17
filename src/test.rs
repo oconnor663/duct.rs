@@ -6,7 +6,7 @@ use std;
 use std::collections::HashMap;
 use std::env;
 use std::env::consts::EXE_EXTENSION;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
@@ -435,11 +435,16 @@ fn test_env() {
 
 #[test]
 fn test_full_env() {
-    let var_name = "test_env_remove_var";
+    // Note that it's important that no other tests use this variable name,
+    // because the test runner is multithreaded.
+    let var_name = "TEST_FULL_ENV";
 
     // Capture the parent env, and make sure it does *not* contain our variable.
-    let mut clean_env: HashMap<OsString, OsString> = env::vars_os().collect();
-    clean_env.remove(AsRef::<OsStr>::as_ref(var_name));
+    let clean_env: HashMap<String, String> = env::vars().collect();
+    assert!(
+        !clean_env.contains_key(var_name),
+        "why is this variable set?"
+    );
 
     // Run a child process with that map passed to full_env(). It should be guaranteed not to
     // see our variable, regardless of any outer env() calls or changes in the parent.
@@ -453,6 +458,64 @@ fn test_full_env() {
     // Check that neither of those have any effect.
     let output = dirty_child.read().unwrap();
     assert_eq!("", output);
+}
+
+#[test]
+fn test_env_remove() {
+    // Set an environment variable in the parent. Note that it's important that
+    // no other tests use this variable name, because the test runner is
+    // multithreaded.
+    let var_name = "TEST_ENV_REMOVE";
+    env::set_var(var_name, "junk2");
+
+    // Run a command that observes the variable.
+    let output1 = cmd!(path_to_exe("print_env"), var_name).read().unwrap();
+    assert_eq!("junk2", output1);
+
+    // Run the same command with that variable removed.
+    let output2 = cmd!(path_to_exe("print_env"), var_name)
+        .env_remove(var_name)
+        .read()
+        .unwrap();
+    assert_eq!("", output2);
+}
+
+#[test]
+fn test_env_remove_case_sensitivity() {
+    // Env var deletion is particularly sensitive to the differences in
+    // case-sensitivity between Unix and Windows. The semantics of env_remove
+    // in duct must *match the platform*.
+
+    // Set an environment variable in the parent. Note that it's important that
+    // no other tests use this variable name, because the test runner is
+    // multithreaded.
+    let var_name = "TEST_ENV_REMOVE_CASE_SENSITIVITY";
+    env::set_var(var_name, "abc123");
+
+    // Run a command that tries to clear the same variable, but in lowercase.
+    let output1 = cmd!(path_to_exe("print_env"), var_name)
+        .env_remove(var_name.to_lowercase())
+        .read()
+        .unwrap();
+
+    // Now try to clear that variable from the parent environment, again using
+    // lowercase, and run the same command without `env_remove`.
+    env::remove_var(var_name.to_lowercase());
+    let output2 = cmd!(path_to_exe("print_env"), var_name).read().unwrap();
+
+    // On Unix, env vars are case sensitive, and we don't expect either removal
+    // to have any effect. On Windows, they're insensitive, and we expect both
+    // removals to work. The key thing is that both approaches to removal have
+    // the *same effect*.
+    assert_eq!(output1, output2, "failed to match platform behavior!!!");
+
+    // Go ahead and assert the exact expected output, just in case. If these
+    // assertions ever break, it might be this test's fault and not the code's.
+    if cfg!(windows) {
+        assert_eq!(output1, "");
+    } else {
+        assert_eq!(output1, "abc123");
+    }
 }
 
 #[test]
