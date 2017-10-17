@@ -1189,7 +1189,11 @@ fn pipe_status_precedence(
         (Some(left), Some(right)) => (left, right),
         _ => return None,
     };
-    Some(if right_status.is_checked_error() || !right_status.status.success() {
+    Some(if right_status.is_checked_error() {
+        right_status
+    } else if left_status.is_checked_error() {
+        left_status
+    } else if !right_status.status.success() {
         right_status
     } else {
         left_status
