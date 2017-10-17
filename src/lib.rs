@@ -773,7 +773,10 @@ impl Expression {
         T: Into<OsString>,
         U: Into<OsString>,
     {
-        Self::new(Io(Env(name.into(), val.into()), self.clone()))
+        Self::new(Io(
+            Env(canonicalize_env_var_name(name.into()), val.into()),
+            self.clone(),
+        ))
     }
 
     /// Remove a variable from the expression's environment.
@@ -795,9 +798,12 @@ impl Expression {
     /// ```
     pub fn env_remove<T>(&self, name: T) -> Expression
     where
-        T: Into<OsString>
+        T: Into<OsString>,
     {
-        Self::new(Io(EnvRemove(name.into()), self.clone()))
+        Self::new(Io(
+            EnvRemove(canonicalize_env_var_name(name.into())),
+            self.clone(),
+        ))
     }
 
     /// Set the expression's entire environment, from a collection of name-value
@@ -834,7 +840,7 @@ impl Expression {
     {
         let env_map = name_vals
             .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
+            .map(|(k, v)| (canonicalize_env_var_name(k.into()), v.into()))
             .collect();
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
@@ -1809,6 +1815,24 @@ impl WaitMode {
             _ => false,
         }
     }
+}
+
+#[cfg(windows)]
+fn canonicalize_env_var_name(name: OsString) -> OsString {
+    // On Windows, because env vars are case-insensitive, we uppercase all env
+    // var names. That makes assignments and deletions in our internal map work
+    // the same way they would on the real environment.
+    match name.into_string() {
+        Ok(name) => name.to_uppercase().into(),
+        // If the name isn't valid Unicode then just leave it as is.
+        Err(name) => name,
+    }
+}
+
+#[cfg(not(windows))]
+fn canonicalize_env_var_name(name: OsString) -> OsString {
+    // No-op on all other platforms.
+    name
 }
 
 #[cfg(test)]
