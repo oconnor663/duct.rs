@@ -781,6 +781,11 @@ impl Expression {
 
     /// Remove a variable from the expression's environment.
     ///
+    /// Note that all the environment functions try to do whatever the platform
+    /// does with respect to case sensitivity. That means that
+    /// `env_remove("foo")` will unset the uppercase variable `FOO` on Windows,
+    /// but not on Unix.
+    ///
     /// # Example
     ///
     /// ```
@@ -1810,7 +1815,8 @@ impl WaitMode {
         // guaranteed to finish soon). Blocking waits should always join, even
         // in the presence of errors.
         match (self, expression_result) {
-            (&WaitMode::Blocking, _) | (_, &Ok(Some(_))) => true,
+            (&WaitMode::Blocking, _) |
+            (_, &Ok(Some(_))) => true,
             _ => false,
         }
     }
