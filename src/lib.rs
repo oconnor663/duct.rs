@@ -951,9 +951,9 @@ impl Handle {
         }
         // The result has been collected, whether or not we were the caller that
         // collected it. Return a reference.
-        match self.result.borrow().expect("result not filled") {
-            &Ok(ref output) => Ok(output),
-            &Err(ref err) => Err(clone_io_error(err)),
+        match *self.result.borrow().expect("result not filled") {
+            Ok(ref output) => Ok(output),
+            Err(ref err) => Err(clone_io_error(err)),
         }
     }
 
@@ -1217,7 +1217,7 @@ impl ThenHandle {
             right_lock: Mutex::new(Some((right, context))),
             right_cell: AtomicLazyCell::new(),
         });
-        let clone = shared.clone();
+        let clone = Arc::clone(&shared);
         let background_waiter = std::thread::spawn(move || {
             Ok(clone.wait(WaitMode::Blocking)?.expect(
                 "blocking wait can't return None",
@@ -1341,7 +1341,7 @@ fn start_io(
     match *io_inner {
         Input(ref v) => {
             return Ok(HandleInner::Input(Box::new(
-                InputHandle::start(expr_inner, context, v.clone())?,
+                InputHandle::start(expr_inner, context, Arc::clone(v))?,
             )))
         }
         Stdin(ref p) => {
@@ -1539,12 +1539,12 @@ enum IoValue {
 
 impl IoValue {
     fn try_clone(&self) -> io::Result<IoValue> {
-        Ok(match self {
-            &IoValue::ParentStdin => IoValue::ParentStdin,
-            &IoValue::ParentStdout => IoValue::ParentStdout,
-            &IoValue::ParentStderr => IoValue::ParentStderr,
-            &IoValue::Null => IoValue::Null,
-            &IoValue::Handle(ref f) => IoValue::Handle(f.try_clone()?),
+        Ok(match *self {
+            IoValue::ParentStdin => IoValue::ParentStdin,
+            IoValue::ParentStdout => IoValue::ParentStdout,
+            IoValue::ParentStderr => IoValue::ParentStderr,
+            IoValue::Null => IoValue::Null,
+            IoValue::Handle(ref f) => IoValue::Handle(f.try_clone()?),
         })
     }
 
@@ -1804,8 +1804,7 @@ impl WaitMode {
         // guaranteed to finish soon). Blocking waits should always join, even
         // in the presence of errors.
         match (self, expression_result) {
-            (&WaitMode::Blocking, _) => true,
-            (_, &Ok(Some(_))) => true,
+            (&WaitMode::Blocking, _) | (_, &Ok(Some(_))) => true,
             _ => false,
         }
     }
