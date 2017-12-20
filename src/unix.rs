@@ -2,7 +2,8 @@ extern crate libc;
 
 use std::io;
 
-use super::{Handle, HandleInner, PipeHandle, ThenHandle};
+use super::{Expression, ExpressionInner, Handle, HandleInner, IoExpressionInner, PipeHandle,
+            ThenHandle};
 use shared_child::unix::SharedChildExt;
 
 pub trait HandleExt {
@@ -58,6 +59,26 @@ impl HandleExt for ThenHandle {
     }
 }
 
+pub trait ExpressionExt {
+    fn uid(&self, uid: u32) -> Expression;
+    fn gid(&self, gid: u32) -> Expression;
+}
+
+impl ExpressionExt for Expression {
+    fn uid(&self, uid: u32) -> Expression {
+        Expression::new(ExpressionInner::Io(
+            IoExpressionInner::Uid(uid),
+            self.clone(),
+        ))
+    }
+
+    fn gid(&self, gid: u32) -> Expression {
+        Expression::new(ExpressionInner::Io(
+            IoExpressionInner::Gid(gid),
+            self.clone(),
+        ))
+    }
+}
 
 #[cfg(test)]
 mod tests {
