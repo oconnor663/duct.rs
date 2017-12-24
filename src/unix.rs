@@ -60,7 +60,42 @@ impl HandleExt for ThenHandle {
 }
 
 pub trait ExpressionExt {
+    /// Sets the child process's user id. This translates to a `setuid` call in the child
+    /// process. Failure in the `setuid` call will cause the spawn to fail.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # #[cfg(unix)] use duct::unix::ExpressionExt;
+    /// # fn main() {
+    /// # if cfg!(unix) {
+    /// let cmd = cmd!("id").uid(123).run();
+    /// let err = cmd.err().unwrap();
+    /// // Changing uid is not allowed unless running as root
+    /// assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    /// # }
+    /// # }
+    /// ```
     fn uid(&self, uid: u32) -> Expression;
+
+    /// Similar to `uid`, but sets the group id of the child process. This has
+    /// the same semantics as the `uid` field.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # #[cfg(unix)] use duct::unix::ExpressionExt;
+    /// # fn main() {
+    /// # if cfg!(unix) {
+    /// let cmd = cmd!("id").gid(123).run();
+    /// let err = cmd.err().unwrap();
+    /// // Changing gid is not allowed unless running as root
+    /// assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    /// # }
+    /// # }
+    /// ```
     fn gid(&self, gid: u32) -> Expression;
 }
 
