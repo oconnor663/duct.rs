@@ -1419,11 +1419,9 @@ fn start_io(
             let inner_handle = expr_inner.0.start(context)?;
             return Ok(HandleInner::Unchecked(Box::new(inner_handle)));
         }
-        #[cfg(unix)]
         Uid(uid) => {
             context.uid = Some(uid);
         }
-        #[cfg(unix)]
         Gid(gid) => {
             context.gid = Some(gid);
         }
@@ -1503,8 +1501,8 @@ enum IoExpressionInner {
     EnvRemove(OsString),
     FullEnv(HashMap<OsString, OsString>),
     Unchecked,
-    #[cfg(unix)] Uid(u32),
-    #[cfg(unix)] Gid(u32),
+    #[cfg_attr(not(unix), allow(dead_code))] Uid(u32),
+    #[cfg_attr(not(unix), allow(dead_code))] Gid(u32),
 }
 
 // An IoContext represents the file descriptors child processes are talking to at execution time.
@@ -1519,8 +1517,8 @@ struct IoContext {
     stderr_capture_pipe: os_pipe::PipeWriter,
     dir: Option<PathBuf>,
     env: HashMap<OsString, OsString>,
-    #[cfg(unix)] uid: Option<u32>,
-    #[cfg(unix)] gid: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
 }
 
 impl IoContext {
@@ -1540,9 +1538,7 @@ impl IoContext {
             stderr_capture_pipe: stderr_capture_pipe,
             dir: None,
             env: env,
-            #[cfg(unix)]
             uid: None,
-            #[cfg(unix)]
             gid: None,
         };
         Ok((context, stdout_reader, stderr_reader))
@@ -1557,9 +1553,7 @@ impl IoContext {
             stderr_capture_pipe: self.stderr_capture_pipe.try_clone()?,
             dir: self.dir.clone(),
             env: self.env.clone(),
-            #[cfg(unix)]
             uid: self.uid.clone(),
-            #[cfg(unix)]
             gid: self.gid.clone(),
         })
     }
