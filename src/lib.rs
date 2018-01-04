@@ -87,7 +87,7 @@ use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio, Output, ExitStatus};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread::JoinHandle;
 use std::sync::{Arc, Mutex};
 
@@ -922,9 +922,9 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// Multiple threads may wait at the same time.
     pub fn wait(&self) -> io::Result<&Output> {
-        let status = self.inner.wait(WaitMode::Blocking)?.expect(
-            "blocking wait can't return None",
-        );
+        let status = self.inner
+            .wait(WaitMode::Blocking)?
+            .expect("blocking wait can't return None");
         // The expression has exited. See if we need to collect its output
         // result, or if another caller has already done it. Do this inside the
         // readers lock, to avoid racing to fill the result.
@@ -932,9 +932,9 @@ impl Handle {
         if !self.result.filled() {
             // We're holding the readers lock, and we're the thread that needs
             // to collect the output. Take the reader threads and join them.
-            let (stdout_reader, stderr_reader) = readers_lock.take().expect(
-                "readers taken without filling result",
-            );
+            let (stdout_reader, stderr_reader) = readers_lock
+                .take()
+                .expect("readers taken without filling result");
             let stdout_result = stdout_reader.join().expect("stdout reader panic");
             let stderr_result = stderr_reader.join().expect("stderr reader panic");
             let final_result = match (stdout_result, stderr_result) {
@@ -948,17 +948,15 @@ impl Handle {
                 }
 
                 // And finally the successful output.
-                (Ok(stdout), Ok(stderr)) => {
-                    Ok(Output {
-                        status: status.status,
-                        stdout: stdout,
-                        stderr: stderr,
-                    })
-                }
+                (Ok(stdout), Ok(stderr)) => Ok(Output {
+                    status: status.status,
+                    stdout: stdout,
+                    stderr: stderr,
+                }),
             };
-            self.result.fill(final_result).expect(
-                "result already filled outside the readers lock",
-            );
+            self.result
+                .fill(final_result)
+                .expect("result already filled outside the readers lock");
         }
         // The result has been collected, whether or not we were the caller that
         // collected it. Return a reference.
@@ -988,9 +986,9 @@ impl Handle {
     /// equivalent to [`run`](struct.Expression.html#method.run).
     pub fn output(self) -> io::Result<Output> {
         self.wait()?;
-        self.result.into_inner().expect(
-            "wait didn't set the result",
-        )
+        self.result
+            .into_inner()
+            .expect("wait didn't set the result")
     }
 
     /// Kill the running expression.
@@ -1239,9 +1237,9 @@ impl ThenHandle {
         });
         let clone = Arc::clone(&shared);
         let background_waiter = std::thread::spawn(move || {
-            Ok(clone.wait(WaitMode::Blocking)?.expect(
-                "blocking wait can't return None",
-            ))
+            Ok(clone
+                .wait(WaitMode::Blocking)?
+                .expect("blocking wait can't return None"))
         });
         Ok(ThenHandle {
             shared_state: shared,
@@ -1257,9 +1255,10 @@ impl ThenHandle {
         // nonblocking mode.
         let wait_res = self.shared_state.wait(mode);
         if mode.should_join_background_thread(&wait_res) {
-            self.background_waiter.join().as_ref().map_err(
-                clone_io_error,
-            )?;
+            self.background_waiter
+                .join()
+                .as_ref()
+                .map_err(clone_io_error)?;
         }
         wait_res
     }
@@ -1360,9 +1359,11 @@ fn start_io(
 ) -> io::Result<HandleInner> {
     match *io_inner {
         Input(ref v) => {
-            return Ok(HandleInner::Input(Box::new(
-                InputHandle::start(expr_inner, context, Arc::clone(v))?,
-            )))
+            return Ok(HandleInner::Input(Box::new(InputHandle::start(
+                expr_inner,
+                context,
+                Arc::clone(v),
+            )?)))
         }
         Stdin(ref p) => {
             context.stdin = IoValue::Handle(File::open(p)?);
@@ -1671,9 +1672,10 @@ fn canonicalize_exe_path_for_dir(exe_name: &OsStr, context: &IoContext) -> io::R
     // shadowing global program names, which I don't think we can or
     // should prevent.)
 
-    let has_separator = exe_name.to_string_lossy().chars().any(
-        std::path::is_separator,
-    );
+    let has_separator = exe_name
+        .to_string_lossy()
+        .chars()
+        .any(std::path::is_separator);
     let is_relative = Path::new(exe_name).is_relative();
     if context.dir.is_some() && has_separator && is_relative {
         Path::new(exe_name).canonicalize().map(Into::into)
@@ -1816,9 +1818,9 @@ impl<T> SharedThread<T> {
                 .map_err(|_| "result lazycell unexpectedly full")
                 .unwrap();
         }
-        self.result.borrow().expect(
-            "result lazycell unexpectedly empty",
-        )
+        self.result
+            .borrow()
+            .expect("result lazycell unexpectedly empty")
     }
 }
 
@@ -1838,8 +1840,7 @@ impl WaitMode {
         // guaranteed to finish soon). Blocking waits should always join, even
         // in the presence of errors.
         match (self, expression_result) {
-            (&WaitMode::Blocking, _) |
-            (_, &Ok(Some(_))) => true,
+            (&WaitMode::Blocking, _) | (_, &Ok(Some(_))) => true,
             _ => false,
         }
     }

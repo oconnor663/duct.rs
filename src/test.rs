@@ -255,7 +255,9 @@ fn test_multiple_threads() {
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
     let handle = Arc::new(sleep_cmd.unchecked().start().unwrap());
     let arc_clone = handle.clone();
-    let wait_thread = std::thread::spawn(move || { arc_clone.wait().unwrap(); });
+    let wait_thread = std::thread::spawn(move || {
+        arc_clone.wait().unwrap();
+    });
     handle.kill().unwrap();
     wait_thread.join().unwrap();
 }
@@ -330,9 +332,9 @@ fn test_path() {
         .unwrap()
         .write_all(b"xxx")
         .unwrap();
-    let expr = cmd!(path_to_exe("x_to_y")).stdin(&input_file).stdout(
-        &output_file,
-    );
+    let expr = cmd!(path_to_exe("x_to_y"))
+        .stdin(&input_file)
+        .stdout(&output_file);
     let output = expr.read().unwrap();
     assert_eq!("", output);
     let mut file_output = String::new();
