@@ -10,7 +10,7 @@ license = "MIT"
 [dependencies]
 os_pipe = "0.6.0"
 shared_child = "0.3.2"
-lazycell = "0.5.1"
+lazycell = "0.6.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.32"
