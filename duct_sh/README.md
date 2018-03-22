@@ -1,4 +1,4 @@
-# duct_sh
+# duct_sh [![crates.io](https://img.shields.io/crates/v/duct_sh.svg)](https://crates.io/crates/duct_sh) [![docs.rs](https://docs.rs/duct_sh/badge.svg)](https://docs.rs/duct_sh)
 
 The `sh` function was originally included in the `duct` library itself.
 Because of safety concerns, we decided to split that function into `sh`
