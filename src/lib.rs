@@ -1508,10 +1508,7 @@ impl IoContext {
     fn new() -> io::Result<(IoContext, ReaderThread, ReaderThread)> {
         let (stdout_capture_pipe, stdout_reader) = pipe_with_reader_thread()?;
         let (stderr_capture_pipe, stderr_reader) = pipe_with_reader_thread()?;
-        let mut env = HashMap::new();
-        for (name, val) in std::env::vars_os() {
-            env.insert(name, val);
-        }
+        let env: HashMap<_, _> = std::env::vars_os().collect();
         let context = IoContext {
             stdin: IoValue::ParentStdin,
             stdout: IoValue::ParentStdout,
