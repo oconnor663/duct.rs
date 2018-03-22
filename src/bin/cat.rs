@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use std::io::{stdin, stdout, copy};
+use std::io::{copy, stdin, stdout};
 
 fn main() {
     let stdin_handle = stdin();

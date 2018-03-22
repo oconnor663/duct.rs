@@ -58,7 +58,6 @@ impl HandleExt for ThenHandle {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use test::*;

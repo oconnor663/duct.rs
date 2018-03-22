@@ -16,8 +16,7 @@ fn check_executable(path: &Path) {
     if mode & EXECUTABLE_BIT == 0 {
         println!(
             "Expected {:?} to be publicly executable, but found mode {:o}.",
-            path,
-            mode
+            path, mode
         );
         exit(1);
     }
