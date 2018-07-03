@@ -88,13 +88,13 @@ use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::thread::JoinHandle;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
-#[cfg(windows)]
-use std::os::windows::prelude::*;
 #[cfg(not(windows))]
 use std::os::unix::prelude::*;
+#[cfg(windows)]
+use std::os::windows::prelude::*;
 
 /// Unix-specific extensions to duct, for sending signals.
 #[cfg(unix)]
