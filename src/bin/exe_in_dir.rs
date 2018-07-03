@@ -61,15 +61,15 @@ fn main() {
     set_current_dir(exe_parent).unwrap();
 
     // Run the child!
-    println!(
-        "executing command {:?} in dir {:?}",
-        exe_name,
-        current_dir().unwrap()
-    );
     let res = duct::cmd(exe_name, &args_vec[2..]).run();
 
     // Check what the child did, and exit appropriately.
     if let Err(err) = res {
+        println!(
+            "error executing command {:?} in dir {:?}",
+            exe_name,
+            current_dir().unwrap()
+        );
         if err.kind() == io::ErrorKind::NotFound {
             println!("File not found during execution! Path sanitization is TOTALLY BROKEN!");
             exit(1);
@@ -77,7 +77,7 @@ fn main() {
             println!("Unexpected IO error: {:?}", err);
             exit(1);
         }
-    } else {
-        println!("Success!");
     }
+
+    // Success!
 }
