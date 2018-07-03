@@ -1677,7 +1677,7 @@ fn dotify_relative_exe_path(path: &Path) -> PathBuf {
 /// string is a path, but that distinction gets lost by the time execution
 /// happens.
 ///
-/// To execute relative paths correctly, Rust prepends the `./` to them
+/// To execute relative paths correctly, duct prepends the `./` to them
 /// automatically. This trait captures the distinction between the path types
 /// and other types of strings, which don't get modified. See the trait bounds
 /// on [`cmd`](fn.cmd.html).
