@@ -83,6 +83,7 @@ use shared_child::SharedChild;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
@@ -911,6 +912,45 @@ impl Expression {
         Self::new(Io(Unchecked, self.clone()))
     }
 
+    /// Add a hook for modifying
+    /// [`std::process::Command`](https://doc.rust-lang.org/std/process/struct.Command.html)
+    /// objects immediately before they're executed.
+    ///
+    /// The hook is called for each command in its sub-expression, and each time the expression is
+    /// executed. The call happens after other features like `stdout` and `env` have been applied,
+    /// so any changes made by the hook take priority. More than one hook can be added, in which
+    /// case the innermost is executed last. For example, if one call to `before_spawn` is applied
+    /// to an entire pipe expression, and another call is applied to just one command within the
+    /// pipe, the hook for the entire pipeline will be called first over the command where both
+    /// hooks apply.
+    ///
+    /// This is intended for rare and tricky cases, like callers who want to change the group ID of
+    /// their child processes, or who want to run code in `before_exec`. Most callers shouldn't
+    /// need to use it.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() {
+    /// let output = cmd!("echo", "foo")
+    ///     .before_spawn(|cmd| {
+    ///         // Sneakily add an extra argument.
+    ///         cmd.arg("bar");
+    ///         Ok(())
+    ///     })
+    ///     .read()
+    ///     .unwrap();
+    /// assert_eq!("foo bar", output);
+    /// # }
+    /// ```
+    pub fn before_spawn<F>(&self, hook: F) -> Expression
+    where
+        F: Fn(&mut Command) -> io::Result<()> + Send + Sync + 'static,
+    {
+        Self::new(Io(BeforeSpawn(BeforeSpawnHook::new(hook)), self.clone()))
+    }
+
     fn new(inner: ExpressionInner) -> Expression {
         Expression(Arc::new(inner))
     }
@@ -1105,6 +1145,10 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> 
     command.env_clear();
     for (name, val) in context.env {
         command.env(name, val);
+    }
+    // The innermost hooks are pushed last, and we execute them last.
+    for hook in context.before_spawn_hooks.iter() {
+        hook.call(&mut command)?;
     }
     let shared_child = SharedChild::spawn(&mut command)?;
     let command_string = format!("{:?}", argv);
@@ -1441,6 +1485,9 @@ fn start_io(
             let inner_handle = expr_inner.0.start(context)?;
             return Ok(HandleInner::Unchecked(Box::new(inner_handle)));
         }
+        BeforeSpawn(ref hook) => {
+            context.before_spawn_hooks.push(hook.clone());
+        }
     }
     expr_inner.0.start(context)
 }
@@ -1517,6 +1564,33 @@ enum IoExpressionInner {
     EnvRemove(OsString),
     FullEnv(HashMap<OsString, OsString>),
     Unchecked,
+    BeforeSpawn(BeforeSpawnHook),
+}
+
+#[derive(Clone)]
+struct BeforeSpawnHook {
+    inner: Arc<Fn(&mut Command) -> io::Result<()> + Send + Sync>,
+}
+
+impl BeforeSpawnHook {
+    fn new<F>(hook: F) -> Self
+    where
+        F: Fn(&mut Command) -> io::Result<()> + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(hook),
+        }
+    }
+
+    fn call(&self, command: &mut Command) -> io::Result<()> {
+        (self.inner)(command)
+    }
+}
+
+impl fmt::Debug for BeforeSpawnHook {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "<closure>")
+    }
 }
 
 // An IoContext represents the file descriptors child processes are talking to at execution time.
@@ -1531,6 +1605,7 @@ struct IoContext {
     stderr_capture_pipe: os_pipe::PipeWriter,
     dir: Option<PathBuf>,
     env: HashMap<OsString, OsString>,
+    before_spawn_hooks: Vec<BeforeSpawnHook>,
 }
 
 impl IoContext {
@@ -1547,6 +1622,7 @@ impl IoContext {
             stderr_capture_pipe: stderr_capture_pipe,
             dir: None,
             env: env,
+            before_spawn_hooks: Vec::new(),
         };
         Ok((context, stdout_reader, stderr_reader))
     }
@@ -1560,6 +1636,7 @@ impl IoContext {
             stderr_capture_pipe: self.stderr_capture_pipe.try_clone()?,
             dir: self.dir.clone(),
             env: self.env.clone(),
+            before_spawn_hooks: self.before_spawn_hooks.clone(),
         })
     }
 }

@@ -1,5 +1,7 @@
+extern crate os_pipe;
 extern crate tempdir;
 use self::tempdir::TempDir;
+use os_pipe::IntoStdio;
 
 use super::{cmd, Expression};
 use std;
@@ -543,4 +545,18 @@ fn test_path_sanitization() {
     cmd!(path_to_exe("exe_in_dir"), path_to_exe("status"), "0")
         .run()
         .unwrap();
+}
+
+#[test]
+fn test_before_spawn_hook() {
+    let (reader, mut writer) = os_pipe::pipe().unwrap();
+    let expr = cmd!(path_to_exe("cat")).before_spawn(move |cmd| {
+        let reader_clone = reader.try_clone()?;
+        cmd.stdin(reader_clone.into_stdio());
+        Ok(())
+    });
+    writer.write_all(b"foobar").unwrap();
+    drop(writer);
+    let output = expr.read().unwrap();
+    assert_eq!("foobar", output);
 }
