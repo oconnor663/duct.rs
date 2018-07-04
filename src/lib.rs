@@ -867,15 +867,44 @@ impl Expression {
     ///
     /// # Example
     ///
-    /// ```
+    /// Note the differences among these three cases:
+    ///
+    /// ```no_run
     /// # #[macro_use] extern crate duct;
-    /// # fn main() {
-    /// # if cfg!(not(windows)) {
-    /// // Normally the `false` command (which does nothing but return a
-    /// // non-zero exit status) would short-circuit the `then` expression and
-    /// // also make `read` return an error. `unchecked` prevents this.
-    /// cmd!("false").unchecked().then(cmd!("echo", "hi")).read().unwrap();
+    /// # fn main() { try_main().unwrap(); }
+    /// # fn try_main() -> std::io::Result<()> {
+    /// // Don't check errors on the left side.
+    /// cmd!("foo").unchecked().pipe(cmd!("bar")).run()?;
+    ///
+    /// // Don't check errors on the right side.
+    /// cmd!("foo").pipe(cmd!("bar").unchecked()).run()?;
+    ///
+    /// // Don't check errors on either side.
+    /// cmd!("foo").pipe(cmd!("bar")).unchecked().run()?;
+    /// # Ok(())
     /// # }
+    /// ```
+    ///
+    /// As in the type-level docs above, the differences are easier to spot if
+    /// we split each expression up into multiple lines, although the meaning
+    /// is exactly the same.
+    ///
+    /// ```no_run
+    /// # #[macro_use] extern crate duct;
+    /// # fn main() { try_main().unwrap(); }
+    /// # fn try_main() -> std::io::Result<()> {
+    /// // Don't check errors on the left side.
+    /// let left = cmd!("foo").unchecked();
+    /// left.pipe(cmd!("bar")).run()?;
+    ///
+    /// // Don't check errors on the right side.
+    /// let right = cmd!("bar").unchecked();
+    /// cmd!("foo").pipe(right).run()?;
+    ///
+    /// // Don't check errors on either side.
+    /// let pipeline = cmd!("foo").pipe(cmd!("bar"));
+    /// pipeline.unchecked().run()?;
+    /// # Ok(())
     /// # }
     /// ```
     pub fn unchecked(&self) -> Expression {
@@ -903,11 +932,12 @@ impl<'a> From<&'a Expression> for Expression {
 /// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
 /// `Handle` may be shared between multiple threads.
 ///
-/// Like `std::process::Child`, `Handle` does not implement `Drop`. If a
-/// `Handle` goes out of scope without calling
+/// Like `std::process::Child`, `Handle` doesn't do anything special in its
+/// destructor. If a `Handle` goes out of scope without calling
 /// [`wait`](struct.Handle.html#method.wait) or similar, child processes and
 /// background threads will keep running, and they'll [leave
-/// zombies](https://en.wikipedia.org/wiki/Resource_leak#Causes) when they exit.
+/// zombies](https://en.wikipedia.org/wiki/Resource_leak#Causes) when they
+/// exit.
 ///
 /// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
 /// crate for implementation details behind making handles thread safe.
