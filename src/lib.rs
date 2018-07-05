@@ -14,8 +14,10 @@
 //!
 //! # Changelog
 //!
-//! - Version 0.9 removed the `sh` function. It now lives in its own crate,
-//! `duct_sh`.
+//! - Version 0.11 introduced the `before_spawn` method.
+//! - Version 0.10 changed how environment variable casing is handled on Windows.
+//!   See the docs for `env_remove`.
+//! - Version 0.9 removed the `sh` function. It now lives in its own crate, `duct_sh`.
 //!
 //! # Example
 //!
