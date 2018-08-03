@@ -1,7 +1,6 @@
 extern crate os_pipe;
 extern crate tempdir;
 use self::tempdir::TempDir;
-use os_pipe::IntoStdio;
 
 use super::{cmd, Expression};
 use std;
@@ -552,7 +551,7 @@ fn test_before_spawn_hook() {
     let (reader, mut writer) = os_pipe::pipe().unwrap();
     let expr = cmd!(path_to_exe("cat")).before_spawn(move |cmd| {
         let reader_clone = reader.try_clone()?;
-        cmd.stdin(reader_clone.into_stdio());
+        cmd.stdin(reader_clone);
         Ok(())
     });
     writer.write_all(b"foobar").unwrap();

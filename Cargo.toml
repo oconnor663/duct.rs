@@ -8,7 +8,7 @@ documentation = "https://docs.rs/duct"
 license = "MIT"
 
 [dependencies]
-os_pipe = "0.6.0"
+os_pipe = "0.7.0"
 shared_child = "0.3.2"
 lazycell = "0.6.0"
 

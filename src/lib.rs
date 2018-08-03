@@ -80,7 +80,6 @@ use lazycell::AtomicLazyCell;
 extern crate os_pipe;
 extern crate shared_child;
 
-use os_pipe::IntoStdio;
 use shared_child::SharedChild;
 
 use std::collections::HashMap;
@@ -1667,13 +1666,13 @@ impl IoValue {
     }
 
     fn into_stdio(self) -> io::Result<Stdio> {
-        match self {
-            IoValue::ParentStdin => os_pipe::parent_stdin(),
-            IoValue::ParentStdout => os_pipe::parent_stdout(),
-            IoValue::ParentStderr => os_pipe::parent_stderr(),
-            IoValue::Null => Ok(Stdio::null()),
-            IoValue::Handle(f) => Ok(f.into_stdio()),
-        }
+        Ok(match self {
+            IoValue::ParentStdin => os_pipe::dup_stdin()?.into(),
+            IoValue::ParentStdout => os_pipe::dup_stdout()?.into(),
+            IoValue::ParentStderr => os_pipe::dup_stderr()?.into(),
+            IoValue::Null => Stdio::null(),
+            IoValue::Handle(f) => f.into(),
+        })
     }
 }
 
