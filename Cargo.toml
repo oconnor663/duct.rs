@@ -9,11 +9,11 @@ license = "MIT"
 
 [dependencies]
 os_pipe = "0.7.0"
-shared_child = "0.3.2"
-lazycell = "0.6.0"
+shared_child = "0.3.3"
+lazycell = "1.2.0"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.32"
+libc = "0.2.43"
 
 [dev-dependencies]
-tempdir = "0.3.5"
+tempdir = "0.3.7"
