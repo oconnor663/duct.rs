@@ -26,34 +26,35 @@
 //! happens to output, and strict about error codes in child processes.
 //!
 //! ```no_run
-//! #[macro_use]
-//! extern crate duct;
+//! # #[macro_use]
+//! # extern crate duct;
+//! # extern crate os_pipe;
+//! # use duct::cmd;
+//! # use std::io::BufReader;
+//! # use std::io::prelude::*;
+//! # use std::error::Error;
+//! # fn main() -> Result<(), Box<dyn Error>> {
+//! // Read the name of the current git branch. If git exits with an error
+//! // code here (because we're not in a git repo, for example), `read` will
+//! // return an error too.
+//! let current_branch = cmd!("git", "symbolic-ref", "--short", "HEAD").read()?;
 //!
-//! use duct::cmd;
+//! // Log the current branch, with git taking over the terminal as usual.
+//! // The `cmd` function works just like the `cmd!` macro, but it takes a
+//! // collection instead of a variable list of arguments.
+//! let args = &["log", &current_branch];
+//! cmd("git", args).run()?;
 //!
-//! fn main() {
-//!     // Read the name of the current git branch. If git exits with an error
-//!     // code here (because we're not in a git repo, for example), `read` will
-//!     // return an error too.
-//!     let current_branch = cmd!("git", "symbolic-ref", "--short", "HEAD").read().unwrap();
-//!
-//!     // Log the current branch, with git taking over the terminal as usual.
-//!     // The `cmd` function works just like the `cmd!` macro, but it takes a
-//!     // collection instead of a variable list of arguments.
-//!     let args = &["log", &current_branch];
-//!     cmd("git", args).run().unwrap();
-//!
-//!     // More complicated expressions become trees. Here's a pipeline with two
-//!     // child processes on the left, just because we can. In Bash this would
-//!     // be: stdout=$((echo -n part one "" && echo part two) | sed s/p/sm/g)
-//!     let part_one = &["-n", "part", "one", ""];
-//!     let stdout = cmd("echo", part_one)
-//!         .then(cmd!("echo", "part", "two"))
-//!         .pipe(cmd!("sed", "s/p/sm/g"))
-//!         .read()
-//!         .unwrap();
-//!     assert_eq!("smart one smart two", stdout);
+//! // Log again, but this time read the output from a pipe of our own. We
+//! // use the os_pipe crate to create the pipe, but any type implementing
+//! // IntoRawFd works here, including File.
+//! let (pipe_reader, pipe_writer) = os_pipe::pipe()?;
+//! let child = cmd!("git", "log", "--oneline").stdout_handle(pipe_writer).start()?;
+//! for line in BufReader::new(pipe_reader).lines() {
+//!     assert!(!line?.contains("heck"), "profanity filter triggered");
 //! }
+//! #     Ok(())
+//! # }
 //! ```
 //!
 //! `duct` uses [`os_pipe`](https://github.com/oconnor663/os_pipe.rs)
@@ -993,7 +994,8 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// Multiple threads may wait at the same time.
     pub fn wait(&self) -> io::Result<&Output> {
-        let status = self.inner
+        let status = self
+            .inner
             .wait(WaitMode::Blocking)?
             .expect("blocking wait can't return None");
         // The expression has exited. See if we need to collect its output
