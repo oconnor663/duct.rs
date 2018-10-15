@@ -559,3 +559,9 @@ fn test_before_spawn_hook() {
     let output = expr.read().unwrap();
     assert_eq!("foobar", output);
 }
+
+#[test]
+fn test_trailing_comma() {
+    let output = cmd!(path_to_exe("echo"), "trailing",).read().unwrap();
+    assert_eq!("trailing", output);
+}
