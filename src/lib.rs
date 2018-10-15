@@ -169,6 +169,7 @@ macro_rules! cmd {
             $crate::cmd($program, empty::<OsString>())
         }
     };
+    ( $program:expr, $( $arg:expr, )* ) => { cmd!($program $(, $arg )+ ) };
     ( $program:expr $(, $arg:expr )* ) => {
         {
             use std::ffi::OsString;
