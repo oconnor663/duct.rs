@@ -138,7 +138,8 @@ fn test_unchecked_in_pipe() {
     assert_eq!(1, output.status.code().unwrap());
 
     // Right takes precedence over the left again if they're both unchecked.
-    let output = one.unchecked()
+    let output = one
+        .unchecked()
         .pipe(two.unchecked())
         .unchecked()
         .run()
@@ -146,7 +147,8 @@ fn test_unchecked_in_pipe() {
     assert_eq!(2, output.status.code().unwrap());
 
     // Except that if the right is a success, the left takes precedence.
-    let output = one.unchecked()
+    let output = one
+        .unchecked()
         .pipe(zero.unchecked())
         .unchecked()
         .run()
@@ -564,4 +566,10 @@ fn test_before_spawn_hook() {
 fn test_trailing_comma() {
     let output = cmd!(path_to_exe("echo"), "trailing",).read().unwrap();
     assert_eq!("trailing", output);
+}
+
+#[test]
+fn test_no_argument() {
+    let output = cmd!(path_to_exe("echo")).read().unwrap();
+    assert_eq!("", output);
 }

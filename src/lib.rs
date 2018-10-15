@@ -162,14 +162,6 @@ where
 /// ```
 #[macro_export]
 macro_rules! cmd {
-    ( $program:expr ) => {
-        {
-            use std::ffi::OsString;
-            use std::iter::empty;
-            $crate::cmd($program, empty::<OsString>())
-        }
-    };
-    ( $program:expr, $( $arg:expr, )* ) => { cmd!($program $(, $arg )+ ) };
     ( $program:expr $(, $arg:expr )* ) => {
         {
             use std::ffi::OsString;
@@ -177,6 +169,8 @@ macro_rules! cmd {
             $crate::cmd($program, args)
         }
     };
+    // Support the trailing comma this way, until macro_rules supports ?.
+    ( $program:expr $(, $arg:expr )* , ) => { cmd!($program $(, $arg )* ) };
 }
 
 /// The central objects in `duct`, Expressions are created with
