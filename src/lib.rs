@@ -172,10 +172,7 @@ macro_rules! cmd {
     ( $program:expr $(, $arg:expr )* ) => {
         {
             use std::ffi::OsString;
-            let mut args: Vec<OsString> = Vec::new();
-            $(
-                args.push(Into::<OsString>::into($arg));
-            )*
+            let args: Vec<OsString> = vec![$( Into::<OsString>::into($arg) ),*];
             $crate::cmd($program, args)
         }
     };
