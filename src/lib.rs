@@ -318,7 +318,7 @@ impl Expression {
     ///
     /// # Errors
     ///
-    /// In addition to all the errors prossible with
+    /// In addition to all the errors possible with
     /// [`std::process::Command::spawn`](https://doc.rust-lang.org/std/process/struct.Command.html#method.spawn),
     /// `start` can return errors from opening pipes and files. However, `start`
     /// will never return an error if a child process has already started. In
