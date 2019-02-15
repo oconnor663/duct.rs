@@ -1,11 +1,11 @@
 environment:
   matrix:
   - TARGET: x86_64-pc-windows-msvc
-    VERSION: 1.27.0
+    VERSION: 1.32.0
   - TARGET: i686-pc-windows-msvc
-    VERSION: 1.27.0
+    VERSION: 1.32.0
   - TARGET: i686-pc-windows-gnu
-    VERSION: 1.27.0
+    VERSION: 1.32.0
   - TARGET: x86_64-pc-windows-msvc
     VERSION: beta
   - TARGET: i686-pc-windows-msvc

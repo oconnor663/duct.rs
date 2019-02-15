@@ -535,7 +535,7 @@ fn test_broken_pipe() {
 #[test]
 fn test_silly() {
     // A silly test, purely for coverage.
-    ::IoValue::Null.try_clone().unwrap();
+    crate::IoValue::Null.try_clone().unwrap();
 }
 
 #[test]

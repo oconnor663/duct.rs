@@ -62,8 +62,8 @@ impl HandleExt for ThenHandle {
 #[cfg(test)]
 mod tests {
     use super::{libc, HandleExt};
-    use cmd;
-    use test::*;
+    use crate::cmd;
+    use crate::test::{path_to_exe, true_cmd};
 
     use std::os::unix::process::ExitStatusExt;
     use std::sync::Arc;
