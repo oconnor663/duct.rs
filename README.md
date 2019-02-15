@@ -16,6 +16,7 @@ Python, with an identical API.
 
 ## Changelog
 
+- Version 0.12 added support for trailing commas to `cmd!`.
 - Version 0.11 introduced the `before_spawn` method.
 - Version 0.10 changed how environment variable casing is handled on Windows.
   See the docs for `env_remove`.
