@@ -298,7 +298,7 @@ impl Expression {
     pub fn read(&self) -> io::Result<String> {
         let output = self.stdout_capture().run()?;
         if let Ok(output_str) = std::str::from_utf8(&output.stdout) {
-            Ok(trim_right_newlines(output_str).to_owned())
+            Ok(trim_end_newlines(output_str).to_owned())
         } else {
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1855,8 +1855,8 @@ fn pipe_with_reader_thread() -> io::Result<(os_pipe::PipeWriter, ReaderThread)> 
 
 type WriterThread = SharedThread<io::Result<()>>;
 
-fn trim_right_newlines(s: &str) -> &str {
-    s.trim_right_matches(|c| c == '\n' || c == '\r')
+fn trim_end_newlines(s: &str) -> &str {
+    s.trim_end_matches(|c| c == '\n' || c == '\r')
 }
 
 // io::Error doesn't implement clone directly, so we kind of hack it together.
