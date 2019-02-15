@@ -1423,7 +1423,7 @@ fn start_io(
                 expr_inner,
                 context,
                 Arc::clone(v),
-            )?)))
+            )?)));
         }
         Stdin(ref p) => {
             context.stdin = IoValue::Handle(File::open(p)?);
