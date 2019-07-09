@@ -1701,7 +1701,6 @@ impl ExpressionStatus {
 
     #[cfg(not(windows))]
     fn exit_code_string(&self) -> String {
-        use std::os::unix::process::ExitStatusExt;
         if self.status.code().is_none() {
             return format!("<signal {}>", self.status.signal().unwrap());
         }
