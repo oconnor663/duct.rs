@@ -1682,9 +1682,12 @@ impl WaitMode {
         // running expression is finished (that is, when the thread is
         // guaranteed to finish soon). Blocking waits should always join, even
         // in the presence of errors.
-        match (self, expression_result) {
-            (&WaitMode::Blocking, _) | (_, &Ok(Some(_))) => true,
-            _ => false,
+        if let WaitMode::Blocking = self {
+            true
+        } else if let Ok(Some(_)) = expression_result {
+            true
+        } else {
+            false
         }
     }
 }
