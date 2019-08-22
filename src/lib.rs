@@ -173,8 +173,7 @@ macro_rules! cmd {
 
 /// The central objects in `duct`, Expressions are created with
 /// [`cmd`](fn.cmd.html) or [`cmd!`](macro.cmd.html), combined with
-/// [`pipe`](struct.Expression.html#method.pipe) or
-/// [`then`](struct.Expression.html#method.then), and finally executed with
+/// [`pipe`](struct.Expression.html#method.pipe), and finally executed with
 /// [`start`](struct.Expression.html#method.start),
 /// [`run`](struct.Expression.html#method.run), or
 /// [`read`](struct.Expression.html#method.read). They also support several
@@ -188,50 +187,23 @@ macro_rules! cmd {
 /// internally, so all of the methods below take `&self` and return a new
 /// `Expression` cheaply.
 ///
-/// Expressions using `then` and `pipe` form trees, and the order in which you
-/// call different methods can matter, just like it matters where you put
+/// Expressions using `pipe` form trees, and the order in which you call
+/// different methods can matter, just like it matters where you put
 /// redirections in Bash. For example, each of these expressions suppresses
 /// output differently:
 ///
-/// ```
+/// ```no_run
 /// # #[macro_use] extern crate duct;
-/// # fn main() {
-/// // Only suppress output from the left side.
-/// let suppress_foo = cmd!("echo", "foo").stdout_null().then(cmd!("echo", "bar"));
-/// assert_eq!(suppress_foo.read().unwrap(), "bar");
+/// # fn main() -> std::io::Result<()> {
+/// // Only suppress stderr on the left side.
+/// cmd!("foo").stderr_null().pipe(cmd!("bar")).run()?;
 ///
-/// // Only suppress output from the right side.
-/// let suppress_bar = cmd!("echo", "foo").then(cmd!("echo", "bar").stdout_null());
-/// assert_eq!(suppress_bar.read().unwrap(), "foo");
+/// // Only suppress stderr on the right side.
+/// cmd!("foo").pipe(cmd!("bar").stderr_null()).run()?;
 ///
-/// // Suppress output from both sides.
-/// let suppress_both = cmd!("echo", "foo").then(cmd!("echo", "bar")).stdout_null();
-/// assert_eq!(suppress_both.read().unwrap(), "");
-/// # }
-/// ```
-///
-/// This version is exactly the same, but with temporary variables to make it
-/// easier to see what's going on:
-///
-/// ```
-/// # #[macro_use] extern crate duct;
-/// # fn main() {
-/// let foo = cmd!("echo", "foo");
-/// let bar = cmd!("echo", "bar");
-///
-/// let foo_null = foo.stdout_null();
-/// let bar_null = bar.stdout_null();
-///
-/// // Note that you can pass expressions by reference, when you're using them
-/// // more than once.
-/// let suppress_foo = foo_null.then(&bar);
-/// assert_eq!(suppress_foo.read().unwrap(), "bar");
-///
-/// let suppress_bar = foo.then(&bar_null);
-/// assert_eq!(suppress_bar.read().unwrap(), "foo");
-///
-/// let suppress_both = foo.then(bar).stdout_null();
-/// assert_eq!(suppress_both.read().unwrap(), "");
+/// // Suppress stderr on both sides.
+/// cmd!("foo").pipe(cmd!("bar")).stderr_null().run()?;
+/// # Ok(())
 /// # }
 /// ```
 #[derive(Clone, Debug)]
@@ -372,39 +344,6 @@ impl Expression {
     /// ```
     pub fn pipe<T: Into<Expression>>(&self, right: T) -> Expression {
         Self::new(Pipe(self.clone(), right.into()))
-    }
-
-    /// Join two expressions together into an "A then B" expression, like `&&`
-    /// in the shell.
-    ///
-    /// # Errors
-    ///
-    /// During execution, if the left child returns a non-zero exit status, the
-    /// right child gets skipped. You can use
-    /// [`unchecked`](struct.Expression.html#method.unchecked) on the left child
-    /// to make sure the right child always runs. The exit status of this
-    /// expression is the status of the last child that ran. Note that
-    /// [`kill`](struct.Handle.html#method.kill) will prevent the right side
-    /// from starting if it hasn't already, even if the left side is
-    /// `unchecked`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # #[macro_use] extern crate duct;
-    /// # fn main() {
-    /// # if cfg!(not(windows)) {
-    /// // Both echoes share the same stdout, so both go through `sed`.
-    /// # // NOTE: The shell's builtin echo doesn't support -n on OSX.
-    /// let output = cmd!("echo", "-n", "bar")
-    ///     .then(cmd!("echo", "baz"))
-    ///     .pipe(cmd!("sed", "s/b/f/g")).read();
-    /// assert_eq!("farfaz", output.unwrap());
-    /// # }
-    /// # }
-    /// ```
-    pub fn then<T: Into<Expression>>(&self, right: T) -> Expression {
-        Self::new(Then(self.clone(), right.into()))
     }
 
     /// Use bytes or a string as input for an expression, like `<<<` in the
@@ -843,20 +782,18 @@ impl Expression {
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
 
-    /// Prevent a non-zero exit status from short-circuiting a
-    /// [`then`](struct.Expression.html#method.then) expression or from causing
-    /// [`run`](struct.Expression.html#method.run) and friends to return an
-    /// error. The unchecked exit code will still be there on the `Output`
-    /// returned by `run`; its value doesn't change.
+    /// Prevent a non-zero exit status from causing
+    /// [`run`](struct.Expression.html#method.run) or
+    /// [`read`](struct.Expression.html#method.read) to return an error. The
+    /// unchecked exit code will still be there on the `Output` returned by
+    /// `run`; its value doesn't change.
     ///
     /// "Uncheckedness" sticks to an exit code as it bubbles up through
-    /// complicated expressions, but it doesn't "infect" other exit codes. So
-    /// for example, if only one sub-expression in a pipe has `unchecked`, then
+    /// complicated pipelines, but it doesn't "infect" other exit codes. So for
+    /// example, if only one sub-expression in a pipe has `unchecked`, then
     /// errors returned by the other side will still be checked. That said,
-    /// most commonly you'll just call `unchecked` right before `run`, and it'll
-    /// apply to an entire expression. This sub-expression stuff doesn't usually
-    /// come up unless you have a big pipeline built out of lots of different
-    /// pieces.
+    /// most commonly you'll just call `unchecked` right before `run`, and
+    /// it'll apply to an entire expression.
     ///
     /// # Example
     ///
@@ -864,8 +801,7 @@ impl Expression {
     ///
     /// ```no_run
     /// # #[macro_use] extern crate duct;
-    /// # fn main() { try_main().unwrap(); }
-    /// # fn try_main() -> std::io::Result<()> {
+    /// # fn main() -> std::io::Result<()> {
     /// // Don't check errors on the left side.
     /// cmd!("foo").unchecked().pipe(cmd!("bar")).run()?;
     ///
@@ -874,29 +810,6 @@ impl Expression {
     ///
     /// // Don't check errors on either side.
     /// cmd!("foo").pipe(cmd!("bar")).unchecked().run()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// As in the type-level docs above, the differences are easier to spot if
-    /// we split each expression up into multiple lines, although the meaning
-    /// is exactly the same.
-    ///
-    /// ```no_run
-    /// # #[macro_use] extern crate duct;
-    /// # fn main() { try_main().unwrap(); }
-    /// # fn try_main() -> std::io::Result<()> {
-    /// // Don't check errors on the left side.
-    /// let left = cmd!("foo").unchecked();
-    /// left.pipe(cmd!("bar")).run()?;
-    ///
-    /// // Don't check errors on the right side.
-    /// let right = cmd!("bar").unchecked();
-    /// cmd!("foo").pipe(right).run()?;
-    ///
-    /// // Don't check errors on either side.
-    /// let pipeline = cmd!("foo").pipe(cmd!("bar"));
-    /// pipeline.unchecked().run()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -949,7 +862,7 @@ impl Expression {
 }
 
 // Implemening Into<Expression> for references lets us accept both references
-// and values in `pipe` and `then`.
+// and values in `pipe`.
 impl<'a> From<&'a Expression> for Expression {
     fn from(expr: &Expression) -> Expression {
         expr.clone()
@@ -1064,7 +977,6 @@ impl Handle {
 enum ExpressionInner {
     Cmd(Vec<OsString>),
     Pipe(Expression, Expression),
-    Then(Expression, Expression),
     Io(IoExpressionInner, Expression),
 }
 
@@ -1074,9 +986,6 @@ impl ExpressionInner {
             Cmd(ref argv) => HandleInner::Child(start_argv(argv, context)?),
             Pipe(ref left, ref right) => {
                 HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
-            }
-            Then(ref left, ref right) => {
-                HandleInner::Then(Box::new(ThenHandle::start(left, right.clone(), context)?))
             }
             Io(ref io_inner, ref expr) => start_io(io_inner, expr, context)?,
         })
@@ -1090,9 +999,6 @@ enum HandleInner {
     // the caller still needs to wait on the left, and we must return a handle.
     // Thus the handle preserves the right side's errors here.
     Pipe(Box<PipeHandle>),
-    // Then requires a background thread to wait on the left side and start the
-    // right side.
-    Then(Box<ThenHandle>),
     Input(Box<InputHandle>),
     Unchecked(Box<HandleInner>),
 }
@@ -1102,7 +1008,6 @@ impl HandleInner {
         match *self {
             HandleInner::Child(ref child_handle) => child_handle.wait(mode),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.wait(mode),
-            HandleInner::Then(ref then_handle) => then_handle.wait(mode),
             HandleInner::Input(ref input_handle) => input_handle.wait(mode),
             HandleInner::Unchecked(ref inner_handle) => {
                 Ok(inner_handle.wait(mode)?.map(|mut status| {
@@ -1117,7 +1022,6 @@ impl HandleInner {
         match *self {
             HandleInner::Child(ref child_handle) => child_handle.kill(),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.kill(),
-            HandleInner::Then(ref then_handle) => then_handle.kill(),
             HandleInner::Input(ref input_handle) => input_handle.kill(),
             HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
         }
@@ -1276,140 +1180,6 @@ fn pipe_status_precedence(
     })
 }
 
-// A "then" expression must start the right side as soon as the left is
-// finished, even if the original caller isn't waiting on it yet. We do that
-// with a background thread.
-struct ThenHandle {
-    shared_state: Arc<ThenHandleInner>,
-    background_waiter: SharedThread<io::Result<ExpressionStatus>>,
-}
-
-impl ThenHandle {
-    fn start(left: &Expression, right: Expression, context: IoContext) -> io::Result<ThenHandle> {
-        let left_context = context.try_clone()?;
-        let left_handle = left.0.start(left_context)?;
-        let shared = Arc::new(ThenHandleInner {
-            left_handle: left_handle,
-            right_lock: Mutex::new(Some((right, context))),
-            right_cell: AtomicLazyCell::new(),
-        });
-        let clone = Arc::clone(&shared);
-        let background_waiter = std::thread::spawn(move || {
-            Ok(clone
-                .wait(WaitMode::Blocking)?
-                .expect("blocking wait can't return None"))
-        });
-        Ok(ThenHandle {
-            shared_state: shared,
-            background_waiter: SharedThread::new(background_waiter),
-        })
-    }
-
-    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        // ThenHandleInner does most of the heavy lifting. We just need to join
-        // the background waiter if the expression is finished. Similar to
-        // wait_input, blocking mode *must* clean up even in the presence of
-        // errors, but we *must not* do a potentially blocking join if we're in
-        // nonblocking mode.
-        let wait_res = self.shared_state.wait(mode);
-        if mode.should_join_background_thread(&wait_res) {
-            self.background_waiter
-                .join()
-                .as_ref()
-                .map_err(clone_io_error)?;
-        }
-        wait_res
-    }
-
-    fn kill(&self) -> io::Result<()> {
-        self.shared_state.kill()
-    }
-}
-
-// This is the state that gets shared with the background waiter thread.
-struct ThenHandleInner {
-    left_handle: HandleInner,
-    right_lock: Mutex<Option<(Expression, IoContext)>>,
-    right_cell: AtomicLazyCell<io::Result<HandleInner>>,
-}
-
-impl ThenHandleInner {
-    fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        // Wait for the left side to finish. If the left side hasn't finished
-        // yet (in nonblocking mode), short-circuit.
-        let left_status = match self.left_handle.wait(mode)? {
-            Some(status) => status,
-            None => return Ok(None),
-        };
-
-        // The left side has finished, so now we *must* try to take ownership of
-        // the right IoContext. If we get it, and if the left side isn't a
-        // checked error, then we'll start the right child. But no matter what,
-        // we can't leave that IoContext alive. There are write pipes in it that
-        // will deadlock the top level wait otherwise.
-        //
-        // We also need to keep holding this lock until we finish starting the
-        // right side. Kill will take the same lock, and that avoids the race
-        // condition where one thread gets the right context, kill happens, and
-        // *then* the first thread starts the right.
-        let mut right_lock_guard = self.right_lock.lock().unwrap();
-        let maybe_expression_context = right_lock_guard.take();
-
-        // Checked errors on the left side will short-circuit the right. As
-        // noted above, this will still drop the right IoContext, if any.
-        if left_status.is_checked_error() {
-            return Ok(Some(left_status));
-        }
-
-        // Now if we got the right expression above, we're responsible for
-        // starting it. Otherwise either it's already been started, or this
-        // expression has been killed.
-        if let Some((expression, context)) = maybe_expression_context {
-            let right_start_result = expression.0.start(context);
-            self.right_cell
-                .fill(right_start_result)
-                .map_err(|_| "right_cell unexpectedly filled")
-                .unwrap();
-        }
-
-        // Release the right lock. Kills may now happen on other threads. It's
-        // important that we don't hold this lock during waits.
-        drop(right_lock_guard);
-
-        // Wait on the right side, if it was started. There are two ways it
-        // might not have been started:
-        // 1) Start might've returned an error. We'll just clone it.
-        // 2) The expression might've been killed before we started the right
-        //    side. We'll return the left side's result. Note that it's possible
-        //    that the kill happened precisely in between the left exit and the
-        //    right start, in which case the left exit status could actually be
-        //    success.
-        match self.right_cell.borrow() {
-            Some(&Ok(ref handle)) => handle.wait(mode),
-            Some(&Err(ref err)) => Err(clone_io_error(err)),
-            None => Ok(Some(left_status)),
-        }
-    }
-
-    fn kill(&self) -> io::Result<()> {
-        // Lock and clear the right context first, so that it can't be started
-        // if it hasn't been already. This is important because if the left side
-        // is unchecked, a waiting thread will ignore its killed exit status and
-        // try to start the right side anyway.
-        let mut right_lock_guard = self.right_lock.lock().unwrap();
-        *right_lock_guard = None;
-
-        // Try to kill both sides, even if the first kill fails for some reason.
-        let left_result = self.left_handle.kill();
-        if let Some(&Ok(ref handle)) = self.right_cell.borrow() {
-            let right_result = handle.kill();
-            left_result.and(right_result)
-        } else {
-            left_result
-        }
-    }
-}
-
 fn start_io(
     io_inner: &IoExpressionInner,
     expr_inner: &Expression,
@@ -1562,7 +1332,7 @@ enum IoExpressionInner {
 
 #[derive(Clone)]
 struct BeforeSpawnHook {
-    inner: Arc<Fn(&mut Command) -> io::Result<()> + Send + Sync>,
+    inner: Arc<dyn Fn(&mut Command) -> io::Result<()> + Send + Sync>,
 }
 
 impl BeforeSpawnHook {
