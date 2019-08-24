@@ -72,7 +72,7 @@ mod tests {
             .start()
             .unwrap();
         handle.send_signal(libc::SIGABRT).unwrap();
-        let status = handle.output().unwrap();
+        let status = handle.wait().unwrap();
         assert_eq!(Some(libc::SIGABRT), status.status.signal());
     }
 }

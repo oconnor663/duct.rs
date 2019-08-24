@@ -90,8 +90,8 @@ fn test_start() {
         .stdout_capture()
         .start()
         .unwrap();
-    let output1 = handle1.output().unwrap();
-    let output2 = handle2.output().unwrap();
+    let output1 = handle1.wait().unwrap();
+    let output2 = handle2.wait().unwrap();
     assert_eq!("hi", str::from_utf8(&output1.stdout).unwrap().trim());
     assert_eq!("lo", str::from_utf8(&output2.stdout).unwrap().trim());
 }

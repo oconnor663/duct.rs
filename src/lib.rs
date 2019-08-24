@@ -241,7 +241,7 @@ impl Expression {
     /// # }
     /// ```
     pub fn run(&self) -> io::Result<Output> {
-        self.start()?.output()
+        self.start()?.into_output()
     }
 
     /// Execute an expression, capture its standard output, and return the
@@ -958,9 +958,10 @@ impl Handle {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
     /// object containing the results, including any captured output. This
     /// consumes the `Handle`. Calling
-    /// [`start`](struct.Expression.html#method.start) followed by `output` is
-    /// equivalent to [`run`](struct.Expression.html#method.run).
-    pub fn output(self) -> io::Result<Output> {
+    /// [`start`](struct.Expression.html#method.start) followed by
+    /// `into_output` is equivalent to
+    /// [`run`](struct.Expression.html#method.run).
+    pub fn into_output(self) -> io::Result<Output> {
         self.wait()?;
         self.result
             .into_inner()
