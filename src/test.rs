@@ -259,8 +259,8 @@ fn test_path() {
         .write_all(b"xxx")
         .unwrap();
     let expr = cmd!(path_to_exe("x_to_y"))
-        .stdin(&input_file)
-        .stdout(&output_file);
+        .stdin_path(&input_file)
+        .stdout_path(&output_file);
     let output = expr.read().unwrap();
     assert_eq!("", output);
     let mut file_output = String::new();
@@ -302,12 +302,18 @@ fn test_ergonomics() {
     let mypathbuf = Path::new("a/b/c").to_owned();
     let myvec = vec![1, 2, 3];
     // These are nonsense expressions. We just want to make sure they compile.
-    let _ = sh("true").stdin(&*mystr).input(&*myvec).stdout(&*mypathbuf);
-    let _ = sh("true").stdin(mystr).input(myvec).stdout(mypathbuf);
+    let _ = sh("true")
+        .stdin_path(&*mystr)
+        .input(&*myvec)
+        .stdout_path(&*mypathbuf);
+    let _ = sh("true")
+        .stdin_path(mystr)
+        .input(myvec)
+        .stdout_path(mypathbuf);
 
     // Unfortunately, this one doesn't work with our Into<Vec<u8>> bound on input().
     // TODO: Is it worth having these impls for &Vec in other cases?
-    // let _ = sh("true").stdin(&mystr).input(&myvec).stdout(&mypathbuf);
+    // let _ = sh("true").stdin_path(&mystr).input(&myvec).stdout_path(&mypathbuf);
 }
 
 #[test]

@@ -370,13 +370,13 @@ impl Expression {
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
-    /// let output = cmd!("head", "-c", "3").stdin("/dev/zero").read().unwrap();
+    /// let output = cmd!("head", "-c", "3").stdin_path("/dev/zero").read().unwrap();
     /// assert_eq!("\0\0\0", output);
     /// # }
     /// # }
     /// ```
-    pub fn stdin<T: Into<PathBuf>>(&self, path: T) -> Expression {
-        Self::new(Io(Stdin(path.into()), self.clone()))
+    pub fn stdin_path<T: Into<PathBuf>>(&self, path: T) -> Expression {
+        Self::new(Io(StdinPath(path.into()), self.clone()))
     }
 
     /// Use an already opened file or pipe as input for an expression.
@@ -431,15 +431,15 @@ impl Expression {
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
     /// let path = cmd!("mktemp").read().unwrap();
-    /// cmd!("echo", "wee").stdout(&path).run().unwrap();
+    /// cmd!("echo", "wee").stdout_path(&path).run().unwrap();
     /// let mut output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut output).unwrap();
     /// assert_eq!("wee\n", output);
     /// # }
     /// # }
     /// ```
-    pub fn stdout<T: Into<PathBuf>>(&self, path: T) -> Expression {
-        Self::new(Io(Stdout(path.into()), self.clone()))
+    pub fn stdout_path<T: Into<PathBuf>>(&self, path: T) -> Expression {
+        Self::new(Io(StdoutPath(path.into()), self.clone()))
     }
 
     /// Use an already opened file or pipe as output for an expression.
@@ -548,15 +548,15 @@ impl Expression {
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
     /// let path = cmd!("mktemp").read().unwrap();
-    /// cmd!("sh", "-c", "echo wee >&2").stderr(&path).run().unwrap();
+    /// cmd!("sh", "-c", "echo wee >&2").stderr_path(&path).run().unwrap();
     /// let mut error_output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut error_output).unwrap();
     /// assert_eq!("wee\n", error_output);
     /// # }
     /// # }
     /// ```
-    pub fn stderr<T: Into<PathBuf>>(&self, path: T) -> Expression {
-        Self::new(Io(Stderr(path.into()), self.clone()))
+    pub fn stderr_path<T: Into<PathBuf>>(&self, path: T) -> Expression {
+        Self::new(Io(StderrPath(path.into()), self.clone()))
     }
 
     /// Use an already opened file or pipe as error output for an expression.
@@ -1185,7 +1185,7 @@ fn start_io(
                 Arc::clone(v),
             )?)));
         }
-        Stdin(ref p) => {
+        StdinPath(ref p) => {
             context.stdin = IoValue::Handle(File::open(p)?);
         }
         StdinHandle(ref f) => {
@@ -1194,7 +1194,7 @@ fn start_io(
         StdinNull => {
             context.stdin = IoValue::Null;
         }
-        Stdout(ref p) => {
+        StdoutPath(ref p) => {
             context.stdout = IoValue::Handle(File::create(p)?);
         }
         StdoutHandle(ref f) => {
@@ -1209,7 +1209,7 @@ fn start_io(
         StdoutToStderr => {
             context.stdout = context.stderr.try_clone()?;
         }
-        Stderr(ref p) => {
+        StderrPath(ref p) => {
             context.stderr = IoValue::Handle(File::create(p)?);
         }
         StderrHandle(ref f) => {
@@ -1301,15 +1301,15 @@ impl InputHandle {
 #[derive(Debug)]
 enum IoExpressionInner {
     Input(Arc<Vec<u8>>),
-    Stdin(PathBuf),
+    StdinPath(PathBuf),
     StdinHandle(File),
     StdinNull,
-    Stdout(PathBuf),
+    StdoutPath(PathBuf),
     StdoutHandle(File),
     StdoutNull,
     StdoutCapture,
     StdoutToStderr,
-    Stderr(PathBuf),
+    StderrPath(PathBuf),
     StderrHandle(File),
     StderrNull,
     StderrCapture,
