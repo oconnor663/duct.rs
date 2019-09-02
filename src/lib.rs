@@ -27,8 +27,6 @@
 //!
 //! ```no_run
 //! # #[macro_use]
-//! # extern crate duct;
-//! # extern crate os_pipe;
 //! # use duct::cmd;
 //! # use std::io::BufReader;
 //! # use std::io::prelude::*;
@@ -64,7 +62,7 @@
 //! one (moderately long) line:
 //!
 //! ```
-//! # #[macro_use] extern crate duct;
+//! # use duct::cmd;
 //! # fn main() {
 //! # if cfg!(not(windows)) {
 //! let output = cmd!("sh", "-c", "echo foo && echo bar 2>&1").stderr_to_stdout().read().unwrap();
@@ -74,15 +72,8 @@
 //! # }
 //! ```
 
-extern crate lazycell;
 use lazycell::AtomicLazyCell;
-
-// Two utility crates build mainly to work for duct.
-extern crate os_pipe;
-extern crate shared_child;
-
 use shared_child::SharedChild;
-
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -146,8 +137,8 @@ where
 /// # Example
 ///
 /// ```
-/// #[macro_use]
-/// extern crate duct;
+///
+/// use duct::cmd;
 /// use std::path::Path;
 ///
 /// fn main() {
@@ -193,7 +184,7 @@ macro_rules! cmd {
 /// output differently:
 ///
 /// ```no_run
-/// # #[macro_use] extern crate duct;
+/// # use duct::cmd;
 /// # fn main() -> std::io::Result<()> {
 /// // Only suppress stderr on the left side.
 /// cmd!("foo").stderr_null().pipe(cmd!("bar")).run()?;
@@ -232,7 +223,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output = cmd!("echo", "hi").stdout_capture().run().unwrap();
@@ -259,7 +250,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output = cmd!("echo", "hi").stdout_capture().read().unwrap();
@@ -301,7 +292,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let handle = cmd!("echo", "hi").stdout_capture().start().unwrap();
@@ -334,7 +325,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output = cmd!("echo", "hi").pipe(cmd!("sed", "s/h/p/")).read();
@@ -352,7 +343,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<Vec<u8>>. Here's a string.
@@ -375,7 +366,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<PathBuf>, including &str.
@@ -393,7 +384,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let input_file = std::fs::File::open("/dev/zero").unwrap();
@@ -416,7 +407,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output = cmd!("cat").stdin_null().read().unwrap();
@@ -434,7 +425,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
@@ -456,7 +447,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
@@ -483,7 +474,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// // This echo command won't print anything.
     /// cmd!("echo", "foo", "bar", "baz").stdout_null().run().unwrap();
@@ -509,7 +500,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // The most direct way to read stdout bytes is `stdout_capture`.
@@ -533,7 +524,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output = cmd!("echo", "foo").stdout_to_stderr().stderr_capture().run().unwrap();
@@ -551,7 +542,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
@@ -573,7 +564,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # use std::io::prelude::*;
     /// # if cfg!(not(windows)) {
@@ -600,7 +591,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // This echo-to-stderr command won't print anything.
@@ -620,7 +611,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output_obj = cmd!("sh", "-c", "echo foo >&2").stderr_capture().run().unwrap();
@@ -638,7 +629,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let error_output = cmd!("sh", "-c", "echo foo >&2").stderr_to_stdout().read().unwrap();
@@ -675,7 +666,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output = cmd!("pwd").dir("/").read().unwrap();
@@ -692,7 +683,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let output = cmd!("sh", "-c", "echo $FOO").env("FOO", "bar").read().unwrap();
@@ -721,7 +712,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// std::env::set_var("TESTING", "true");
@@ -754,7 +745,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// # use std::collections::HashMap;
     /// # if cfg!(not(windows)) {
@@ -800,7 +791,7 @@ impl Expression {
     /// Note the differences among these three cases:
     ///
     /// ```no_run
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() -> std::io::Result<()> {
     /// // Don't check errors on the left side.
     /// cmd!("foo").unchecked().pipe(cmd!("bar")).run()?;
@@ -836,7 +827,7 @@ impl Expression {
     /// # Example
     ///
     /// ```
-    /// # #[macro_use] extern crate duct;
+    /// # use duct::cmd;
     /// # fn main() {
     /// let output = cmd!("echo", "foo")
     ///     .before_spawn(|cmd| {

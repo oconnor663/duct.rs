@@ -1,7 +1,3 @@
-extern crate os_pipe;
-extern crate tempdir;
-use self::tempdir::TempDir;
-
 use super::{cmd, Expression};
 use std;
 use std::collections::HashMap;
@@ -15,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 use std::sync::{Arc, Once, ONCE_INIT};
+use tempdir::TempDir;
 
 // Include a copy of the sh function, because we have a lot of old tests that
 // use it, and it's a lot easier than managing a circular dependency between
