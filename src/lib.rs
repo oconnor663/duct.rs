@@ -72,7 +72,7 @@
 //! # }
 //! ```
 
-use lazycell::AtomicLazyCell;
+use once_cell::sync::OnceCell;
 use shared_child::SharedChild;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -305,7 +305,7 @@ impl Expression {
         let (context, stdout_reader, stderr_reader) = IoContext::new()?;
         Ok(Handle {
             inner: self.0.start(context)?,
-            result: AtomicLazyCell::new(),
+            result: OnceCell::new(),
             readers: Mutex::new(Some((stdout_reader, stderr_reader))),
         })
     }
@@ -879,7 +879,7 @@ impl<'a> From<&'a Expression> for Expression {
 /// crate for implementation details behind making handles thread safe.
 pub struct Handle {
     inner: HandleInner,
-    result: AtomicLazyCell<io::Result<Output>>,
+    result: OnceCell<io::Result<Output>>,
     readers: Mutex<Option<(ReaderThread, ReaderThread)>>,
 }
 
@@ -896,7 +896,7 @@ impl Handle {
         // result, or if another caller has already done it. Do this inside the
         // readers lock, to avoid racing to fill the result.
         let mut readers_lock = self.readers.lock().expect("readers lock poisoned");
-        if !self.result.filled() {
+        if self.result.get().is_none() {
             // We're holding the readers lock, and we're the thread that needs
             // to collect the output. Take the reader threads and join them.
             let (stdout_reader, stderr_reader) = readers_lock
@@ -922,12 +922,12 @@ impl Handle {
                 }),
             };
             self.result
-                .fill(final_result)
+                .set(final_result)
                 .expect("result already filled outside the readers lock");
         }
         // The result has been collected, whether or not we were the caller that
         // collected it. Return a reference.
-        match *self.result.borrow().expect("result not filled") {
+        match *self.result.get().expect("result not filled") {
             Ok(ref output) => Ok(output),
             Err(ref err) => Err(clone_io_error(err)),
         }
@@ -1630,7 +1630,7 @@ fn clone_io_error(error: &io::Error) -> io::Error {
 }
 
 struct SharedThread<T> {
-    result: AtomicLazyCell<T>,
+    result: OnceCell<T>,
     handle: Mutex<Option<JoinHandle<T>>>,
 }
 
@@ -1638,7 +1638,7 @@ struct SharedThread<T> {
 impl<T> SharedThread<T> {
     fn new(handle: JoinHandle<T>) -> Self {
         SharedThread {
-            result: AtomicLazyCell::new(),
+            result: OnceCell::new(),
             handle: Mutex::new(Some(handle)),
         }
     }
@@ -1649,12 +1649,12 @@ impl<T> SharedThread<T> {
         if let Some(handle) = handle_lock.take() {
             let ret = handle.join().expect("panic on shared thread");
             self.result
-                .fill(ret)
+                .set(ret)
                 .map_err(|_| "result lazycell unexpectedly full")
                 .unwrap();
         }
         self.result
-            .borrow()
+            .get()
             .expect("result lazycell unexpectedly empty")
     }
 }
