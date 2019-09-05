@@ -80,6 +80,7 @@ use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
@@ -639,6 +640,29 @@ impl Expression {
     /// ```
     pub fn stderr_to_stdout(&self) -> Expression {
         Self::new(Io(StderrToStdout, self.clone()))
+    }
+
+    /// Swap the stdout and stderr of an expression.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let output = cmd!("sh", "-c", "echo foo && echo bar >&2")
+    ///     .stdout_stderr_swap()
+    ///     .stdout_capture()
+    ///     .stderr_capture()
+    ///     .run()
+    ///     .unwrap();
+    /// assert_eq!(b"bar\n", &*output.stdout);
+    /// assert_eq!(b"foo\n", &*output.stderr);
+    /// # }
+    /// # }
+    /// ```
+    pub fn stdout_stderr_swap(&self) -> Expression {
+        Self::new(Io(StdoutStderrSwap, self.clone()))
     }
 
     /// Set the working directory where the expression will execute.
@@ -1224,6 +1248,9 @@ fn start_io(
         StderrToStdout => {
             context.stderr = context.stdout.try_clone()?;
         }
+        StdoutStderrSwap => {
+            mem::swap(&mut context.stdout, &mut context.stderr);
+        }
         Dir(ref p) => {
             context.dir = Some(p.clone());
         }
@@ -1314,6 +1341,7 @@ enum IoExpressionInner {
     StderrNull,
     StderrCapture,
     StderrToStdout,
+    StdoutStderrSwap,
     Dir(PathBuf),
     Env(OsString, OsString),
     EnvRemove(OsString),
