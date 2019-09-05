@@ -47,7 +47,7 @@
 //! // use the os_pipe crate to create the pipe, but any type implementing
 //! // IntoRawFd works here, including File.
 //! let (pipe_reader, pipe_writer) = os_pipe::pipe()?;
-//! let child = cmd!("git", "log", "--oneline").stdout_handle(pipe_writer).start()?;
+//! let child = cmd!("git", "log", "--oneline").stdout_file(pipe_writer).start()?;
 //! for line in BufReader::new(pipe_reader).lines() {
 //!     assert!(!line?.contains("heck"), "profanity filter triggered");
 //! }
@@ -388,18 +388,18 @@ impl Expression {
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// let input_file = std::fs::File::open("/dev/zero").unwrap();
-    /// let output = cmd!("head", "-c", "3").stdin_handle(input_file).read().unwrap();
+    /// let output = cmd!("head", "-c", "3").stdin_file(input_file).read().unwrap();
     /// assert_eq!("\0\0\0", output);
     /// # }
     /// # }
     /// ```
     #[cfg(not(windows))]
-    pub fn stdin_handle<T: IntoRawFd>(&self, handle: T) -> Expression {
-        Self::new(Io(StdinHandle(into_file(handle)), self.clone()))
+    pub fn stdin_file<T: IntoRawFd>(&self, file: T) -> Expression {
+        Self::new(Io(StdinFile(into_file(file)), self.clone()))
     }
     #[cfg(windows)]
-    pub fn stdin_handle<T: IntoRawHandle>(&self, handle: T) -> Expression {
-        Self::new(Io(StdinHandle(into_file(handle)), self.clone()))
+    pub fn stdin_file<T: IntoRawHandle>(&self, file: T) -> Expression {
+        Self::new(Io(StdinFile(into_file(file)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as input for an expression.
@@ -453,7 +453,7 @@ impl Expression {
     /// # if cfg!(not(windows)) {
     /// let path = cmd!("mktemp").read().unwrap();
     /// let file = std::fs::File::create(&path).unwrap();
-    /// cmd!("echo", "wee").stdout_handle(file).run().unwrap();
+    /// cmd!("echo", "wee").stdout_file(file).run().unwrap();
     /// let mut output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut output).unwrap();
     /// assert_eq!("wee\n", output);
@@ -461,12 +461,12 @@ impl Expression {
     /// # }
     /// ```
     #[cfg(not(windows))]
-    pub fn stdout_handle<T: IntoRawFd>(&self, handle: T) -> Expression {
-        Self::new(Io(StdoutHandle(into_file(handle)), self.clone()))
+    pub fn stdout_file<T: IntoRawFd>(&self, file: T) -> Expression {
+        Self::new(Io(StdoutFile(into_file(file)), self.clone()))
     }
     #[cfg(windows)]
-    pub fn stdout_handle<T: IntoRawHandle>(&self, handle: T) -> Expression {
-        Self::new(Io(StdoutHandle(into_file(handle)), self.clone()))
+    pub fn stdout_file<T: IntoRawHandle>(&self, file: T) -> Expression {
+        Self::new(Io(StdoutFile(into_file(file)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as output for an expression.
@@ -570,7 +570,7 @@ impl Expression {
     /// # if cfg!(not(windows)) {
     /// let path = cmd!("mktemp").read().unwrap();
     /// let file = std::fs::File::create(&path).unwrap();
-    /// cmd!("sh", "-c", "echo wee >&2").stderr_handle(file).run().unwrap();
+    /// cmd!("sh", "-c", "echo wee >&2").stderr_file(file).run().unwrap();
     /// let mut error_output = String::new();
     /// std::fs::File::open(&path).unwrap().read_to_string(&mut error_output).unwrap();
     /// assert_eq!("wee\n", error_output);
@@ -578,12 +578,12 @@ impl Expression {
     /// # }
     /// ```
     #[cfg(not(windows))]
-    pub fn stderr_handle<T: IntoRawFd>(&self, handle: T) -> Expression {
-        Self::new(Io(StderrHandle(into_file(handle)), self.clone()))
+    pub fn stderr_file<T: IntoRawFd>(&self, file: T) -> Expression {
+        Self::new(Io(StderrFile(into_file(file)), self.clone()))
     }
     #[cfg(windows)]
-    pub fn stderr_handle<T: IntoRawHandle>(&self, handle: T) -> Expression {
-        Self::new(Io(StderrHandle(into_file(handle)), self.clone()))
+    pub fn stderr_file<T: IntoRawHandle>(&self, file: T) -> Expression {
+        Self::new(Io(StderrFile(into_file(file)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as error output for an expression.
@@ -1188,7 +1188,7 @@ fn start_io(
         StdinPath(ref p) => {
             context.stdin = IoValue::Handle(File::open(p)?);
         }
-        StdinHandle(ref f) => {
+        StdinFile(ref f) => {
             context.stdin = IoValue::Handle(f.try_clone()?);
         }
         StdinNull => {
@@ -1197,7 +1197,7 @@ fn start_io(
         StdoutPath(ref p) => {
             context.stdout = IoValue::Handle(File::create(p)?);
         }
-        StdoutHandle(ref f) => {
+        StdoutFile(ref f) => {
             context.stdout = IoValue::Handle(f.try_clone()?);
         }
         StdoutNull => {
@@ -1212,7 +1212,7 @@ fn start_io(
         StderrPath(ref p) => {
             context.stderr = IoValue::Handle(File::create(p)?);
         }
-        StderrHandle(ref f) => {
+        StderrFile(ref f) => {
             context.stderr = IoValue::Handle(f.try_clone()?);
         }
         StderrNull => {
@@ -1302,15 +1302,15 @@ impl InputHandle {
 enum IoExpressionInner {
     Input(Arc<Vec<u8>>),
     StdinPath(PathBuf),
-    StdinHandle(File),
+    StdinFile(File),
     StdinNull,
     StdoutPath(PathBuf),
-    StdoutHandle(File),
+    StdoutFile(File),
     StdoutNull,
     StdoutCapture,
     StdoutToStderr,
     StderrPath(PathBuf),
-    StderrHandle(File),
+    StderrFile(File),
     StderrNull,
     StderrCapture,
     StderrToStdout,
@@ -1430,13 +1430,22 @@ impl IoValue {
     }
 }
 
-#[cfg(windows)]
-fn into_file<T: IntoRawHandle>(handle: T) -> File {
-    unsafe { File::from_raw_handle(handle.into_raw_handle()) }
-}
+// We would rather convert an fd-owning object directly into a
+// std::process::Stdio, since all you can do with that is give it to a
+// std::process::Command. Unfortunately, Stdio doesn't provide a try_clone
+// method, and we need that in order to pass the object to multiple children.
+// As a workaround, convert the object to a std::fs::File. All we will use this
+// File for is try_clone and Into<Stdio>, which should be sound on any type of
+// descriptor. (Some types will lead to an error, like a TcpStream, but that's
+// not unsound.) If we discover any unsound cases, we might have to replace
+// this with a new trait.
 #[cfg(not(windows))]
 fn into_file<T: IntoRawFd>(handle: T) -> File {
     unsafe { File::from_raw_fd(handle.into_raw_fd()) }
+}
+#[cfg(windows)]
+fn into_file<T: IntoRawHandle>(handle: T) -> File {
+    unsafe { File::from_raw_handle(handle.into_raw_handle()) }
 }
 
 // This struct keeps track of a child exit status, whether or not it's been

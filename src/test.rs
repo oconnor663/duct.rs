@@ -233,7 +233,7 @@ fn test_input() {
 #[test]
 fn test_stderr() {
     let (mut reader, writer) = ::os_pipe::pipe().unwrap();
-    sh("echo hi>&2").stderr_handle(writer).run().unwrap();
+    sh("echo hi>&2").stderr_file(writer).run().unwrap();
     let mut s = String::new();
     reader.read_to_string(&mut s).unwrap();
     assert_eq!(s.trim(), "hi");
@@ -291,7 +291,7 @@ fn test_file() {
     let dir = TempDir::new("test_file").unwrap();
     let file = dir.path().join("file");
     File::create(&file).unwrap().write_all(b"example").unwrap();
-    let expr = cmd!(path_to_exe("cat")).stdin_handle(File::open(&file).unwrap());
+    let expr = cmd!(path_to_exe("cat")).stdin_file(File::open(&file).unwrap());
     let output = expr.read().unwrap();
     assert_eq!(output, "example");
 }
