@@ -21,7 +21,9 @@ impl HandleExt for HandleInner {
         match *self {
             HandleInner::Child(ref child_handle) => child_handle.child.send_signal(signal),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.send_signal(signal),
-            HandleInner::Input(ref input_handle) => input_handle.inner_handle.send_signal(signal),
+            HandleInner::StdinBytes(ref stdin_bytes_handle) => {
+                stdin_bytes_handle.inner_handle.send_signal(signal)
+            }
             HandleInner::Unchecked(ref inner_handle) => inner_handle.send_signal(signal),
         }
     }

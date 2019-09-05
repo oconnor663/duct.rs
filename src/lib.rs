@@ -347,17 +347,17 @@ impl Expression {
     /// # fn main() {
     /// # if cfg!(not(windows)) {
     /// // Many types implement Into<Vec<u8>>. Here's a string.
-    /// let output = cmd!("cat").input("foo").read().unwrap();
+    /// let output = cmd!("cat").stdin_bytes("foo").read().unwrap();
     /// assert_eq!("foo", output);
     ///
     /// // And here's a byte slice.
-    /// let output = cmd!("cat").input(&b"foo"[..]).read().unwrap();
+    /// let output = cmd!("cat").stdin_bytes(&b"foo"[..]).read().unwrap();
     /// assert_eq!("foo", output);
     /// # }
     /// # }
     /// ```
-    pub fn input<T: Into<Vec<u8>>>(&self, input: T) -> Expression {
-        Self::new(Io(Input(Arc::new(input.into())), self.clone()))
+    pub fn stdin_bytes<T: Into<Vec<u8>>>(&self, bytes: T) -> Expression {
+        Self::new(Io(StdinBytes(Arc::new(bytes.into())), self.clone()))
     }
 
     /// Open a file at the given path and use it as input for an expression,
@@ -991,7 +991,7 @@ enum HandleInner {
     // the caller still needs to wait on the left, and we must return a handle.
     // Thus the handle preserves the right side's errors here.
     Pipe(Box<PipeHandle>),
-    Input(Box<InputHandle>),
+    StdinBytes(Box<StdinBytesHandle>),
     Unchecked(Box<HandleInner>),
 }
 
@@ -1000,7 +1000,7 @@ impl HandleInner {
         match *self {
             HandleInner::Child(ref child_handle) => child_handle.wait(mode),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.wait(mode),
-            HandleInner::Input(ref input_handle) => input_handle.wait(mode),
+            HandleInner::StdinBytes(ref stdin_bytes_handle) => stdin_bytes_handle.wait(mode),
             HandleInner::Unchecked(ref inner_handle) => {
                 Ok(inner_handle.wait(mode)?.map(|mut status| {
                     status.checked = false;
@@ -1014,7 +1014,7 @@ impl HandleInner {
         match *self {
             HandleInner::Child(ref child_handle) => child_handle.kill(),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.kill(),
-            HandleInner::Input(ref input_handle) => input_handle.kill(),
+            HandleInner::StdinBytes(ref stdin_bytes_handle) => stdin_bytes_handle.kill(),
             HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
         }
     }
@@ -1178,8 +1178,8 @@ fn start_io(
     mut context: IoContext,
 ) -> io::Result<HandleInner> {
     match *io_inner {
-        Input(ref v) => {
-            return Ok(HandleInner::Input(Box::new(InputHandle::start(
+        StdinBytes(ref v) => {
+            return Ok(HandleInner::StdinBytes(Box::new(StdinBytesHandle::start(
                 expr_inner,
                 context,
                 Arc::clone(v),
@@ -1247,24 +1247,24 @@ fn start_io(
     expr_inner.0.start(context)
 }
 
-struct InputHandle {
+struct StdinBytesHandle {
     inner_handle: HandleInner,
     writer_thread: WriterThread,
 }
 
-impl InputHandle {
+impl StdinBytesHandle {
     fn start(
         expression: &Expression,
         mut context: IoContext,
         input: Arc<Vec<u8>>,
-    ) -> io::Result<InputHandle> {
+    ) -> io::Result<StdinBytesHandle> {
         let (reader, mut writer) = os_pipe::pipe()?;
         context.stdin = IoValue::Handle(into_file(reader));
         let inner = expression.0.start(context)?;
         // We only spawn the writer thread if the expression started
         // successfully, so that start errors won't leak a zombie thread.
         let thread = std::thread::spawn(move || writer.write_all(&input));
-        Ok(InputHandle {
+        Ok(StdinBytesHandle {
             inner_handle: inner,
             writer_thread: SharedThread::new(thread),
         })
@@ -1300,7 +1300,7 @@ impl InputHandle {
 
 #[derive(Debug)]
 enum IoExpressionInner {
-    Input(Arc<Vec<u8>>),
+    StdinBytes(Arc<Vec<u8>>),
     StdinPath(PathBuf),
     StdinFile(File),
     StdinNull,

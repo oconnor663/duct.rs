@@ -225,7 +225,7 @@ fn test_nonblocking_waits() {
 
 #[test]
 fn test_input() {
-    let expr = cmd!(path_to_exe("x_to_y")).input("xxx");
+    let expr = cmd!(path_to_exe("x_to_y")).stdin_bytes("xxx");
     let output = expr.read().unwrap();
     assert_eq!("yyy", output);
 }
@@ -304,16 +304,16 @@ fn test_ergonomics() {
     // These are nonsense expressions. We just want to make sure they compile.
     let _ = sh("true")
         .stdin_path(&*mystr)
-        .input(&*myvec)
+        .stdin_bytes(&*myvec)
         .stdout_path(&*mypathbuf);
     let _ = sh("true")
         .stdin_path(mystr)
-        .input(myvec)
+        .stdin_bytes(myvec)
         .stdout_path(mypathbuf);
 
     // Unfortunately, this one doesn't work with our Into<Vec<u8>> bound on input().
     // TODO: Is it worth having these impls for &Vec in other cases?
-    // let _ = sh("true").stdin_path(&mystr).input(&myvec).stdout_path(&mypathbuf);
+    // let _ = sh("true").stdin_path(&mystr).stdin_bytes(&myvec).stdout_path(&mypathbuf);
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn test_broken_pipe() {
     // on the other end of the pipe exits while writer is waiting, the write will return an
     // error. We need to swallow that error, rather than returning it.
     let myvec = vec![0; 1_000_000];
-    true_cmd().input(myvec).run().unwrap();
+    true_cmd().stdin_bytes(myvec).run().unwrap();
 }
 
 #[test]
