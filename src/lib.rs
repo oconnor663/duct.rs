@@ -951,9 +951,9 @@ impl Handle {
         }
         // The result has been collected, whether or not we were the caller that
         // collected it. Return a reference.
-        match *self.result.get().expect("result not filled") {
-            Ok(ref output) => Ok(output),
-            Err(ref err) => Err(clone_io_error(err)),
+        match self.result.get().expect("result not filled") {
+            Ok(output) => Ok(output),
+            Err(err) => Err(clone_io_error(err)),
         }
     }
 
@@ -998,12 +998,12 @@ enum ExpressionInner {
 
 impl ExpressionInner {
     fn start(&self, context: IoContext) -> io::Result<HandleInner> {
-        Ok(match *self {
-            Cmd(ref argv) => HandleInner::Child(start_argv(argv, context)?),
-            Pipe(ref left, ref right) => {
+        Ok(match self {
+            Cmd(argv) => HandleInner::Child(start_argv(argv, context)?),
+            Pipe(left, right) => {
                 HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
             }
-            Io(ref io_inner, ref expr) => start_io(io_inner, expr, context)?,
+            Io(io_inner, expr) => start_io(io_inner, expr, context)?,
         })
     }
 }
@@ -1021,11 +1021,11 @@ enum HandleInner {
 
 impl HandleInner {
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        match *self {
-            HandleInner::Child(ref child_handle) => child_handle.wait(mode),
-            HandleInner::Pipe(ref pipe_handle) => pipe_handle.wait(mode),
-            HandleInner::StdinBytes(ref stdin_bytes_handle) => stdin_bytes_handle.wait(mode),
-            HandleInner::Unchecked(ref inner_handle) => {
+        match self {
+            HandleInner::Child(child_handle) => child_handle.wait(mode),
+            HandleInner::Pipe(pipe_handle) => pipe_handle.wait(mode),
+            HandleInner::StdinBytes(stdin_bytes_handle) => stdin_bytes_handle.wait(mode),
+            HandleInner::Unchecked(inner_handle) => {
                 Ok(inner_handle.wait(mode)?.map(|mut status| {
                     status.checked = false;
                     status
@@ -1035,11 +1035,11 @@ impl HandleInner {
     }
 
     fn kill(&self) -> io::Result<()> {
-        match *self {
-            HandleInner::Child(ref child_handle) => child_handle.kill(),
-            HandleInner::Pipe(ref pipe_handle) => pipe_handle.kill(),
-            HandleInner::StdinBytes(ref stdin_bytes_handle) => stdin_bytes_handle.kill(),
-            HandleInner::Unchecked(ref inner_handle) => inner_handle.kill(),
+        match self {
+            HandleInner::Child(child_handle) => child_handle.kill(),
+            HandleInner::Pipe(pipe_handle) => pipe_handle.kill(),
+            HandleInner::StdinBytes(stdin_bytes_handle) => stdin_bytes_handle.kill(),
+            HandleInner::Unchecked(inner_handle) => inner_handle.kill(),
         }
     }
 }
@@ -1139,9 +1139,9 @@ impl PipeHandle {
         // Now if the right side never started at all, we just return that
         // error, regardless of how the left turned out. (Recall that if the
         // left never started, we won't get here at all.)
-        let right_handle = match self.right_start_result {
-            Ok(ref handle) => handle,
-            Err(ref err) => return Err(clone_io_error(err)),
+        let right_handle = match &self.right_start_result {
+            Ok(handle) => handle,
+            Err(err) => return Err(clone_io_error(err)),
         };
 
         // The right side did start, so we need to wait on it.
@@ -1161,7 +1161,7 @@ impl PipeHandle {
     // returns an error. But if the right side never started, we'll ignore it.
     fn kill(&self) -> io::Result<()> {
         let left_kill_result = self.left_handle.kill();
-        if let Ok(ref right_handle) = self.right_start_result {
+        if let Ok(right_handle) = &self.right_start_result {
             let right_kill_result = right_handle.kill();
             // As with wait, the left side happened first, so its errors take
             // precedence.
@@ -1201,27 +1201,27 @@ fn start_io(
     expr_inner: &Expression,
     mut context: IoContext,
 ) -> io::Result<HandleInner> {
-    match *io_inner {
-        StdinBytes(ref v) => {
+    match io_inner {
+        StdinBytes(v) => {
             return Ok(HandleInner::StdinBytes(Box::new(StdinBytesHandle::start(
                 expr_inner,
                 context,
                 Arc::clone(v),
             )?)));
         }
-        StdinPath(ref p) => {
+        StdinPath(p) => {
             context.stdin = IoValue::Handle(File::open(p)?);
         }
-        StdinFile(ref f) => {
+        StdinFile(f) => {
             context.stdin = IoValue::Handle(f.try_clone()?);
         }
         StdinNull => {
             context.stdin = IoValue::Null;
         }
-        StdoutPath(ref p) => {
+        StdoutPath(p) => {
             context.stdout = IoValue::Handle(File::create(p)?);
         }
-        StdoutFile(ref f) => {
+        StdoutFile(f) => {
             context.stdout = IoValue::Handle(f.try_clone()?);
         }
         StdoutNull => {
@@ -1233,10 +1233,10 @@ fn start_io(
         StdoutToStderr => {
             context.stdout = context.stderr.try_clone()?;
         }
-        StderrPath(ref p) => {
+        StderrPath(p) => {
             context.stderr = IoValue::Handle(File::create(p)?);
         }
-        StderrFile(ref f) => {
+        StderrFile(f) => {
             context.stderr = IoValue::Handle(f.try_clone()?);
         }
         StderrNull => {
@@ -1251,23 +1251,23 @@ fn start_io(
         StdoutStderrSwap => {
             mem::swap(&mut context.stdout, &mut context.stderr);
         }
-        Dir(ref p) => {
+        Dir(p) => {
             context.dir = Some(p.clone());
         }
-        Env(ref name, ref val) => {
+        Env(name, val) => {
             context.env.insert(name.clone(), val.clone());
         }
-        EnvRemove(ref name) => {
+        EnvRemove(name) => {
             context.env.remove(name);
         }
-        FullEnv(ref map) => {
+        FullEnv(map) => {
             context.env = map.clone();
         }
         Unchecked => {
             let inner_handle = expr_inner.0.start(context)?;
             return Ok(HandleInner::Unchecked(Box::new(inner_handle)));
         }
-        BeforeSpawn(ref hook) => {
+        BeforeSpawn(hook) => {
             context.before_spawn_hooks.push(hook.clone());
         }
     }
@@ -1310,8 +1310,8 @@ impl StdinBytesHandle {
             // Join the writer thread. Broken pipe errors here are expected if
             // the child exited without reading all of its input, so we suppress
             // them. Return other errors though.
-            match *self.writer_thread.join() {
-                Err(ref err) if err.kind() != io::ErrorKind::BrokenPipe => {
+            match self.writer_thread.join() {
+                Err(err) if err.kind() != io::ErrorKind::BrokenPipe => {
                     return Err(clone_io_error(err));
                 }
                 _ => {}
@@ -1438,12 +1438,12 @@ enum IoValue {
 
 impl IoValue {
     fn try_clone(&self) -> io::Result<IoValue> {
-        Ok(match *self {
+        Ok(match self {
             IoValue::ParentStdin => IoValue::ParentStdin,
             IoValue::ParentStdout => IoValue::ParentStdout,
             IoValue::ParentStderr => IoValue::ParentStderr,
             IoValue::Null => IoValue::Null,
-            IoValue::Handle(ref f) => IoValue::Handle(f.try_clone()?),
+            IoValue::Handle(f) => IoValue::Handle(f.try_clone()?),
         })
     }
 
