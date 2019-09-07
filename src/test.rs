@@ -187,15 +187,15 @@ fn test_pipe_with_kill() {
 #[test]
 fn test_pipe_start() {
     let nonexistent_cmd = cmd!(path_to_exe("nonexistent!!!"));
+    let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
 
-    // Errors starting the left side of a pipe are returned immediately.
-    let res = nonexistent_cmd.pipe(true_cmd()).start();
-    assert!(res.is_err());
+    // Errors starting the left side of a pipe are returned immediately, and
+    // the right side is never started.
+    nonexistent_cmd.pipe(&sleep_cmd).start().unwrap_err();
 
-    // Errors starting the right side are retained.
-    let handle = true_cmd().pipe(nonexistent_cmd).start().unwrap();
-    // But they show up during wait().
-    assert!(handle.wait().is_err());
+    // Errors starting the right side are also returned immediately, and the
+    // the left side is killed first.
+    sleep_cmd.pipe(nonexistent_cmd).start().unwrap_err();
 }
 
 #[test]

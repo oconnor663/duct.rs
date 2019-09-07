@@ -34,11 +34,7 @@ impl HandleExt for PipeHandle {
     /// expressions returned an error.
     fn send_signal(&self, signal: libc::c_int) -> io::Result<()> {
         let left_result = self.left_handle.send_signal(signal);
-        let right_result = self
-            .right_start_result
-            .as_ref()
-            .map(|right_handle| right_handle.send_signal(signal))
-            .unwrap_or(Ok(()));
+        let right_result = self.right_handle.send_signal(signal);
         left_result.and(right_result)
     }
 }

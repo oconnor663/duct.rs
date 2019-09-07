@@ -1104,7 +1104,7 @@ impl ChildHandle {
 #[derive(Debug)]
 struct PipeHandle {
     left_handle: HandleInner,
-    right_start_result: io::Result<HandleInner>,
+    right_handle: HandleInner,
 }
 
 impl PipeHandle {
@@ -1119,37 +1119,34 @@ impl PipeHandle {
         // Errors starting the left side just short-circuit us.
         let left_handle = left.0.start(left_context)?;
 
-        // Now the left has started, and we *must* return a handle. No more
-        // short-circuiting.
+        // Now the left side is started. If the right side fails to start, we
+        // can't let the left side turn into a zombie. We have to await it, and
+        // that means we have to kill it first.
         let right_result = right.0.start(right_context);
-
-        Ok(PipeHandle {
-            left_handle: left_handle,
-            right_start_result: right_result,
-        })
+        match right_result {
+            Ok(right_handle) => Ok(PipeHandle {
+                left_handle: left_handle,
+                right_handle: right_handle,
+            }),
+            Err(e) => {
+                // Realistically, kill should never return an error. If it
+                // does, it's probably due to some bug in this library or one
+                // of its dependencies. If that happens just propagate the
+                // error and accept that we're probably leaking something.
+                left_handle.kill()?;
+                // Similarly, this private API wait should never return an
+                // error. It might return a non-zero status, but here that's
+                // still an Ok result.
+                left_handle.wait(WaitMode::Blocking)?;
+                Err(e)
+            }
+        }
     }
 
-    // Waiting on a pipe expression is tricky. The right side might've failed to
-    // start before we even got here. Or we might hit an error waiting on the
-    // left side, before we try to wait on the right. No matter what happens, we
-    // must call wait on *both* sides (if they're running), to make sure that
-    // errors on one side don't cause us to leave zombie processes on the other
-    // side.
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        // Even if the right side never started, the left side did. Wait for it.
-        // Don't short circuit until after we wait on the right side though.
+        // Wait on both sides first, without propagating any errors.
         let left_wait_result = self.left_handle.wait(mode);
-
-        // Now if the right side never started at all, we just return that
-        // error, regardless of how the left turned out. (Recall that if the
-        // left never started, we won't get here at all.)
-        let right_handle = match &self.right_start_result {
-            Ok(handle) => handle,
-            Err(err) => return Err(clone_io_error(err)),
-        };
-
-        // The right side did start, so we need to wait on it.
-        let right_wait_result = right_handle.wait(mode);
+        let right_wait_result = self.right_handle.wait(mode);
 
         // Now we deal with errors from either of those waits. The left wait
         // happened first, so that one takes precedence. Note that this is the
@@ -1157,22 +1154,18 @@ impl PipeHandle {
         let left_status = left_wait_result?;
         let right_status = right_wait_result?;
 
-        // Now return one of the two statuses.
+        // If both waits succeeded, return one of the two statuses.
         Ok(pipe_status_precedence(left_status, right_status))
     }
 
     // As with wait, we need to call kill on both sides even if the left side
-    // returns an error. But if the right side never started, we'll ignore it.
+    // returns an error.
     fn kill(&self) -> io::Result<()> {
         let left_kill_result = self.left_handle.kill();
-        if let Ok(right_handle) = &self.right_start_result {
-            let right_kill_result = right_handle.kill();
-            // As with wait, the left side happened first, so its errors take
-            // precedence.
-            left_kill_result.and(right_kill_result)
-        } else {
-            left_kill_result
-        }
+        let right_kill_result = self.right_handle.kill();
+        // As with wait, the left side happened first, so its errors take
+        // precedence.
+        left_kill_result.and(right_kill_result)
     }
 }
 
