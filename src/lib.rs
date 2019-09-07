@@ -984,9 +984,10 @@ impl Handle {
             .expect("wait didn't set the result")
     }
 
-    /// Kill the running expression.
-    pub fn kill(&self) -> io::Result<()> {
-        self.inner.kill()
+    /// Kill the running expression and await all the child processes.
+    pub fn kill_and_wait(&self) -> io::Result<&Output> {
+        self.inner.kill()?;
+        self.wait()
     }
 }
 

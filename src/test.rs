@@ -180,8 +180,7 @@ fn test_pipe_with_kill() {
         .unchecked()
         .start()
         .unwrap();
-    handle.kill().unwrap();
-    handle.wait().unwrap();
+    handle.kill_and_wait().unwrap();
 }
 
 #[test]
@@ -208,7 +207,7 @@ fn test_multiple_threads() {
     let wait_thread = std::thread::spawn(move || {
         arc_clone.wait().unwrap();
     });
-    handle.kill().unwrap();
+    handle.kill_and_wait().unwrap();
     wait_thread.join().unwrap();
 }
 
@@ -219,8 +218,7 @@ fn test_nonblocking_waits() {
     let handle = sleep_cmd.pipe(&sleep_cmd).unchecked().start().unwrap();
     // Make sure try_wait doesn't block on it.
     assert!(handle.try_wait().unwrap().is_none());
-    handle.kill().unwrap();
-    handle.wait().unwrap();
+    handle.kill_and_wait().unwrap();
 }
 
 #[test]
