@@ -901,6 +901,7 @@ impl<'a> From<&'a Expression> for Expression {
 ///
 /// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
 /// crate for implementation details behind making handles thread safe.
+#[derive(Debug)]
 pub struct Handle {
     inner: HandleInner,
     result: OnceCell<io::Result<Output>>,
@@ -1008,6 +1009,7 @@ impl ExpressionInner {
     }
 }
 
+#[derive(Debug)]
 enum HandleInner {
     Child(ChildHandle),
     // If the left side of a pipe fails to start, there's nothing to wait for,
@@ -1071,6 +1073,7 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> 
     })
 }
 
+#[derive(Debug)]
 struct ChildHandle {
     child: shared_child::SharedChild,
     command_string: String,
@@ -1098,6 +1101,7 @@ impl ChildHandle {
     }
 }
 
+#[derive(Debug)]
 struct PipeHandle {
     left_handle: HandleInner,
     right_start_result: io::Result<HandleInner>,
@@ -1274,6 +1278,7 @@ fn start_io(
     expr_inner.0.start(context)
 }
 
+#[derive(Debug)]
 struct StdinBytesHandle {
     inner_handle: HandleInner,
     writer_thread: WriterThread,
@@ -1666,6 +1671,7 @@ fn clone_io_error(error: &io::Error) -> io::Error {
     }
 }
 
+#[derive(Debug)]
 struct SharedThread<T> {
     result: OnceCell<T>,
     handle: Mutex<Option<JoinHandle<T>>>,

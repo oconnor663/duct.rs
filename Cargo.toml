@@ -10,7 +10,7 @@ edition = "2018"
 
 [dependencies]
 os_pipe = "0.8.0"
-shared_child = "0.3.3"
+shared_child = "0.3.4"
 once_cell = "1.0.1"
 
 [target.'cfg(unix)'.dependencies]
