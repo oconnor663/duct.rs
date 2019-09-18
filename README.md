@@ -40,12 +40,9 @@ let current_branch = cmd!("git", "symbolic-ref", "--short", "HEAD").read()?;
 let args = &["log", &current_branch];
 cmd("git", args).run()?;
 
-// Log again, but this time read the output from a pipe of our own. We
-// use the os_pipe crate to create the pipe, but any type implementing
-// IntoRawFd works here, including File.
-let (pipe_reader, pipe_writer) = os_pipe::pipe()?;
-let child = cmd!("git", "log", "--oneline").stdout_handle(pipe_writer).start()?;
-for line in BufReader::new(pipe_reader).lines() {
+// Log again, but this time read the output one line at a time.
+let reader = cmd!("git", "log", "--oneline").reader()?;
+for line in BufReader::new(reader).lines() {
     assert!(!line?.contains("heck"), "profanity filter triggered");
 }
 ```

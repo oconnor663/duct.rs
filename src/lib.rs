@@ -14,6 +14,7 @@
 //!
 //! # Changelog
 //!
+//! - Version 0.12 added support for trailing commas to `cmd!`.
 //! - Version 0.11 introduced the `before_spawn` method.
 //! - Version 0.10 changed how environment variable casing is handled on Windows.
 //!   See the docs for `env_remove`.
@@ -43,12 +44,9 @@
 //! let args = &["log", &current_branch];
 //! cmd("git", args).run()?;
 //!
-//! // Log again, but this time read the output from a pipe of our own. We
-//! // use the os_pipe crate to create the pipe, but any type implementing
-//! // IntoRawFd works here, including File.
-//! let (pipe_reader, pipe_writer) = os_pipe::pipe()?;
-//! let child = cmd!("git", "log", "--oneline").stdout_file(pipe_writer).start()?;
-//! for line in BufReader::new(pipe_reader).lines() {
+//! // Log again, but this time read the output one line at a time.
+//! let reader = cmd!("git", "log", "--oneline").reader()?;
+//! for line in BufReader::new(reader).lines() {
 //!     assert!(!line?.contains("heck"), "profanity filter triggered");
 //! }
 //! #     Ok(())
@@ -166,9 +164,10 @@ macro_rules! cmd {
 /// The central objects in `duct`, Expressions are created with
 /// [`cmd`](fn.cmd.html) or [`cmd!`](macro.cmd.html), combined with
 /// [`pipe`](struct.Expression.html#method.pipe), and finally executed with
-/// [`start`](struct.Expression.html#method.start),
-/// [`run`](struct.Expression.html#method.run), or
-/// [`read`](struct.Expression.html#method.read). They also support several
+/// [`run`](struct.Expression.html#method.run),
+/// [`read`](struct.Expression.html#method.read),
+/// [`start`](struct.Expression.html#method.start), or
+/// [`reader`](struct.Expression.html#method.reader). They also support several
 /// methods to control their execution, like
 /// [`input`](struct.Expression.html#method.input),
 /// [`env`](struct.Expression.html#method.env), and
@@ -233,20 +232,22 @@ impl Expression {
     /// # }
     /// ```
     pub fn run(&self) -> io::Result<Output> {
+        // This could be optimized to avoid creating a background threads, by
+        // using the current thread to read stdout or stderr if only one of
+        // them is captured, or by using async IO to read both.
         self.start()?.into_output()
     }
 
     /// Execute an expression, capture its standard output, and return the
     /// captured output as a `String`. This is a convenience wrapper around
-    /// [`run`](struct.Expression.html#method.run). Like backticks and `$()` in
-    /// the shell, `read` trims trailing newlines.
+    /// [`reader`](struct.Expression.html#method.reader). Like backticks and
+    /// `$()` in the shell, `read` trims trailing newlines.
     ///
     /// # Errors
     ///
     /// In addition to all the errors possible with
-    /// [`run`](struct.Expression.html#method.run), `read` will return an
-    /// [`ErrorKind::InvalidData`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
-    /// IO error if the captured bytes aren't valid UTF-8.
+    /// [`run`](struct.Expression.html#method.run), `read` will return an error
+    /// if the captured bytes aren't valid UTF-8.
     ///
     /// # Example
     ///
@@ -260,15 +261,13 @@ impl Expression {
     /// # }
     /// ```
     pub fn read(&self) -> io::Result<String> {
-        let output = self.stdout_capture().run()?;
-        if let Ok(output_str) = std::str::from_utf8(&output.stdout) {
-            Ok(trim_end_newlines(output_str).to_owned())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stdout is not valid UTF-8",
-            ))
+        let mut reader = self.reader()?;
+        let mut output = String::new();
+        reader.read_to_string(&mut output)?;
+        while output.ends_with('\n') || output.ends_with('\r') {
+            output.truncate(output.len() - 1);
         }
+        Ok(output)
     }
 
     /// Start running an expression, and immediately return a
@@ -277,18 +276,6 @@ impl Expression {
     /// [`spawn`](https://doc.rust-lang.org/std/process/struct.Command.html#method.spawn)
     /// method in the standard library. The `Handle` may be shared between
     /// multiple threads.
-    ///
-    /// # Errors
-    ///
-    /// In addition to all the errors possible with
-    /// [`std::process::Command::spawn`](https://doc.rust-lang.org/std/process/struct.Command.html#method.spawn),
-    /// `start` can return errors from opening pipes and files. However, `start`
-    /// will never return an error if a child process has already started. In
-    /// particular, if the left side of a pipe expression starts successfully,
-    /// `start` will always return `Ok`. Any errors that happen on the right
-    /// side will be saved and returned later by the wait methods. That makes it
-    /// safe for callers to short circuit on `start` errors without the risk of
-    /// leaking processes.
     ///
     /// # Example
     ///
@@ -303,11 +290,59 @@ impl Expression {
     /// # }
     /// ```
     pub fn start(&self) -> io::Result<Handle> {
-        let (context, stdout_reader, stderr_reader) = IoContext::new()?;
+        let stdout_capture = OutputCaptureContext::new();
+        let stderr_capture = OutputCaptureContext::new();
+        let context = IoContext::new(&stdout_capture, &stderr_capture);
+
         Ok(Handle {
             inner: self.0.start(context)?,
             result: OnceCell::new(),
-            readers: Mutex::new(Some((stdout_reader, stderr_reader))),
+            readers: Mutex::new((
+                stdout_capture.maybe_read_thread(),
+                stderr_capture.maybe_read_thread(),
+            )),
+        })
+    }
+
+    /// Start running an expression, and immediately return a
+    /// [`ReaderHandle`](struct.Handle.html) that represents all the child
+    /// processes. This is similar to `.stdout_capture().start()`, except that
+    /// it provides an incremental stdout reader. When the reader reaches EOF,
+    /// child processes are automatically awaited.
+    ///
+    /// Note that because this method does not read child output on a
+    /// background thread, it's inadvisable to create more than one
+    /// `ReaderHandle` at a time. Child processes might block if their stdout
+    /// is not read from, and if you intend to have multiple children running
+    /// at once, blocking could lead to performance issues or deadlocks. When
+    /// running multiple children at once, prefer `.stdout_capture().start()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # use std::io::prelude::*;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let mut reader = cmd!("echo", "hi").reader().unwrap();
+    /// let mut stdout = Vec::new();
+    /// reader.read_to_end(&mut stdout).unwrap();
+    /// assert_eq!(b"hi\n".to_vec(), stdout);
+    /// # }
+    /// # }
+    /// ```
+    pub fn reader(&self) -> io::Result<ReaderHandle> {
+        let stdout_capture = OutputCaptureContext::new();
+        let stderr_capture = OutputCaptureContext::new();
+        let context = IoContext::new(&stdout_capture, &stderr_capture);
+        let handle = Handle {
+            inner: self.stdout_capture().0.start(context)?,
+            result: OnceCell::new(),
+            readers: Mutex::new((None, stderr_capture.maybe_read_thread())),
+        };
+        Ok(ReaderHandle {
+            handle,
+            reader: stdout_capture.pair.into_inner().expect("pipe opened").0,
         })
     }
 
@@ -322,6 +357,11 @@ impl Expression {
     /// `pipefail` option. If both sides return non-zero, and one of them is
     /// [`unchecked`](struct.Expression.html#method.unchecked), then the checked
     /// side wins. Otherwise the right side wins.
+    ///
+    /// During spawning, if the left side of the pipe spawns successfully, but
+    /// the right side fails to spawn, the left side will be killed and
+    /// awaited. That's necessary to return the spawn errors immediately,
+    /// without leaking the left side as a zombie.
     ///
     /// # Example
     ///
@@ -491,12 +531,15 @@ impl Expression {
         Self::new(Io(StdoutNull, self.clone()))
     }
 
-    /// Capture the standard output of an expression. The captured bytes will be
-    /// available on the `stdout` field of the
+    /// Capture the standard output of an expression. The captured bytes will
+    /// be available on the `stdout` field of the
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
     /// object returned by [`run`](struct.Expression.html#method.run) or
-    /// [`wait`](struct.Handle.html#method.wait). In the simplest cases,
-    /// [`read`](struct.Expression.html#method.read) can be more convenient.
+    /// [`wait`](struct.Handle.html#method.wait). Output is read by a
+    /// background thread, so the child will never be blocked writing to
+    /// stdout. Where possible, the
+    /// [`read`](struct.Expression.html#method.read) is more convenient, and it
+    /// avoids the background thread.
     ///
     /// # Example
     ///
@@ -607,7 +650,9 @@ impl Expression {
     /// Capture the error output of an expression. The captured bytes will be
     /// available on the `stderr` field of the `Output` object returned by
     /// [`run`](struct.Expression.html#method.run) or
-    /// [`wait`](struct.Handle.html#method.wait).
+    /// [`wait`](struct.Handle.html#method.wait). Output is read by a
+    /// background thread, so the child will never be blocked writing to
+    /// stderr.
     ///
     /// # Example
     ///
@@ -905,13 +950,23 @@ impl<'a> From<&'a Expression> for Expression {
 pub struct Handle {
     inner: HandleInner,
     result: OnceCell<io::Result<Output>>,
-    readers: Mutex<Option<(ReaderThread, ReaderThread)>>,
+    readers: Mutex<(Option<ReaderThread>, Option<ReaderThread>)>,
 }
 
 impl Handle {
     /// Wait for the running expression to finish, and return a reference to its
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// Multiple threads may wait at the same time.
+    ///
+    /// # Errors
+    ///
+    /// In addition to all the IO errors possible with
+    /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
+    /// `wait` will return an
+    /// [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
+    /// IO error if child returns a non-zero exit status. To suppress this
+    /// error and return an `Output` even when the exit status is non-zero, use
+    /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
     pub fn wait(&self) -> io::Result<&Output> {
         let status = self
             .inner
@@ -923,12 +978,16 @@ impl Handle {
         let mut readers_lock = self.readers.lock().expect("readers lock poisoned");
         if self.result.get().is_none() {
             // We're holding the readers lock, and we're the thread that needs
-            // to collect the output. Take the reader threads and join them.
-            let (stdout_reader, stderr_reader) = readers_lock
+            // to collect the output. Join the reader threads, if any.
+            let (stdout_reader, stderr_reader) = &mut *readers_lock;
+            let stdout_result = stdout_reader
                 .take()
-                .expect("readers taken without filling result");
-            let stdout_result = stdout_reader.join().expect("stdout reader panic");
-            let stderr_result = stderr_reader.join().expect("stderr reader panic");
+                .map(|t| t.join().expect("stdout reader panic"))
+                .unwrap_or(Ok(Vec::new()));
+            let stderr_result = stderr_reader
+                .take()
+                .map(|t| t.join().expect("stderr reader panic"))
+                .unwrap_or(Ok(Vec::new()));
             let final_result = match (stdout_result, stderr_result) {
                 // The highest priority result is IO errors in the reader
                 // threads.
@@ -962,6 +1021,16 @@ impl Handle {
     /// reference to its
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
     /// If it's still running, return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// In addition to all the IO errors possible with
+    /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
+    /// `try_wait` will return an
+    /// [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
+    /// IO error if child returns a non-zero exit status. To suppress this
+    /// error and return an `Output` even when the exit status is non-zero, use
+    /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
     pub fn try_wait(&self) -> io::Result<Option<&Output>> {
         if self.inner.wait(WaitMode::Nonblocking)?.is_none() {
             Ok(None)
@@ -977,6 +1046,16 @@ impl Handle {
     /// [`start`](struct.Expression.html#method.start) followed by
     /// `into_output` is equivalent to
     /// [`run`](struct.Expression.html#method.run).
+    ///
+    /// # Errors
+    ///
+    /// In addition to all the IO errors possible with
+    /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
+    /// `into_output` will return an
+    /// [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
+    /// IO error if child returns a non-zero exit status. To suppress this
+    /// error and return an `Output` even when the exit status is non-zero, use
+    /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
     pub fn into_output(self) -> io::Result<Output> {
         self.wait()?;
         self.result
@@ -1226,7 +1305,7 @@ fn start_io(
             context.stdout = IoValue::Null;
         }
         StdoutCapture => {
-            context.stdout = IoValue::Handle(into_file(context.stdout_capture_pipe.try_clone()?));
+            context.stdout = IoValue::Handle(into_file(context.stdout_capture.write_pipe()?));
         }
         StdoutToStderr => {
             context.stdout = context.stderr.try_clone()?;
@@ -1241,7 +1320,7 @@ fn start_io(
             context.stderr = IoValue::Null;
         }
         StderrCapture => {
-            context.stderr = IoValue::Handle(into_file(context.stderr_capture_pipe.try_clone()?));
+            context.stderr = IoValue::Handle(into_file(context.stderr_capture.write_pipe()?));
         }
         StderrToStdout => {
             context.stderr = context.stdout.try_clone()?;
@@ -1275,7 +1354,7 @@ fn start_io(
 #[derive(Debug)]
 struct StdinBytesHandle {
     inner_handle: HandleInner,
-    writer_thread: WriterThread,
+    writer_thread: SharedThread<io::Result<()>>,
 }
 
 impl StdinBytesHandle {
@@ -1379,43 +1458,42 @@ impl fmt::Debug for BeforeSpawnHook {
 // It's initialized in run(), with dups of the stdin/stdout/stderr pipes, and then passed down to
 // sub-expressions. Compound expressions will clone() it, and redirections will modify it.
 #[derive(Debug)]
-struct IoContext {
+struct IoContext<'a> {
     stdin: IoValue,
     stdout: IoValue,
     stderr: IoValue,
-    stdout_capture_pipe: os_pipe::PipeWriter,
-    stderr_capture_pipe: os_pipe::PipeWriter,
+    stdout_capture: &'a OutputCaptureContext,
+    stderr_capture: &'a OutputCaptureContext,
     dir: Option<PathBuf>,
     env: HashMap<OsString, OsString>,
     before_spawn_hooks: Vec<BeforeSpawnHook>,
 }
 
-impl IoContext {
+impl<'a> IoContext<'a> {
     // Returns (context, stdout_reader, stderr_reader).
-    fn new() -> io::Result<(IoContext, ReaderThread, ReaderThread)> {
-        let (stdout_capture_pipe, stdout_reader) = pipe_with_reader_thread()?;
-        let (stderr_capture_pipe, stderr_reader) = pipe_with_reader_thread()?;
-        let env: HashMap<_, _> = std::env::vars_os().collect();
-        let context = IoContext {
+    fn new(
+        stdout_capture: &'a OutputCaptureContext,
+        stderr_capture: &'a OutputCaptureContext,
+    ) -> Self {
+        Self {
             stdin: IoValue::ParentStdin,
             stdout: IoValue::ParentStdout,
             stderr: IoValue::ParentStderr,
-            stdout_capture_pipe: stdout_capture_pipe,
-            stderr_capture_pipe: stderr_capture_pipe,
+            stdout_capture,
+            stderr_capture,
             dir: None,
-            env: env,
+            env: std::env::vars_os().collect(),
             before_spawn_hooks: Vec::new(),
-        };
-        Ok((context, stdout_reader, stderr_reader))
+        }
     }
 
-    fn try_clone(&self) -> io::Result<IoContext> {
+    fn try_clone(&self) -> io::Result<IoContext<'a>> {
         Ok(IoContext {
             stdin: self.stdin.try_clone()?,
             stdout: self.stdout.try_clone()?,
             stderr: self.stderr.try_clone()?,
-            stdout_capture_pipe: self.stdout_capture_pipe.try_clone()?,
-            stderr_capture_pipe: self.stderr_capture_pipe.try_clone()?,
+            stdout_capture: self.stdout_capture,
+            stderr_capture: self.stderr_capture,
             dir: self.dir.clone(),
             env: self.env.clone(),
             before_spawn_hooks: self.before_spawn_hooks.clone(),
@@ -1638,24 +1716,6 @@ impl<'a> ToExecutable for &'a OsString {
     }
 }
 
-type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
-
-fn pipe_with_reader_thread() -> io::Result<(os_pipe::PipeWriter, ReaderThread)> {
-    let (mut reader, writer) = os_pipe::pipe()?;
-    let thread = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output)?;
-        Ok(output)
-    });
-    Ok((writer, thread))
-}
-
-type WriterThread = SharedThread<io::Result<()>>;
-
-fn trim_end_newlines(s: &str) -> &str {
-    s.trim_end_matches(|c| c == '\n' || c == '\r')
-}
-
 // io::Error doesn't implement clone directly, so we kind of hack it together.
 fn clone_io_error(error: &io::Error) -> io::Error {
     if let Some(code) = error.raw_os_error() {
@@ -1687,12 +1747,10 @@ impl<T> SharedThread<T> {
             let ret = handle.join().expect("panic on shared thread");
             self.result
                 .set(ret)
-                .map_err(|_| "result lazycell unexpectedly full")
+                .map_err(|_| "result cell unexpectedly full")
                 .unwrap();
         }
-        self.result
-            .get()
-            .expect("result lazycell unexpectedly empty")
+        self.result.get().expect("result cell unexpectedly empty")
     }
 }
 
@@ -1737,6 +1795,78 @@ fn canonicalize_env_var_name(name: OsString) -> OsString {
 fn canonicalize_env_var_name(name: OsString) -> OsString {
     // No-op on all other platforms.
     name
+}
+
+type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
+
+#[derive(Debug)]
+struct OutputCaptureContext {
+    pair: OnceCell<(os_pipe::PipeReader, os_pipe::PipeWriter)>,
+}
+
+impl OutputCaptureContext {
+    fn new() -> Self {
+        Self {
+            pair: OnceCell::new(),
+        }
+    }
+
+    fn write_pipe(&self) -> io::Result<os_pipe::PipeWriter> {
+        let (_, writer) = self.pair.get_or_try_init(|| os_pipe::pipe())?;
+        writer.try_clone()
+    }
+
+    // Only spawn a read thread if the write pipe was used.
+    fn maybe_read_thread(self) -> Option<ReaderThread> {
+        if let Some((mut reader, _)) = self.pair.into_inner() {
+            Some(std::thread::spawn(move || {
+                let mut output = Vec::new();
+                reader.read_to_end(&mut output)?;
+                Ok(output)
+            }))
+        } else {
+            None
+        }
+    }
+}
+
+/// An incremental reader created with the
+/// [`Expression::reader`](struct.Expression.html#method.reader) method. This
+/// lets you read child output without allocating a large memory buffer to
+/// store it all, and without running a background thread to fill that buffer.
+/// When this reader reaches EOF, it automatically awaits the child processes.
+///
+/// Note that if you don't use
+/// [`unchecked`](struct.Expression.html#method.unchecked), and the child
+/// returns a non-zero exit status, the final call to `read` will return an
+/// error, just as [`run`](struct.Expression.html#method.run) would.
+pub struct ReaderHandle {
+    handle: Handle,
+    reader: os_pipe::PipeReader,
+}
+
+impl ReaderHandle {
+    /// Return a reference to the inner [`Handle`](struct.Handle.html), for
+    /// example if you want to call
+    /// [`kill_and_wait`](struct.Handle.html#method.kill_and_wait).
+    pub fn handle(&self) -> &Handle {
+        &self.handle
+    }
+}
+
+impl Read for ReaderHandle {
+    /// Note that if you don't use
+    /// [`unchecked`](struct.Expression.html#method.unchecked), and the child
+    /// returns a non-zero exit status, the final call to `read` will return an
+    /// error, just as [`run`](struct.Expression.html#method.run) would.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.reader.read(buf)?;
+        if n == 0 && buf.len() > 0 {
+            // EOF detected. Wait on the child to clean it up before returning.
+            self.handle.wait()?;
+        }
+        Ok(n)
+    }
 }
 
 #[cfg(test)]
