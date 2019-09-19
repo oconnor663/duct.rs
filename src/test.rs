@@ -175,12 +175,12 @@ fn test_pipe() {
 fn test_pipe_with_kill() {
     // Make sure both sides get killed.
     let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000");
-    let handle = sleep_cmd
-        .pipe(sleep_cmd.clone())
-        .unchecked()
-        .start()
-        .unwrap();
+    // Note that we don't use unchecked() here. This tests that kill_and_wait
+    // suppresse exit status errors.
+    let handle = sleep_cmd.pipe(sleep_cmd.clone()).start().unwrap();
     handle.kill_and_wait().unwrap();
+    // But calling wait again should be an error, because of the status.
+    handle.wait().unwrap_err();
 }
 
 #[test]

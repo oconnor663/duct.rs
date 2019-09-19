@@ -949,7 +949,7 @@ impl<'a> From<&'a Expression> for Expression {
 #[derive(Debug)]
 pub struct Handle {
     inner: HandleInner,
-    result: OnceCell<io::Result<Output>>,
+    result: OnceCell<(ExpressionStatus, Output)>,
     readers: Mutex<(Option<ReaderThread>, Option<ReaderThread>)>,
 }
 
@@ -968,53 +968,18 @@ impl Handle {
     /// error and return an `Output` even when the exit status is non-zero, use
     /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
     pub fn wait(&self) -> io::Result<&Output> {
-        let status = self
-            .inner
-            .wait(WaitMode::Blocking)?
-            .expect("blocking wait can't return None");
-        // The expression has exited. See if we need to collect its output
-        // result, or if another caller has already done it. Do this inside the
-        // readers lock, to avoid racing to fill the result.
-        let mut readers_lock = self.readers.lock().expect("readers lock poisoned");
-        if self.result.get().is_none() {
-            // We're holding the readers lock, and we're the thread that needs
-            // to collect the output. Join the reader threads, if any.
-            let (stdout_reader, stderr_reader) = &mut *readers_lock;
-            let stdout_result = stdout_reader
-                .take()
-                .map(|t| t.join().expect("stdout reader panic"))
-                .unwrap_or(Ok(Vec::new()));
-            let stderr_result = stderr_reader
-                .take()
-                .map(|t| t.join().expect("stderr reader panic"))
-                .unwrap_or(Ok(Vec::new()));
-            let final_result = match (stdout_result, stderr_result) {
-                // The highest priority result is IO errors in the reader
-                // threads.
-                (Err(err), _) | (_, Err(err)) => Err(err),
-
-                // Then checked status errors.
-                _ if status.is_checked_error() => {
-                    Err(io::Error::new(io::ErrorKind::Other, status.message()))
-                }
-
-                // And finally the successful output.
-                (Ok(stdout), Ok(stderr)) => Ok(Output {
-                    status: status.status,
-                    stdout: stdout,
-                    stderr: stderr,
-                }),
-            };
-            self.result
-                .set(final_result)
-                .expect("result already filled outside the readers lock");
+        // Await the children and any threads that are reading their output.
+        // Another caller may already have done this.
+        let (expression_status, output) = wait_on_handle_and_ouput(self)?;
+        // If the child returned a non-zero exit status, and that's a checked
+        // error, return the error.
+        if expression_status.is_checked_error() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                expression_status.message(),
+            ));
         }
-        // The result has been collected, whether or not we were the caller that
-        // collected it. Return a reference.
-        match self.result.get().expect("result not filled") {
-            Ok(output) => Ok(output),
-            Err(err) => Err(clone_io_error(err)),
-        }
+        Ok(output)
     }
 
     /// Check whether the running expression is finished. If it is, return a
@@ -1058,15 +1023,64 @@ impl Handle {
     /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
     pub fn into_output(self) -> io::Result<Output> {
         self.wait()?;
-        self.result
-            .into_inner()
-            .expect("wait didn't set the result")
+        let (_, output) = self.result.into_inner().expect("result missing");
+        Ok(output)
     }
 
-    /// Kill the running expression and await all the child processes.
-    pub fn kill_and_wait(&self) -> io::Result<&Output> {
+    /// Kill the running expression and await all the child processes. Any
+    /// errors that would normally result from a non-zero exit status are
+    /// ignored, as with
+    /// [`unchecked`](struct.Expression.html#method.unchecked).
+    pub fn kill_and_wait(&self) -> io::Result<()> {
         self.inner.kill()?;
-        self.wait()
+        // This function cleans up the child but does not return an error for a
+        // non-zero exit status.
+        wait_on_handle_and_ouput(self)?;
+        Ok(())
+    }
+}
+
+// Does a blocking wait on the handle, if it hasn't been awaited yet. This
+// includes collection the output results from reader threads. After calling
+// this function, the result cell is guaranteed to be populated. This does not
+// do any status checking.
+fn wait_on_handle_and_ouput(handle: &Handle) -> io::Result<&(ExpressionStatus, Output)> {
+    // Take the reader threads lock and then see if a result has already been
+    // collected. Doing this check inside the lock avoids racing to fill the
+    // result if it's empty.
+    let mut readers_lock = handle.readers.lock().expect("readers lock poisoned");
+    if let Some(result) = handle.result.get() {
+        // This handle has already been waited on. Return the same result
+        // again.
+        Ok(result)
+    } else {
+        // This handle hasn't been waited on yet. Do that now. If waiting on
+        // the children returns an error, just short-circuit with that. This
+        // shouldn't really happen.
+        let status = handle
+            .inner
+            .wait(WaitMode::Blocking)?
+            .expect("blocking wait can't return None");
+        // Now that we have an exit status, we need to join the output reader
+        // threads, if any. We're already holding the lock that we need.
+        let (stdout_reader, stderr_reader) = &mut *readers_lock;
+        // If either of the reader threads returned an error, just
+        // short-circuit with that. Future calls to this function will panic.
+        // But this really shouldn't happen.
+        let stdout = stdout_reader
+            .take()
+            .map(|t| t.join().expect("stdout reader error"))
+            .unwrap_or(Ok(Vec::new()))?;
+        let stderr = stderr_reader
+            .take()
+            .map(|t| t.join().expect("stderr reader error"))
+            .unwrap_or(Ok(Vec::new()))?;
+        let output = Output {
+            status: status.status,
+            stdout,
+            stderr,
+        };
+        Ok(handle.result.get_or_init(|| (status, output)))
     }
 }
 
