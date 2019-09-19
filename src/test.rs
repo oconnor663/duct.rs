@@ -499,3 +499,18 @@ fn test_no_argument() {
     let output = cmd!(path_to_exe("echo")).read().unwrap();
     assert_eq!("", output);
 }
+
+#[test]
+fn test_empty_reads_dont_wait() {
+    let mut sleep_reader = cmd!(path_to_exe("sleep"), "1000000")
+        .unchecked()
+        .reader()
+        .unwrap();
+    let mut output = Vec::new();
+    // A zero-length read shouldn't count as EOF.
+    sleep_reader.read(&mut output).unwrap();
+    // But if we kill it first then we can read_to_end. The unchecked above
+    // will keep the final read from being an error.
+    sleep_reader.handle().kill_and_wait().unwrap();
+    sleep_reader.read_to_end(&mut output).unwrap();
+}
