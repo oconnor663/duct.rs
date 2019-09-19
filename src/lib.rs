@@ -1854,6 +1854,7 @@ impl OutputCaptureContext {
 /// [`unchecked`](struct.Expression.html#method.unchecked), and the child
 /// returns a non-zero exit status, the final call to `read` will return an
 /// error, just as [`run`](struct.Expression.html#method.run) would.
+#[derive(Debug)]
 pub struct ReaderHandle {
     handle: Handle,
     reader: os_pipe::PipeReader,
