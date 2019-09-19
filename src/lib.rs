@@ -305,10 +305,9 @@ impl Expression {
     }
 
     /// Start running an expression, and immediately return a
-    /// [`ReaderHandle`](struct.Handle.html) that represents all the child
-    /// processes. This is similar to `.stdout_capture().start()`, except that
-    /// it provides an incremental stdout reader. When the reader reaches EOF,
-    /// child processes are automatically awaited.
+    /// [`ReaderHandle`](struct.Handle.html) attached to the child's stdout.
+    /// This is similar to `.stdout_capture().start()`, but it returns the
+    /// reader to the caller rather than reading from a background thread.
     ///
     /// Note that because this method does not read child output on a
     /// background thread, it's inadvisable to create more than one
@@ -930,9 +929,11 @@ impl<'a> From<&'a Expression> for Expression {
 }
 
 /// A handle to a running expression, returned by the
-/// [`start`](struct.Expression.html#method.start) method. Calling `start`
-/// followed by [`output`](struct.Handle.html#method.output) on the handle is
-/// equivalent to [`run`](struct.Expression.html#method.run). Note that unlike
+/// [`start`](struct.Expression.html#method.start) method.
+///
+/// Calling `start` followed by [`output`](struct.Handle.html#method.output) on
+/// the handle is equivalent to [`run`](struct.Expression.html#method.run).
+/// Note that unlike
 /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
 /// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
 /// `Handle` may be shared between multiple threads.
@@ -1845,10 +1846,12 @@ impl OutputCaptureContext {
 }
 
 /// An incremental reader created with the
-/// [`Expression::reader`](struct.Expression.html#method.reader) method. This
-/// lets you read child output without allocating a large memory buffer to
-/// store it all, and without running a background thread to fill that buffer.
-/// When this reader reaches EOF, it automatically awaits the child processes.
+/// [`Expression::reader`](struct.Expression.html#method.reader) method.
+///
+/// When this reader reaches EOF, it automatically calls
+/// [`wait`](struct.Handle.html#method.wait) on the inner handle. If the reader
+/// is dropped before reaching EOF, it calls
+/// [`kill_and_wait`](struct.Handle.html#method.kill_and_wait).
 ///
 /// Note that if you don't use
 /// [`unchecked`](struct.Expression.html#method.unchecked), and the child
@@ -1858,15 +1861,6 @@ impl OutputCaptureContext {
 pub struct ReaderHandle {
     handle: Handle,
     reader: os_pipe::PipeReader,
-}
-
-impl ReaderHandle {
-    /// Return a reference to the inner [`Handle`](struct.Handle.html), for
-    /// example if you want to call
-    /// [`kill_and_wait`](struct.Handle.html#method.kill_and_wait).
-    pub fn handle(&self) -> &Handle {
-        &self.handle
-    }
 }
 
 impl Read for ReaderHandle {
@@ -1881,6 +1875,13 @@ impl Read for ReaderHandle {
             self.handle.wait()?;
         }
         Ok(n)
+    }
+}
+
+impl Drop for ReaderHandle {
+    fn drop(&mut self) {
+        // If wait() has already happened, this has no effect.
+        let _ = self.handle.kill_and_wait();
     }
 }
 
