@@ -1,20 +1,20 @@
 # duct.rs [![Travis build](https://travis-ci.org/oconnor663/duct.rs.svg?branch=master)](https://travis-ci.org/oconnor663/duct.rs) [![AppVeyor build](https://ci.appveyor.com/api/projects/status/w3g0fplnx234bxji/branch/master?svg=true)](https://ci.appveyor.com/project/oconnor663/duct-rs/branch/master) [![crates.io](https://img.shields.io/crates/v/duct.svg)](https://crates.io/crates/duct) [![docs.rs](https://docs.rs/duct/badge.svg)](https://docs.rs/duct)
 
-A cross-platform library for running child processes and building
-pipelines.
+Duct is a library for running child processes. Duct makes it easy to build
+pipelines and redirect IO like a shell. At the same time, Duct helps you
+write correct, portable code: whitespace is never significant, errors from
+child processes get reported by default, and a variety of [gotchas, bugs,
+and platform
+inconsistencies](https://github.com/oconnor663/duct.py/blob/master/gotchas.md)
+are handled for you the Right Way™.
 
-`duct` wants to make shelling out in Rust as easy and flexible as it is in
-Bash. It takes care of [gotchas and
-inconsistencies](https://github.com/oconnor663/duct.py/blob/master/spec.md)
-in the way different platforms shell out. And it's a cross-language library;
-the [original implementation](https://github.com/oconnor663/duct.py) is in
-Python, with an identical API.
-
-- [Docs](https://docs.rs/duct)
+- [Documentation](https://docs.rs/duct)
 - [Crate](https://crates.io/crates/duct)
-- [Repo](https://github.com/oconnor663/duct.rs)
+- [GitHub repo](https://github.com/oconnor663/duct.rs)
+- [the same library, in Python](https://github.com/oconnor663/duct.py)
 
-## Changelog
+Changelog
+---------
 
 - Version 0.12 added support for trailing commas to `cmd!`.
 - Version 0.11 introduced the `before_spawn` method.
@@ -22,39 +22,48 @@ Python, with an identical API.
   See the docs for `env_remove`.
 - Version 0.9 removed the `sh` function. It now lives in its own crate, `duct_sh`.
 
-## Example
+Examples
+--------
 
-`duct` tries to be as concise as possible, so that you don't wish you were
-back writing shell scripts. At the same time, it's explicit about what
-happens to output, and strict about error codes in child processes.
+Run a command without capturing any output. Here "hi" is printed directly
+to the terminal:
 
 ```rust
-// Read the name of the current git branch. If git exits with an error
-// code here (because we're not in a git repo, for example), `read` will
-// return an error too.
-let current_branch = cmd!("git", "symbolic-ref", "--short", "HEAD").read()?;
-
-// Log the current branch, with git taking over the terminal as usual.
-// The `cmd` function works just like the `cmd!` macro, but it takes a
-// collection instead of a variable list of arguments.
-let args = &["log", &current_branch];
-cmd("git", args).run()?;
-
-// Log again, but this time read the output one line at a time.
-let reader = cmd!("git", "log", "--oneline").reader()?;
-for line in BufReader::new(reader).lines() {
-    assert!(!line?.contains("heck"), "profanity filter triggered");
-}
+use duct::cmd;
+cmd!("echo", "hi").run()?;
 ```
 
-`duct` uses [`os_pipe`](https://github.com/oconnor663/os_pipe.rs)
-internally, and the docs for that one include a [big
-example](https://docs.rs/os_pipe#example) that takes a dozen lines of code
-to read both stdout and stderr from a child process. `duct` can do that in
-one (moderately long) line:
+Capture the standard output of a command. Here "hi" is returned as a
+`String`:
 
 ```rust
-let output = cmd!("sh", "-c", "echo foo && echo bar 2>&1").stderr_to_stdout().read().unwrap();
+let stdout = cmd!("echo", "hi").read()?;
+assert_eq!(stdout, "hi");
+```
 
-assert!(output.split_whitespace().eq(vec!["foo", "bar"]));
+Capture the standard output of a pipeline:
+
+```rust
+let stdout = cmd!("echo", "hi").pipe(cmd!("sed", "s/i/o/")).read()?;
+assert_eq!(stdout, "ho");
+```
+
+Merge standard error into standard output and read both incrementally:
+
+```rust
+use duct::cmd;
+use std::io::prelude::*;
+use std::io::BufReader;
+
+let big_cmd = cmd!("bash", "-c", "echo out && echo err 1>&2");
+let reader = big_cmd.stderr_to_stdout().reader()?;
+let mut lines = BufReader::new(reader).lines();
+assert_eq!(lines.next().unwrap()?, "out");
+assert_eq!(lines.next().unwrap()?, "err");
+```
+
+Children that exit with a non-zero status return an error by default:
+
+```rust
+cmd!("false").run()?; // error
 ```
