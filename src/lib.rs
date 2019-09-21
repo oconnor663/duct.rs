@@ -1032,7 +1032,7 @@ impl Handle {
     /// errors that would normally result from a non-zero exit status are
     /// ignored, as with
     /// [`unchecked`](struct.Expression.html#method.unchecked).
-    pub fn kill_and_wait(&self) -> io::Result<()> {
+    pub fn kill(&self) -> io::Result<()> {
         self.inner.kill()?;
         // This function cleans up the child but does not return an error for a
         // non-zero exit status.
@@ -1851,7 +1851,7 @@ impl OutputCaptureContext {
 /// When this reader reaches EOF, it automatically calls
 /// [`wait`](struct.Handle.html#method.wait) on the inner handle. If the reader
 /// is dropped before reaching EOF, it calls
-/// [`kill_and_wait`](struct.Handle.html#method.kill_and_wait).
+/// [`kill`](struct.Handle.html#method.kill).
 ///
 /// Note that if you don't use
 /// [`unchecked`](struct.Expression.html#method.unchecked), and the child
@@ -1881,7 +1881,7 @@ impl Read for ReaderHandle {
 impl Drop for ReaderHandle {
     fn drop(&mut self) {
         // If wait() has already happened, this has no effect.
-        let _ = self.handle.kill_and_wait();
+        let _ = self.handle.kill();
     }
 }
 
