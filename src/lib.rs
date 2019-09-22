@@ -188,7 +188,8 @@ macro_rules! cmd {
 /// [`start`](struct.Expression.html#method.start), or
 /// [`reader`](struct.Expression.html#method.reader). They also support several
 /// methods to control their execution, like
-/// [`input`](struct.Expression.html#method.input),
+/// [`stdin_bytes`](struct.Expression.html#method.stdin_bytes),
+/// [`stdout_capture`](struct.Expression.html#method.stdout_capture),
 /// [`env`](struct.Expression.html#method.env), and
 /// [`unchecked`](struct.Expression.html#method.unchecked).
 ///
