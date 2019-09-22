@@ -5,6 +5,7 @@ authors = ["oconnor663@gmail.com"]
 description = "a library for running child processes"
 repository = "https://github.com/oconnor663/duct.rs"
 documentation = "https://docs.rs/duct"
+readme = "README.md"
 license = "MIT"
 edition = "2018"
 
