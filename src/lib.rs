@@ -555,10 +555,10 @@ impl Expression {
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
     /// object returned by [`run`](struct.Expression.html#method.run) or
     /// [`wait`](struct.Handle.html#method.wait). Output is read by a
-    /// background thread, so the child will never be blocked writing to
-    /// stdout. Where possible, the
-    /// [`read`](struct.Expression.html#method.read) is more convenient, and it
-    /// avoids the background thread.
+    /// background thread, so the child will never block writing to stdout. But
+    /// note that [`read`](struct.Expression.html#method.read) and
+    /// [`reader`](struct.Expression.html#method.reader) can be more
+    /// convenient, and they don't require the background thread.
     ///
     /// # Example
     ///
@@ -670,8 +670,7 @@ impl Expression {
     /// available on the `stderr` field of the `Output` object returned by
     /// [`run`](struct.Expression.html#method.run) or
     /// [`wait`](struct.Handle.html#method.wait). Output is read by a
-    /// background thread, so the child will never be blocked writing to
-    /// stderr.
+    /// background thread, so the child will never block writing to stderr.
     ///
     /// # Example
     ///
