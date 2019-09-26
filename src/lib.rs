@@ -379,7 +379,7 @@ impl Expression {
     ///
     /// During spawning, if the left side of the pipe spawns successfully, but
     /// the right side fails to spawn, the left side will be killed and
-    /// awaited. That's necessary to return the spawn errors immediately,
+    /// awaited. That's necessary to return the spawn error immediately,
     /// without leaking the left side as a zombie.
     ///
     /// # Example
