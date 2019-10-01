@@ -134,11 +134,11 @@ use IoExpressionInner::*;
 ///
 /// assert_eq!("foo bar baz", output.unwrap());
 /// ```
-pub fn cmd<T, U, V>(program: T, args: U) -> Expression
+pub fn cmd<T, U>(program: T, args: U) -> Expression
 where
     T: IntoExecutablePath,
-    U: IntoIterator<Item = V>,
-    V: Into<OsString>,
+    U: IntoIterator,
+    U::Item: Into<OsString>,
 {
     let mut argv_vec = Vec::new();
     argv_vec.push(program.to_executable());
