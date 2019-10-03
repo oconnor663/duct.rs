@@ -10,7 +10,7 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
-use std::sync::{Arc, Once, ONCE_INIT};
+use std::sync::{Arc, Once};
 use tempdir::TempDir;
 
 // Include a copy of the sh function, because we have a lot of old tests that
@@ -37,7 +37,7 @@ pub fn path_to_exe(name: &str) -> PathBuf {
     // This project defines some associated binaries for testing, and we shell out to them in
     // these tests. `cargo test` doesn't automatically build associated binaries, so this
     // function takes care of building them explicitly.
-    static CARGO_BUILD_ONCE: Once = ONCE_INIT;
+    static CARGO_BUILD_ONCE: Once = Once::new();
     CARGO_BUILD_ONCE.call_once(|| {
         let build_status = Command::new("cargo")
             .arg("build")
