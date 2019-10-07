@@ -340,12 +340,14 @@ impl Expression {
     /// This is similar to `.stdout_capture().start()`, but it returns the
     /// reader to the caller rather than reading from a background thread.
     ///
-    /// Note that because this method does not read child output on a
-    /// background thread, it's inadvisable to create more than one
-    /// `ReaderHandle` at a time. Child processes might block if their stdout
-    /// is not read from, and if you intend to have multiple children running
-    /// at once, blocking could lead to performance issues or deadlocks. When
-    /// running multiple children at once, prefer `.stdout_capture().start()`.
+    /// Note that because this method doesn't read child output on a background
+    /// thread, it's a best practice to only create one `ReaderHandle` at a
+    /// time. Child processes with a lot of output will eventually block if
+    /// their stdout pipe isn't read from. If you have multiple children
+    /// running, but you're only reading from one of them at a time, that could
+    /// block the others and lead to performance issues or deadlocks. For
+    /// reading from multiple children at once, prefer
+    /// `.stdout_capture().start()`.
     ///
     /// # Example
     ///
@@ -962,19 +964,21 @@ impl<'a> From<&'a Expression> for Expression {
 /// A handle to a running expression, returned by the
 /// [`start`](struct.Expression.html#method.start) method.
 ///
-/// Calling `start` followed by [`output`](struct.Handle.html#method.output) on
-/// the handle is equivalent to [`run`](struct.Expression.html#method.run).
-/// Note that unlike
+/// Calling `start` followed by
+/// [`into_output`](struct.Handle.html#method.into_output) on the handle is
+/// equivalent to [`run`](struct.Expression.html#method.run). Note that unlike
 /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
 /// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
 /// `Handle` may be shared between multiple threads.
 ///
 /// Like `std::process::Child`, `Handle` doesn't do anything special in its
-/// destructor. If a `Handle` goes out of scope without calling
-/// [`wait`](struct.Handle.html#method.wait) or similar, child processes and
-/// background threads will keep running, and they'll [leave
-/// zombies](https://en.wikipedia.org/wiki/Resource_leak#Causes) when they
-/// exit.
+/// destructor. If you drop a handle without waiting on it, child processes and
+/// background IO threads will keep running, and the children will become
+/// [zombie processes](https://en.wikipedia.org/wiki/Zombie_process) when they
+/// exit. That's a resource leak, similar to leaking memory or file handles.
+/// Note that in contrast to `Handle`, a
+/// [`ReaderHandle`](struct.ReaderHandle.html) kills child processes in its
+/// destructor, to avoid creating zombies.
 ///
 /// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
 /// crate for implementation details behind making handles thread safe.
@@ -1876,27 +1880,85 @@ impl OutputCaptureContext {
 /// [`Expression::reader`](struct.Expression.html#method.reader) method.
 ///
 /// When this reader reaches EOF, it automatically calls
-/// [`wait`](struct.Handle.html#method.wait) on the inner handle. If the reader
-/// is dropped before reaching EOF, it calls
-/// [`kill`](struct.Handle.html#method.kill).
+/// [`wait`](struct.Handle.html#method.wait) on the inner handle. If the child
+/// returns a non-zero exit status, the read at EOF will return an error,
+/// unless you use [`unchecked`](struct.Expression.html#method.unchecked).
 ///
-/// Note that if you don't use
-/// [`unchecked`](struct.Expression.html#method.unchecked), and the child
-/// returns a non-zero exit status, the final call to `read` will return an
-/// error, just as [`run`](struct.Expression.html#method.run) would.
+/// If the reader is dropped before reaching EOF, it calls
+/// [`kill`](struct.ReaderHandle.html#method.kill) in its destructor.
+///
+/// Both `ReaderHandle` and `&ReaderHandle` implement
+/// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html). That
+/// makes it possible for one thread to
+/// [`kill`](struct.ReaderHandle.html#method.kill) the `ReaderHandle` while
+/// another thread is reading it. That can be useful for effectively canceling
+/// the read and unblocking the reader thread. However, note that killed child
+/// processes return a non-zero exit status, which is an error for the reader
+/// by default, unless you use
+/// [`unchecked`](struct.Expression.html#method.unchecked).
+///
+/// # Example
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # if cfg!(not(windows)) {
+/// use duct::cmd;
+/// use duct::ReaderHandle;
+/// use std::sync::Arc;
+/// use std::io::prelude::*;
+///
+/// // This child process prints a single byte and then hangs "forever".
+/// let reader: ReaderHandle = cmd!("bash", "-c", "echo && sleep 1000000")
+///     .unchecked()
+///     .reader()?;
+///
+/// // Spawn two threads that both try to read the single byte. Whichever one
+/// // succeeds then calls kill() to unblock the other.
+/// let arc_reader: Arc<ReaderHandle> = Arc::new(reader);
+/// let mut threads = Vec::new();
+/// for _ in 0..2 {
+///     let arc_reader = arc_reader.clone();
+///     threads.push(std::thread::spawn(move || -> std::io::Result<()> {
+///         let mut single_byte = [0u8];
+///         (&*arc_reader).read(&mut single_byte)?;
+///         arc_reader.kill()?;
+///         Ok(())
+///     }));
+/// }
+///
+/// // Join both threads. Because of the kill() above, both threads will exit
+/// // quickly.
+/// for thread in threads {
+///     thread.join().unwrap()?;
+/// }
+/// # }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct ReaderHandle {
     handle: Handle,
     reader: os_pipe::PipeReader,
 }
 
-impl Read for ReaderHandle {
+impl ReaderHandle {
+    /// Kill the underlying expression and await all the child processes.
+    ///
+    /// Any errors that would normally result from a non-zero exit status are
+    /// ignored during this wait, as with
+    /// [`Handle::kill`](struct.Handle.html#method.kill).
+    pub fn kill(&self) -> io::Result<()> {
+        self.handle.kill()
+    }
+}
+
+impl<'a> Read for &'a ReaderHandle {
     /// Note that if you don't use
     /// [`unchecked`](struct.Expression.html#method.unchecked), and the child
     /// returns a non-zero exit status, the final call to `read` will return an
     /// error, just as [`run`](struct.Expression.html#method.run) would.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.reader.read(buf)?;
+        let n = (&self.reader).read(buf)?;
         if n == 0 && buf.len() > 0 {
             // EOF detected. Wait on the child to clean it up before returning.
             self.handle.wait()?;
@@ -1905,9 +1967,20 @@ impl Read for ReaderHandle {
     }
 }
 
+impl Read for ReaderHandle {
+    /// Note that if you don't use
+    /// [`unchecked`](struct.Expression.html#method.unchecked), and the child
+    /// returns a non-zero exit status, the final call to `read` will return an
+    /// error, just as [`run`](struct.Expression.html#method.run) would.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        (&*self).read(buf)
+    }
+}
+
 impl Drop for ReaderHandle {
     fn drop(&mut self) {
-        // If wait() has already happened, this has no effect.
+        // Just call kill() unconditionally. If wait() has already happened,
+        // this has no effect.
         let _ = self.handle.kill();
     }
 }
