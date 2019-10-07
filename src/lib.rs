@@ -31,10 +31,12 @@
 //! Run a command without capturing any output. Here "hi" is printed directly
 //! to the terminal:
 //!
-//! ```no_run
+//! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # if cfg!(not(windows)) {
 //! use duct::cmd;
 //! cmd!("echo", "hi").run()?;
+//! # }
 //! # Ok(())
 //! # }
 //! ```
@@ -42,30 +44,35 @@
 //! Capture the standard output of a command. Here "hi" is returned as a
 //! `String`:
 //!
-//! ```no_run
+//! ```
 //! # use duct::cmd;
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # if cfg!(not(windows)) {
 //! let stdout = cmd!("echo", "hi").read()?;
 //! assert_eq!(stdout, "hi");
+//! # }
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! Capture the standard output of a pipeline:
 //!
-//! ```no_run
+//! ```
 //! # use duct::cmd;
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # if cfg!(not(windows)) {
 //! let stdout = cmd!("echo", "hi").pipe(cmd!("sed", "s/i/o/")).read()?;
 //! assert_eq!(stdout, "ho");
+//! # }
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! Merge standard error into standard output and read both incrementally:
 //!
-//! ```no_run
+//! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # if cfg!(not(windows)) {
 //! use duct::cmd;
 //! use std::io::prelude::*;
 //! use std::io::BufReader;
@@ -75,16 +82,20 @@
 //! let mut lines = BufReader::new(reader).lines();
 //! assert_eq!(lines.next().unwrap()?, "out");
 //! assert_eq!(lines.next().unwrap()?, "err");
+//! # }
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! Children that exit with a non-zero status return an error by default:
 //!
-//! ```no_run
+//! ```
 //! # use duct::cmd;
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! cmd!("false").run()?; // error
+//! # if cfg!(not(windows)) {
+//! let result = cmd!("false").run();
+//! assert!(result.is_err());
+//! # }
 //! # Ok(())
 //! # }
 //! ```
