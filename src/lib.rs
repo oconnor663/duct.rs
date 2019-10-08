@@ -1067,11 +1067,25 @@ impl Handle {
     /// errors that would normally result from a non-zero exit status are
     /// ignored, as with
     /// [`unchecked`](struct.Expression.html#method.unchecked).
+    ///
+    /// Note that as with
+    /// [`std::process::Child::kill`](https://doc.rust-lang.org/beta/std/process/struct.Child.html#method.kill),
+    /// this does not kill any grandchild processes that the children have
+    /// spawned on their own. It only kills the child processes that Duct
+    /// spawned itself. See
+    /// [`gotchas.md`](https://github.com/oconnor663/duct.py/blob/master/gotchas.md)
+    /// for an extensive discussion of this behavior.
     pub fn kill(&self) -> io::Result<()> {
         self.inner.kill()?;
-        // This function cleans up the child but does not return an error for a
+        // This wait cleans up the child but does not return an error for a
         // non-zero exit status.
-        wait_on_handle_and_ouput(self)?;
+        //
+        // Note that we *must not* call wait_on_handle_and_ouput here. There
+        // might be un-signaled grandchild processes holding the output pipe,
+        // and we can't expect them to exit promptly. We only want to reap our
+        // immediate zombie children here. See gotchas.md for more on why we
+        // can't do better.
+        self.inner.wait(WaitMode::Blocking)?;
         Ok(())
     }
 }

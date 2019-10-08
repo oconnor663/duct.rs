@@ -520,3 +520,32 @@ fn test_dropping_reader() {
     let n = stderr_reader.read_to_end(&mut stderr).unwrap();
     assert_eq!(n, 0);
 }
+
+#[test]
+fn test_kill_with_grandchild() -> io::Result<()> {
+    // We're going to start a child process, and that child is going to start a
+    // grandchild. The grandchild is going to sleep forever (1 day). We'll read
+    // some output from the child to make sure it's done starting the
+    // grandchild, and then we'll kill the child. Now, the grandchild will not
+    // be killed, and it will still hold a write handle to the stdout pipe. So
+    // this tests that the wait done by kill only waits on the child to exit,
+    // and does not wait on IO to finish.
+    //
+    // This test leaks the grandchild process. I'm sorry.
+
+    // Capturing stderr means an IO thread is spawned, even though we're using
+    // a ReaderHandle to read stdout. What we're testing here is that kill()
+    // doesn't wait on that IO thread.
+    let mut reader = cmd!(path_to_exe("child_grandchild"))
+        .stderr_capture()
+        .reader()?;
+
+    // Read "started" from the child to make sure we don't kill it before it
+    // starts the grandchild.
+    let mut started_read = [0; 7];
+    reader.read_exact(&mut started_read)?;
+    assert_eq!(&started_read, b"started");
+
+    // Ok, this had better not block!
+    reader.kill()
+}
