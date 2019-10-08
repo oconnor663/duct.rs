@@ -1921,8 +1921,19 @@ impl OutputCaptureContext {
 /// use std::sync::Arc;
 /// use std::io::prelude::*;
 ///
-/// // This child process prints a single byte and then hangs "forever".
-/// let reader: ReaderHandle = cmd!("bash", "-c", "echo && sleep 1000000")
+/// // This child process prints a single byte and then sleeps.
+/// //
+/// // CAUTION: Using Bash for this example would *not* work, because Bash
+/// // would spawn grandchild processes, and kill() only signals direct (not
+/// // transitive) child processes.
+/// let python_child = "\
+/// import sys
+/// import time
+/// print()
+/// sys.stdout.flush()
+/// time.sleep(24 * 60 * 60)
+/// ";
+/// let reader: ReaderHandle = cmd!("python3", "-c", python_child)
 ///     .unchecked()
 ///     .reader()?;
 ///
@@ -1961,6 +1972,19 @@ impl ReaderHandle {
     /// Any errors that would normally result from a non-zero exit status are
     /// ignored during this wait, as with
     /// [`Handle::kill`](struct.Handle.html#method.kill).
+    ///
+    /// Note that as with
+    /// [`std::process::Child::kill`](https://doc.rust-lang.org/beta/std/process/struct.Child.html#method.kill),
+    /// this does not kill any grandchild processes that the children have
+    /// spawned on their own. It only kills the child processes that Duct
+    /// spawned itself. This is **especially relevant** for `ReaderHandle`,
+    /// because if you're using `kill` to unblock another thread that's
+    /// reading, an unkilled grandchild process might keep the child's stdout
+    /// pipe open and keep your reader thread blocked. For that use case, you
+    /// need to ensure that any grandchild processes your child might spawn are
+    /// going to be short-lived. See
+    /// [`gotchas.md`](https://github.com/oconnor663/duct.py/blob/master/gotchas.md)
+    /// for an extensive discussion of these issues.
     pub fn kill(&self) -> io::Result<()> {
         self.handle.kill()
     }
