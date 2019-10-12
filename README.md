@@ -1,4 +1,4 @@
-# duct.rs [![Actions Status](https://github.com/oconnor663/duct.rs/workflows/tests/badge.svg)](https://github.com/oconnor663/duct.rs/actions) [![Travis build](https://travis-ci.org/oconnor663/duct.rs.svg?branch=master)](https://travis-ci.org/oconnor663/duct.rs) [![AppVeyor build](https://ci.appveyor.com/api/projects/status/w3g0fplnx234bxji/branch/master?svg=true)](https://ci.appveyor.com/project/oconnor663/duct-rs/branch/master) [![crates.io](https://img.shields.io/crates/v/duct.svg)](https://crates.io/crates/duct) [![docs.rs](https://docs.rs/duct/badge.svg)](https://docs.rs/duct)
+# duct.rs [![Actions Status](https://github.com/oconnor663/duct.rs/workflows/tests/badge.svg)](https://github.com/oconnor663/duct.rs/actions) [![crates.io](https://img.shields.io/crates/v/duct.svg)](https://crates.io/crates/duct) [![docs.rs](https://docs.rs/duct/badge.svg)](https://docs.rs/duct)
 
 Duct is a library for running child processes. Duct makes it easy to build
 pipelines and redirect IO like a shell. At the same time, Duct helps you
@@ -70,5 +70,6 @@ assert_eq!(lines.next().unwrap()?, "err");
 Children that exit with a non-zero status return an error by default:
 
 ```rust
-cmd!("false").run()?; // error
+let result = cmd!("false").run();
+assert!(result.is_err());
 ```
