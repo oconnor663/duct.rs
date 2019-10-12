@@ -16,7 +16,11 @@ are handled for you the Right Way™.
 Changelog
 ---------
 
-- v0.13
+- v0.13.1
+  - Added `ReaderHandle::kill`.
+  - Kill methods no longer wait on IO threads to complete. This avoids
+    blocking on unkilled grandchildren.
+- v0.13.0
   - Removed the `then` method.
   - Added `ReaderHandle` and `Expression::reader`.
   - Added `Expression::stdout_stderr_swap`.
