@@ -549,3 +549,12 @@ fn test_kill_with_grandchild() -> io::Result<()> {
     // Ok, this had better not block!
     reader.kill()
 }
+
+#[test]
+fn test_debug_format() {
+    let e = cmd!("foo", "bar", "baz").pipe(cmd!("bing", "bong"));
+    assert_eq!(
+        format!("{:?}", e),
+        r#"Pipe(Cmd(["foo", "bar", "baz"]), Cmd(["bing", "bong"]))"#,
+    );
+}

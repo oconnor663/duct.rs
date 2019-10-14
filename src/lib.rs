@@ -232,7 +232,7 @@ macro_rules! cmd {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[must_use]
 pub struct Expression(Arc<ExpressionInner>);
 
@@ -954,6 +954,14 @@ impl Expression {
 
     fn new(inner: ExpressionInner) -> Expression {
         Expression(Arc::new(inner))
+    }
+}
+
+// Delegate to the ExpressionInner for debug formatting. This avoids printing
+// redundant Expression() constructors around everything.
+impl fmt::Debug for Expression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
