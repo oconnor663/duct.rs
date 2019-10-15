@@ -1927,7 +1927,6 @@ impl OutputCaptureContext {
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # if cfg!(not(windows)) {
 /// use duct::cmd;
 /// use duct::ReaderHandle;
 /// use std::sync::Arc;
@@ -1935,9 +1934,9 @@ impl OutputCaptureContext {
 ///
 /// // This child process prints a single byte and then sleeps.
 /// //
-/// // CAUTION: Using Bash for this example would *not* work, because Bash
-/// // would spawn grandchild processes, and kill() only signals direct (not
-/// // transitive) child processes.
+/// // CAUTION: Using Bash for this example would probably hang, because Bash
+/// // would spawn a `sleep` grandchild processes, and that grandchild wouldn't
+/// // receive the kill signal.
 /// let python_child = "\
 /// import sys
 /// import time
@@ -1968,7 +1967,6 @@ impl OutputCaptureContext {
 /// for thread in threads {
 ///     thread.join().unwrap()?;
 /// }
-/// # }
 /// # Ok(())
 /// # }
 /// ```
@@ -1979,6 +1977,21 @@ pub struct ReaderHandle {
 }
 
 impl ReaderHandle {
+    /// Check whether the underlying expression is finished. This is equivalent
+    /// to [`Handle::try_wait`](struct.Handle.html#method.try_wait). If the
+    /// `ReaderHandle` has indicated EOF successfully, then it's guaranteed
+    /// that this method will return `Ok(Some(_))`.
+    ///
+    /// Note that the
+    /// [`stdout`](https://doc.rust-lang.org/std/process/struct.Output.html#structfield.stdout)
+    /// field of the returned
+    /// [`Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
+    /// will always be empty, because the `ReaderHandle` itself owns the
+    /// child's stdout pipe.
+    pub fn try_wait(&self) -> io::Result<Option<&Output>> {
+        self.handle.try_wait()
+    }
+
     /// Kill the underlying expression and await all the child processes.
     ///
     /// Any errors that would normally result from a non-zero exit status are

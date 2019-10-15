@@ -511,6 +511,9 @@ fn test_dropping_reader() {
     // A zero-length read doesn't block.
     let n = reader_handle.read(&mut []).unwrap();
     assert_eq!(n, 0);
+    // Try-wait returns None.
+    let output = reader_handle.try_wait().unwrap();
+    assert!(output.is_none());
     // Now we drop the reader. This kills the child.
     drop(reader_handle);
     // Now that the child is killed, reading the stderr pipe will not block.
@@ -557,4 +560,24 @@ fn test_debug_format() {
         format!("{:?}", e),
         r#"Pipe(Cmd(["foo", "bar", "baz"]), Cmd(["bing", "bong"]))"#,
     );
+}
+
+#[test]
+fn test_reader_try_wait() -> io::Result<()> {
+    // Create a ReaderHandle for a cat process. Give cat 1 MB of data to echo
+    // back to us, so that it will block on its stdout pipe until we start
+    // reading.
+    let bytes = vec![42; 1_000_000];
+    let mut cat_reader = cmd!(path_to_exe("cat"))
+        .stdin_bytes(bytes.clone())
+        .reader()?;
+    assert!(cat_reader.try_wait()?.is_none());
+    let mut output = Vec::new();
+    cat_reader.read_to_end(&mut output)?;
+    assert_eq!(output, bytes);
+    let output = cat_reader.try_wait()?.expect("is some");
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    Ok(())
 }
