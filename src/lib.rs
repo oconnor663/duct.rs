@@ -14,6 +14,9 @@
 //! Changelog
 //! ---------
 //!
+//! - v0.13.2
+//!   - Added `ReaderHandle::try_wait`.
+//!   - Debug output for `Expression` is more concise.
 //! - v0.13.1
 //!   - Added `ReaderHandle::kill`.
 //!   - Kill methods no longer wait on IO threads to complete. This avoids
