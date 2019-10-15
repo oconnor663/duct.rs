@@ -1927,6 +1927,7 @@ impl OutputCaptureContext {
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # if cfg!(not(windows)) {
 /// use duct::cmd;
 /// use duct::ReaderHandle;
 /// use std::sync::Arc;
@@ -1967,6 +1968,7 @@ impl OutputCaptureContext {
 /// for thread in threads {
 ///     thread.join().unwrap()?;
 /// }
+/// # }
 /// # Ok(())
 /// # }
 /// ```
