@@ -198,7 +198,7 @@ macro_rules! cmd {
     };
 }
 
-/// The central objects in `duct`, Expressions are created with
+/// The central objects in Duct, Expressions are created with
 /// [`cmd`](fn.cmd.html) or [`cmd!`](macro.cmd.html), combined with
 /// [`pipe`](struct.Expression.html#method.pipe), and finally executed with
 /// [`run`](struct.Expression.html#method.run),
@@ -754,8 +754,8 @@ impl Expression {
     /// tricky platform differences in the way relative exe paths interact with
     /// child working directories. In particular, the exe path will be
     /// interpreted relative to the child dir on Unix, but relative to the
-    /// parent dir on Windows. `duct` considers the Windows behavior correct,
-    /// so in order to get that behavior consistently it calls
+    /// parent dir on Windows. Duct prefers the Windows behavior, and in order
+    /// to get that behavior on all platforms it calls
     /// [`std::fs::canonicalize`](https://doc.rust-lang.org/std/fs/fn.canonicalize.html)
     /// on relative exe paths when `dir` is in use. Paths in this sense are any
     /// program name containing a path separator, regardless of the type. (Note
@@ -842,13 +842,11 @@ impl Expression {
         ))
     }
 
-    /// Set the expression's entire environment, from a collection of name-value
-    /// pairs (like a `HashMap`). You can use this method to clear specific
-    /// variables for example, by collecting the parent's environment, removing
-    /// some names from the collection, and passing the result to `full_env`.
-    /// Note that some environment variables are required for normal program
-    /// execution (like `SystemRoot` on Windows), so copying the parent's
-    /// environment is usually preferable to starting with an empty one.
+    /// Set the expression's entire environment, from a collection of
+    /// name-value pairs (like a `HashMap`). Note that some environment
+    /// variables are required for normal program execution (like `SystemRoot`
+    /// on Windows), so copying the parent's environment is usually preferable
+    /// to starting with an empty one.
     ///
     /// # Example
     ///
