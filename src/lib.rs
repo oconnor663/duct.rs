@@ -22,6 +22,7 @@
 //!   - Kill methods no longer wait on IO threads to complete. This avoids
 //!     blocking on unkilled grandchildren.
 //! - v0.13.0
+//!   - The `kill` method now reaps killed child processes before returning.
 //!   - Removed the `then` method.
 //!   - Added `ReaderHandle` and `Expression::reader`.
 //!   - Added `Expression::stdout_stderr_swap`.
