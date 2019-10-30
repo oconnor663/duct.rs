@@ -16,6 +16,8 @@ are handled for you the Right Way™.
 Changelog
 ---------
 
+- v0.13.3
+  - Added `Handle::pids` and `ReaderHandle::pids`.
 - v0.13.2
   - Added `ReaderHandle::try_wait`.
   - Debug output for `Expression` is more concise.
