@@ -581,3 +581,32 @@ fn test_reader_try_wait() -> io::Result<()> {
     assert!(output.stderr.is_empty());
     Ok(())
 }
+
+#[test]
+fn test_pids() -> io::Result<()> {
+    let handle = true_cmd().start()?;
+    let pids = handle.pids();
+    assert_eq!(pids.len(), 1);
+    handle.wait()?;
+
+    let reader = true_cmd().reader()?;
+    let pids = reader.pids();
+    assert_eq!(pids.len(), 1);
+    std::io::copy(&mut &reader, &mut std::io::sink())?;
+
+    let handle = true_cmd()
+        .pipe(true_cmd().stdout_null().pipe(true_cmd()))
+        .start()?;
+    let pids = handle.pids();
+    assert_eq!(pids.len(), 3);
+    handle.wait()?;
+
+    let reader = true_cmd()
+        .pipe(true_cmd().stdout_null().pipe(true_cmd()))
+        .reader()?;
+    let pids = reader.pids();
+    assert_eq!(pids.len(), 3);
+    std::io::copy(&mut &reader, &mut std::io::sink())?;
+
+    Ok(())
+}

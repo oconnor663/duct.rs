@@ -1102,6 +1102,12 @@ impl Handle {
         self.inner.wait(WaitMode::Blocking)?;
         Ok(())
     }
+
+    /// Return a `Vec<u32>` containing the PIDs of all of the child processes.
+    /// The PIDs are given in pipeline order, from left to right.
+    pub fn pids(&self) -> Vec<u32> {
+        self.inner.pids()
+    }
 }
 
 // Does a blocking wait on the handle, if it hasn't been awaited yet. This
@@ -1200,6 +1206,15 @@ impl HandleInner {
             HandleInner::Pipe(pipe_handle) => pipe_handle.kill(),
             HandleInner::StdinBytes(stdin_bytes_handle) => stdin_bytes_handle.kill(),
             HandleInner::Unchecked(inner_handle) => inner_handle.kill(),
+        }
+    }
+
+    fn pids(&self) -> Vec<u32> {
+        match self {
+            HandleInner::Child(child_handle) => vec![child_handle.child.id()],
+            HandleInner::Pipe(pipe_handle) => pipe_handle.pids(),
+            HandleInner::StdinBytes(stdin_bytes_handle) => stdin_bytes_handle.inner_handle.pids(),
+            HandleInner::Unchecked(inner_handle) => inner_handle.pids(),
         }
     }
 }
@@ -1324,6 +1339,12 @@ impl PipeHandle {
         // As with wait, the left side happened first, so its errors take
         // precedence.
         left_kill_result.and(right_kill_result)
+    }
+
+    fn pids(&self) -> Vec<u32> {
+        let mut pids = self.left_handle.pids();
+        pids.extend_from_slice(&self.right_handle.pids());
+        pids
     }
 }
 
@@ -2016,6 +2037,12 @@ impl ReaderHandle {
     /// for an extensive discussion of these issues.
     pub fn kill(&self) -> io::Result<()> {
         self.handle.kill()
+    }
+
+    /// Return a `Vec<u32>` containing the PIDs of all of the child processes.
+    /// The PIDs are given in pipeline order, from left to right.
+    pub fn pids(&self) -> Vec<u32> {
+        self.handle.pids()
     }
 }
 
