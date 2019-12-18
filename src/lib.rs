@@ -346,9 +346,9 @@ impl Expression {
     }
 
     /// Start running an expression, and immediately return a
-    /// [`ReaderHandle`](struct.Handle.html) attached to the child's stdout.
-    /// This is similar to `.stdout_capture().start()`, but it returns the
-    /// reader to the caller rather than reading from a background thread.
+    /// [`ReaderHandle`](struct.ReaderHandle.html) attached to the child's
+    /// stdout. This is similar to `.stdout_capture().start()`, but it returns
+    /// the reader to the caller rather than reading from a background thread.
     ///
     /// Note that because this method doesn't read child output on a background
     /// thread, it's a best practice to only create one `ReaderHandle` at a
