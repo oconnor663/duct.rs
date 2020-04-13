@@ -13,30 +13,6 @@ are handled for you the Right Way™.
 - [GitHub repo](https://github.com/oconnor663/duct.rs)
 - [the same library, in Python](https://github.com/oconnor663/duct.py)
 
-Changelog
----------
-
-- v0.13.3
-  - Added `Handle::pids` and `ReaderHandle::pids`.
-- v0.13.2
-  - Added `ReaderHandle::try_wait`.
-  - Debug output for `Expression` is more concise.
-- v0.13.1
-  - Added `ReaderHandle::kill`.
-  - Kill methods no longer wait on IO threads to complete. This avoids
-    blocking on unkilled grandchildren.
-- v0.13.0
-  - The `kill` method now reaps killed child processes before returning.
-  - Removed the `then` method.
-  - Added `ReaderHandle` and `Expression::reader`.
-  - Added `Expression::stdout_stderr_swap`.
-  - Renamed `stdin`/`stdout`/`stderr` to
-    `stdin_path`/`stdout_path`/`stderr_path`.
-  - Renamed `stdin_handle`/`stdout_handle`/`stderr_handle` to
-    `stdin_file`/`stdout_file`/`stderr_file`.
-  - Renamed `input` to `stdin_bytes`.
-  - Renamed `Handle::output` to `Handle::into_output`.
-
 Examples
 --------
 
