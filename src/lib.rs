@@ -81,6 +81,8 @@
 //! # if cfg!(not(windows)) {
 //! let result = cmd!("false").run();
 //! assert!(result.is_err());
+//! let result = cmd!("false").unchecked().run();
+//! assert!(result.is_ok());
 //! # }
 //! # Ok(())
 //! # }

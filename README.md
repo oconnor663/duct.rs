@@ -58,4 +58,6 @@ Children that exit with a non-zero status return an error by default:
 ```rust
 let result = cmd!("false").run();
 assert!(result.is_err());
+let result = cmd!("false").unchecked().run();
+assert!(result.is_ok());
 ```
