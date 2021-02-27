@@ -14,9 +14,13 @@ edition = "2018"
 os_pipe = "0.9.0"
 shared_child = "0.3.4"
 once_cell = "1.0.1"
+camino = { version = "1.0.4", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.43"
 
 [dev-dependencies]
 tempdir = "0.3.7"
+
+[package.metadata.docs.rs]
+all-features = true
