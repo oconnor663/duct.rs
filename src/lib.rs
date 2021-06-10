@@ -947,7 +947,7 @@ impl fmt::Debug for Expression {
     }
 }
 
-// Implemening Into<Expression> for references lets us accept both references
+// Implementing Into<Expression> for references lets us accept both references
 // and values in `pipe`.
 impl<'a> From<&'a Expression> for Expression {
     fn from(expr: &Expression) -> Expression {
@@ -1000,7 +1000,7 @@ impl Handle {
     pub fn wait(&self) -> io::Result<&Output> {
         // Await the children and any threads that are reading their output.
         // Another caller may already have done this.
-        let (expression_status, output) = wait_on_handle_and_ouput(self)?;
+        let (expression_status, output) = wait_on_handle_and_output(self)?;
         // If the child returned a non-zero exit status, and that's a checked
         // error, return the error.
         if expression_status.is_checked_error() {
@@ -1074,7 +1074,7 @@ impl Handle {
         // This wait cleans up the child but does not return an error for a
         // non-zero exit status.
         //
-        // Note that we *must not* call wait_on_handle_and_ouput here. There
+        // Note that we *must not* call wait_on_handle_and_output here. There
         // might be un-signaled grandchild processes holding the output pipe,
         // and we can't expect them to exit promptly. We only want to reap our
         // immediate zombie children here. See gotchas.md for more on why we
@@ -1094,7 +1094,7 @@ impl Handle {
 // includes collection the output results from reader threads. After calling
 // this function, the result cell is guaranteed to be populated. This does not
 // do any status checking.
-fn wait_on_handle_and_ouput(handle: &Handle) -> io::Result<&(ExpressionStatus, Output)> {
+fn wait_on_handle_and_output(handle: &Handle) -> io::Result<&(ExpressionStatus, Output)> {
     // Take the reader threads lock and then see if a result has already been
     // collected. Doing this check inside the lock avoids racing to fill the
     // result if it's empty.

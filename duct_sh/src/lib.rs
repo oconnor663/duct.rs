@@ -1,6 +1,6 @@
 //! A convenience wrapper around the `duct` crate for building commands out of
 //! shell strings. Duct normally executes commands directly, without going
-//! through a shell at all. This is preferable where possile, because it avoids
+//! through a shell at all. This is preferable where possible, because it avoids
 //! tricky whitespace issues and shell injection vulnerabilities. However,
 //! sometimes you need access to more esoteric shell features (e.g. shell
 //! builtins like `source` and `exec`, or process substitution with `<()`), and
