@@ -1,4 +1,4 @@
-use super::{cmd, Expression};
+use super::{cmd, Expression, ExpressionInner};
 use std;
 use std::collections::HashMap;
 use std::env;
@@ -609,4 +609,46 @@ fn test_pids() -> io::Result<()> {
     std::io::copy(&mut &reader, &mut std::io::sink())?;
 
     Ok(())
+}
+
+#[test]
+fn test_into_executable_path() {
+    let expected_undotted: Vec<OsString> = vec!["does-not-exist".into(), "arg".into()];
+    let expected_dotted: Vec<OsString> = vec![
+        [".", "does-not-exist"].iter().collect::<PathBuf>().into(),
+        "arg".into(),
+    ];
+
+    // Bare strings are undotted.
+    let cmd = cmd!("does-not-exist", "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_undotted));
+    let cmd = cmd!("does-not-exist".to_string(), "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_undotted));
+
+    // Path and PathBuf are dotted.
+    let cmd = cmd!(Path::new("does-not-exist"), "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_dotted));
+    let cmd = cmd!(PathBuf::from("does-not-exist"), "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_dotted));
+    let cmd = cmd!(&PathBuf::from("does-not-exist"), "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_dotted));
+}
+
+#[cfg(feature = "camino")]
+#[test]
+fn test_into_executable_utf8_path() {
+    use camino::{Utf8Path, Utf8PathBuf};
+
+    let expected_dotted: Vec<OsString> = vec![
+        [".", "does-not-exist"].iter().collect::<PathBuf>().into(),
+        "arg".into(),
+    ];
+
+    // Utf8Path and Utf8PathBuf are dotted.
+    let cmd = cmd!(Utf8Path::new("does-not-exist"), "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_dotted));
+    let cmd = cmd!(Utf8PathBuf::from("does-not-exist"), "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_dotted));
+    let cmd = cmd!(&Utf8PathBuf::from("does-not-exist"), "arg");
+    assert!(matches!(&*cmd.0, ExpressionInner::Cmd(x) if x == &expected_dotted));
 }

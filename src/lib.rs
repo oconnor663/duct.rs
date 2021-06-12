@@ -11,6 +11,13 @@
 //! - [GitHub repo](https://github.com/oconnor663/duct.rs)
 //! - [the same library, in Python](https://github.com/oconnor663/duct.py)
 //!
+//! Optional features
+//! -----------------
+//!
+//! `camino`: Adds support for [`camino`] paths as the first argument to `cmd!` and `cmd`.
+//!
+//! [`camino`]: https://docs.rs/camino/1
+//!
 //! Examples
 //! --------
 //!
@@ -1752,6 +1759,30 @@ impl IntoExecutablePath for PathBuf {
 impl<'a> IntoExecutablePath for &'a PathBuf {
     fn to_executable(self) -> OsString {
         dotify_relative_exe_path(self).into()
+    }
+}
+
+#[cfg(feature = "camino")]
+mod camino_impls {
+    use super::*;
+    use camino::{Utf8Path, Utf8PathBuf};
+
+    impl<'a> IntoExecutablePath for &'a Utf8Path {
+        fn to_executable(self) -> OsString {
+            dotify_relative_exe_path(self.as_ref()).into()
+        }
+    }
+
+    impl IntoExecutablePath for Utf8PathBuf {
+        fn to_executable(self) -> OsString {
+            dotify_relative_exe_path(self.as_ref()).into()
+        }
+    }
+
+    impl<'a> IntoExecutablePath for &'a Utf8PathBuf {
+        fn to_executable(self) -> OsString {
+            dotify_relative_exe_path(self.as_ref()).into()
+        }
     }
 }
 
