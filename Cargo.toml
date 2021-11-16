@@ -11,7 +11,7 @@ keywords = ["process", "subprocess", "command", "child", "pipe"]
 edition = "2018"
 
 [dependencies]
-os_pipe = "0.9.0"
+os_pipe = "1.0.0"
 shared_child = "0.3.4"
 once_cell = "1.0.1"
 
