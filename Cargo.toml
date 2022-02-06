@@ -19,4 +19,4 @@ once_cell = "1.0.1"
 libc = "0.2.43"
 
 [dev-dependencies]
-tempdir = "0.3.7"
+tempfile = "3.3.0"

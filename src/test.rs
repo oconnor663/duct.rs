@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 use std::sync::{Arc, Once};
-use tempdir::TempDir;
 
 // Include a copy of the sh function, because we have a lot of old tests that
 // use it, and it's a lot easier than managing a circular dependency between
@@ -249,7 +248,7 @@ fn test_null() {
 
 #[test]
 fn test_path() {
-    let dir = TempDir::new("test_path").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let input_file = dir.path().join("input_file");
     let output_file = dir.path().join("output_file");
     File::create(&input_file)
@@ -286,7 +285,7 @@ fn test_swapping() {
 
 #[test]
 fn test_file() {
-    let dir = TempDir::new("test_file").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("file");
     File::create(&file).unwrap().write_all(b"example").unwrap();
     let expr = cmd!(path_to_exe("cat")).stdin_file(File::open(&file).unwrap());
@@ -343,7 +342,7 @@ fn test_dir() {
 
     // Now create a temp dir and make sure we can set dir to it. This
     // also tests the interaction of `dir` and relative exe paths.
-    let dir = TempDir::new("duct_test").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let pwd_output = pwd.dir(dir.path()).read().unwrap();
     let pwd_path = Path::new(&pwd_output);
     // pwd_path isn't totally canonical on Windows, because it
