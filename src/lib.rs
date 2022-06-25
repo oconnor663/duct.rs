@@ -366,6 +366,43 @@ impl Expression {
         })
     }
 
+    /// Start running an expression, and immediately return a
+    /// [`ReaderHandle`](struct.ReaderHandle.html) attached to the child's
+    /// stderr.
+    ///
+    /// This does the same as `.reader()`, but reads the stderr instead of
+    /// stdout while the command runs. See `.reader()` for additional
+    /// information.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # use std::io::prelude::*;
+    /// # fn main() {
+    /// # if cfg!(not(windows)) {
+    /// let mut reader = cmd!("sh", "-c", "echo hi from stderr 1>&2").stderr_reader().unwrap();
+    /// let mut stderr = Vec::new();
+    /// reader.read_to_end(&mut stderr).unwrap();
+    /// assert_eq!(b"hi from stderr\n".to_vec(), stderr);
+    /// # }
+    /// # }
+    /// ```
+    pub fn stderr_reader(&self) -> io::Result<ReaderHandle> {
+        let stdout_capture = OutputCaptureContext::new();
+        let stderr_capture = OutputCaptureContext::new();
+        let context = IoContext::new(&stdout_capture, &stderr_capture);
+        let handle = Handle {
+            inner: self.stderr_capture().0.start(context)?,
+            result: OnceCell::new(),
+            readers: Mutex::new((stdout_capture.maybe_read_thread(), None)),
+        };
+        Ok(ReaderHandle {
+            handle,
+            reader: stderr_capture.pair.into_inner().expect("pipe opened").0,
+        })
+    }
+
     /// Join two expressions into a pipe expression, where the standard output
     /// of the left will be hooked up to the standard input of the right, like
     /// `|` in the shell.
