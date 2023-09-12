@@ -609,3 +609,20 @@ fn test_pids() -> io::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_command_with_iterator() -> io::Result<()> {
+    assert_eq!(
+        cmd!("echo", ...Some("a"), ...["b", "c", "d"]).read()?,
+        "a b c d"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_command_with_trailing_comma() -> io::Result<()> {
+    assert_eq!(cmd!("echo", ...["a"],).read()?, "a");
+
+    Ok(())
+}

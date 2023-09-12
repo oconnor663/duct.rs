@@ -145,38 +145,97 @@ where
     Expression::new(Cmd(argv_vec))
 }
 
-/// Create a command with any number of of positional arguments, which may be
-/// different types (anything that implements
-/// [`Into<OsString>`](https://doc.rust-lang.org/std/convert/trait.From.html)).
-/// See also the [`cmd`](fn.cmd.html) function, which takes a collection of
-/// arguments.
+/// Create a command with any number of positional arguments.
 ///
-/// # Example
+/// The arguments may be any type that implements [`Into<OsString>`]. You may
+/// also splice in any type that implements [`IntoIterator`] by adding `...`
+/// in front of it (e.g. `cmd!("echo", ...["a", "b", "c"])`).
 ///
+/// See also the [`cmd()`] function, which takes a collection of arguments.
+///
+/// # Examples
+///
+/// Calling `cmd!` with differently typed arguments:
 /// ```
-///
 /// use duct::cmd;
 /// use std::path::Path;
 ///
-/// fn main() {
-///     let arg1 = "foo";
-///     let arg2 = "bar".to_owned();
-///     let arg3 = Path::new("baz");
+/// let arg1 = "foo";
+/// let arg2 = "bar".to_owned();
+/// let arg3 = Path::new("baz");
 ///
-///     let output = cmd!("echo", arg1, arg2, arg3).read();
+/// let output = cmd!("echo", arg1, arg2, arg3).read()?;
+/// assert_eq!("foo bar baz", output);
+/// #
+/// # std::io::Result::Ok(())
+/// ```
 ///
-///     assert_eq!("foo bar baz", output.unwrap());
+/// Calling `cmd!` with a list of arguments:
+/// ```
+/// use duct::cmd;
+///
+/// let args = ["a", "b", "c"];
+/// let output = cmd!("echo", ...args, "e", "f", "g").read()?;
+///
+/// assert_eq!(output, "a b c e f g");
+/// #
+/// # std::io::Result::Ok(())
+/// ```
+///
+/// Calling `cmd!` with an optional argument:
+/// ```
+/// use duct::cmd;
+///
+/// let blah = random().then_some("blah");
+/// let output = cmd!("echo", ...blah, "bleh", "blah").read()?;
+///
+/// if blah.is_some() {
+///     assert_eq!(output, "blah bleh blah");
+/// } else {
+///     assert_eq!(output, "bleh blah");
 /// }
+/// #
+/// # fn random() -> bool { false }
+/// # std::io::Result::Ok(())
 /// ```
 #[macro_export]
 macro_rules! cmd {
-    ( $program:expr $(, $arg:expr )* $(,)? ) => {
+    ( $program:expr $(, $( $rest:tt )* )?) => {
         {
-            use std::ffi::OsString;
-            let args: std::vec::Vec<OsString> = std::vec![$( Into::<OsString>::into($arg) ),*];
+            #[allow(unused_mut)]
+            let mut args = ::std::vec::Vec::<::std::ffi::OsString>::new();
+            $( $crate::cmd_expand_args!(args, $( $rest )*); )?
+
             $crate::cmd($program, args)
         }
     };
+}
+
+/// Helper for the [`cmd!`] macro which parses the command arguments and either
+/// calls `$vec.push` or `$vec.extend`, as appropriate.
+///
+/// In either case this macro works by parsing a single argument passed to the
+/// command macro, somehow inserting it into `$vec`, and then repeating the
+/// process with the rest of the arguments until there are none left.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! cmd_expand_args {
+    ($vec:expr, ... $arg:expr $(, $( $rest:tt )* )?) => {{
+        use ::std::iter::{Extend, Iterator};
+
+        $vec.extend(
+            ::std::iter::IntoIterator::into_iter($arg)
+                .map(|elem| ::std::convert::Into::<::std::ffi::OsString>::into(elem))
+        );
+
+        $crate::cmd_expand_args!($vec, $( $( $rest )* )?);
+    }};
+    ($vec:expr, $arg:expr $(, $( $rest:tt )* )?) => {
+        $vec.push(::std::convert::Into::<::std::ffi::OsString>::into($arg));
+
+        $crate::cmd_expand_args!($vec, $( $( $rest )* )?);
+    };
+    ($vec:expr, ) => {}
 }
 
 /// The central objects in Duct, Expressions are created with
