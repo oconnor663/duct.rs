@@ -1203,10 +1203,15 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> 
     let exe = canonicalize_exe_path_for_dir(&argv[0], &context)?;
     let mut command = Command::new(exe);
     command.args(&argv[1..]);
-    // TODO: Avoid unnecessary dup'ing here.
-    command.stdin(context.stdin.into_stdio()?);
-    command.stdout(context.stdout.into_stdio()?);
-    command.stderr(context.stderr.into_stdio()?);
+    if !matches!(context.stdin, IoValue::ParentStdin) {
+        command.stdin(context.stdin.into_stdio()?);
+    }
+    if !matches!(context.stdout, IoValue::ParentStdout) {
+        command.stdout(context.stdout.into_stdio()?);
+    }
+    if !matches!(context.stderr, IoValue::ParentStderr) {
+        command.stderr(context.stderr.into_stdio()?);
+    }
     if let Some(dir) = context.dir {
         command.current_dir(dir);
     }
