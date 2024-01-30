@@ -931,6 +931,192 @@ impl Expression {
         Self::new(Io(BeforeSpawn(BeforeSpawnHook::new(hook)), self.clone()))
     }
 
+    /// Format cmd pipeline as shell command
+    ///
+    /// This method formats a cmd pipeline into an equivalent (or very closely equivalent)
+    /// shell command. Note that this is a lossy conversion and can't capture some features
+    /// for complex cmd pipelines. Shell arguments are quoted using the `shell_words` crate.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("echo", "foo").pipe(cmd!("wc","-c"));
+    /// assert_eq!("(echo foo | wc -c)", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// It should however cope with moderately complex commands (includeing redirections,
+    /// envinroment manipulation etc):
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("cat", "xyz")
+    ///             .pipe(cmd!("sed","s/a/b/"))
+    ///             .stderr_path("stderr.txt")
+    ///             .pipe(cmd!("sed","s/b/c/"));
+    /// assert_eq!("((cat xyz | sed s/a/b/) 2>stderr.txt | sed s/b/c/)", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("cat")
+    ///             .env("AAA","BBB CCC")
+    ///             .stdin_bytes("ABCD ABCD")
+    ///             .pipe(cmd!("tr","A-Z","a-z")
+    ///                     .stderr_null()
+    ///                     .pipe(cmd!("wc","-c")));
+    /// assert_eq!("(env AAA='BBB CCC' cat <<<'ABCD ABCD' | (tr A-Z a-z 2>/dev/null | wc -c))",
+    ///                 cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// Note that pipes will be wrapped in a subshell `(a|b)` in order to retain structure
+    /// for complex pipelines even though this is usually not required for simple cases - eg.
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("ls","-al").pipe(cmd!("tr","a-z","A-Z")).pipe(cmd!("wc","-l"));
+    /// // Note unnecessary subshells
+    /// assert_eq!("((ls -al | tr a-z A-Z) | wc -l)",
+    ///                 cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// This is still valid syntax however does spawn unnecessary sub-shells. For simple
+    /// command pipelines you can remove the top level brackets manually but for
+    /// multi-stage pipelines will still end up with unnecessary subshells.
+    ///
+    /// XXX: There doesnt seem to be an easy way round this - one possible option
+    ///      would be a `to_string_simple` method which avoided the subshells (but
+    ///      wouldnt work correctly for complex pipelines)
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("ls","-al").pipe(cmd!("wc","-l"));
+    /// assert_eq!("ls -al | wc -l", cmd.to_string_lossy().trim_matches(&['(',')'][..]));
+    /// # }
+    /// ```
+    ///
+    /// IO redirections are captured as expected:
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("tr","a-z","A-Z").stdin_bytes("ABCD").stderr_null().stdout_path("result");
+    /// assert_eq!("tr a-z A-Z <<<ABCD 2>/dev/null >result", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// For stdio redirections to an open FD (stdxxx_file) we show the file descriptor:
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let out = std::fs::File::create("/dev/null").unwrap();
+    /// let cmd = cmd!("tr","a-z","A-Z").stdout_file(out);
+    /// // We assume next fd is #3
+    /// assert_eq!("tr a-z A-Z >&3", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    ///
+    pub fn to_string_lossy(&self) -> String {
+        match *self.0 {
+            Cmd(ref cmd) => {
+                // Simple case - quote command line using `shell_words::quote`
+                shell_words::join(cmd.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>())
+            }
+
+            Pipe(ref cmd1, ref cmd2) => {
+                // We use subshell `(a|b)` for pipe to capture possible hierarchy
+                // in complex commands - this isn't necessary for top-level pipe
+                // but we dont have enough context to detect this if there is
+                // an arbitratry process tree
+                format!("({} | {})", cmd1.to_string_lossy(), cmd2.to_string_lossy())
+            }
+
+            Io(ref io, ref cmd) => match io {
+                // Stdio redirections
+                StdinPath(p) => format!(
+                    "{} <{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&p.to_string_lossy())
+                ),
+                StdoutPath(p) => format!(
+                    "{} >{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&p.to_string_lossy())
+                ),
+                StderrPath(p) => format!(
+                    "{} 2>{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&p.to_string_lossy())
+                ),
+                StdinNull => format!("{} </dev/null", cmd.to_string_lossy()),
+                StdoutNull => format!("{} >/dev/null", cmd.to_string_lossy()),
+                StderrNull => format!("{} 2>/dev/null", cmd.to_string_lossy()),
+
+                // For StdxxxFile we dont know what the underlying FD is so just show as FD redirection
+                StdinFile(f) => format!("{} <&{}", cmd.to_string_lossy(), f.as_raw_fd()),
+                StdoutFile(f) => format!("{} >&{}", cmd.to_string_lossy(), f.as_raw_fd()),
+                StderrFile(f) => format!("{} 2>&{}", cmd.to_string_lossy(), f.as_raw_fd()),
+
+                // For StdinBytes use here string (note bash/zsh only)
+                StdinBytes(b) => format!(
+                    "{} <<<{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&String::from_utf8_lossy(b))
+                ),
+
+                // Redirect file descriptors
+                StderrToStdout => format!("{} 2>&1", cmd.to_string_lossy()),
+                StdoutToStderr => format!("{} >&2", cmd.to_string_lossy()),
+                StdoutStderrSwap => format!("{} 3>&1 1>&2 2>&3", cmd.to_string_lossy()),
+
+                // Change directory - unfortunately `env -C` is GNU-only (not available on
+                // MacOS/BSD) so we use cd in subshell
+                Dir(d) => format!("(cd {} && {})", d.to_string_lossy(), cmd.to_string_lossy()),
+
+                // Add Env var using `env`
+                // Note that if there are multiple env vars set we will get a cascading
+                // set of `env` commands rather than setting all in one go
+                Env(k, v) => format!(
+                    "env {}={} {}",
+                    k.to_string_lossy(),
+                    shell_words::quote(&v.to_string_lossy()),
+                    cmd.to_string_lossy()
+                ),
+
+                // Remove Env var using `env -u`
+                EnvRemove(k) => format!("env -u {} {}", k.to_string_lossy(), cmd.to_string_lossy()),
+
+                // Clear Env var using `env -i` and explicitly set
+                FullEnv(e) => format!(
+                    "env -i {} {}",
+                    e.iter()
+                        .map(|(k, v)| format!(
+                            "{}={}",
+                            k.to_string_lossy(),
+                            shell_words::quote(&v.to_string_lossy())
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    cmd.to_string_lossy()
+                ),
+
+                // We cant really show these so just return command
+                StdoutCapture | StderrCapture | Unchecked | BeforeSpawn(_) => cmd.to_string_lossy(),
+            },
+        }
+    }
+
     fn new(inner: ExpressionInner) -> Expression {
         Expression(Arc::new(inner))
     }
