@@ -931,6 +931,331 @@ impl Expression {
         Self::new(Io(BeforeSpawn(BeforeSpawnHook::new(hook)), self.clone()))
     }
 
+    /// Format cmd pipeline as shell command
+    ///
+    /// This method formats a cmd pipeline into an equivalent (or very closely equivalent)
+    /// shell command as a string. Note that this is a lossy conversion and can't capture
+    /// some features for complex cmd pipelines but in most cases should generate a valid
+    /// shell command. Shell arguments are quoted using the `shell_words` crate.
+    ///
+    /// In most cases the output is expected to be used for logging/debugging purposes
+    /// rather than actually run as a shell pipeline.
+    ///
+    /// Note this is only enabled for `#[cfg(unix)]` as we rely on UNIX shell syntax
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("echo", "foo").pipe(cmd!("wc","-c"));
+    /// assert_eq!("(echo foo | wc -c)", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// It will cope with moderately complex commands (including multi-level pipes,
+    /// redirections, environment manipulation etc):
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("cat")
+    ///             .stdin_path("xyz")
+    ///             .pipe(cmd!("sed","s/a/b/"))
+    ///             .stderr_path("stderr.txt")
+    ///             .pipe(cmd!("sed","s/b/c/"));
+    /// assert_eq!("((cat <xyz | sed s/a/b/) 2>stderr.txt | sed s/b/c/)", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("cat")
+    ///             .env("AAA","BBB CCC")
+    ///             .stdin_bytes("ABCD ABCD")
+    ///             .pipe(cmd!("tr","A-Z","a-z")
+    ///                     .stderr_null()
+    ///                     .pipe(cmd!("wc","-c")));
+    /// assert_eq!("(env AAA='BBB CCC' cat <<<'ABCD ABCD' | (tr A-Z a-z 2>/dev/null | wc -c))",
+    ///                 cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// Note that pipes will be wrapped in a subshell `(a|b)` in order to retain structure
+    /// for complex pipelines even though this is usually not required for simple cases:
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("ls","-al").pipe(cmd!("tr","a-z","A-Z")).pipe(cmd!("wc","-l"));
+    /// // Note unnecessary subshells
+    /// assert_eq!("((ls -al | tr a-z A-Z) | wc -l)", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// This is still valid syntax however does spawn unnecessary sub-shells. For simple
+    /// command pipelines you can remove the top level brackets manually but for
+    /// multi-stage pipelines will still end up with unnecessary subshells.
+    ///
+    /// ___There doesnt seem to be an easy way round this while still supporting
+    /// complex shell pipelines - one possible option would be a `to_string_simple`
+    /// method which avoided the subshells (but wouldnt work correctly for complex
+    /// pipelines)___
+    ///
+    /// I/O redirections are captured as expected:
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("tr","a-z","A-Z").stdin_bytes("ABCD").stderr_null().stdout_path("result");
+    /// assert_eq!("tr a-z A-Z <<<ABCD 2>/dev/null >result", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// For stdio redirections to an open FD (stdxxx_file) we show the file descriptor:
+    /// (this wont be valid in a shell as we dont know what they are connected to
+    /// but does show the intent):
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let out = std::fs::File::create("/dev/null").unwrap();
+    /// let cmd = cmd!("tr","a-z","A-Z").stdout_file(out);
+    /// // For testing we assume next fd is #3
+    /// assert_eq!("tr a-z A-Z >&3", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// To set the Environment we generate the appropriate `env` command:
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("printenv").env("AAA","123 456");
+    /// assert_eq!("env AAA='123 456' printenv", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("printenv").env_remove("AAA");
+    /// assert_eq!("env -u AAA printenv", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("printenv").full_env(vec![("AAA","123")]);
+    /// assert_eq!("env -i AAA=123 printenv", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// We try to concatenate multiple adjacent Env/EnvRemove directives otherwise
+    /// these would generate multiple separate `env` commands - this still works but
+    /// it is cleaner to try to concatenate if we can (can only do this if the
+    /// directives are in a sequence):
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd1 = cmd!("printenv").env("AAA","BBB").env_remove("ZZZ").env("BBB","CCC");
+    /// assert_eq!("env -u ZZZ BBB=CCC AAA=BBB printenv", cmd1.to_string_lossy());
+    /// // Two `env` commands generated (still valid syntax)
+    /// let cmd2 = cmd!("printenv").env("AAA","BBB").stderr_null().env_remove("ZZZ").env("BBB","CCC");
+    /// assert_eq!("env -u ZZZ BBB=CCC env AAA=BBB printenv 2>/dev/null", cmd2.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// To set working directory (for `Dir`) we use `cd` in a subshell (it would be cleaner
+    /// to use `env -C` however this is GNU-only and not available on MacOS/BSD):
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// let cmd = cmd!("pwd").dir("/");
+    /// assert_eq!("(cd / && pwd)", cmd.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    /// Note that the a combination of `Dir` and `Pipe` can generate an invalid shell command
+    /// depending on the order they are called:
+    ///
+    /// ```
+    /// # use duct::cmd;
+    /// # fn main() {
+    /// // Valid shell syntax
+    /// let cmd1 = cmd!("printenv").env("AAA", "BBB").pipe(cmd!("tr", "A-Z", "a-z"));
+    /// assert_eq!("(env AAA=BBB printenv | tr A-Z a-z)", cmd1.to_string_lossy());
+    /// // Invalid shell syntax (`env` wont execute subshell without `sh -c`)
+    /// let cmd2 = cmd!("printenv").pipe(cmd!("tr", "A-Z", "a-z")).env("AAA", "BBB");
+    /// assert_eq!("env AAA=BBB (printenv | tr A-Z a-z)", cmd2.to_string_lossy());
+    /// // Note that the usage for the invalid syntax would be unusual (applying Env
+    /// // to Pipe rather than Cmd) so if you did want to do this and ensure that the
+    /// // printable version was executable you should explicitly use `sh -c` directly
+    /// let cmd3 = cmd!("sh","-c","printenv | tr A-Z a-z").env("AAA", "BBB");
+    /// assert_eq!("env AAA=BBB sh -c 'printenv | tr A-Z a-z'", cmd3.to_string_lossy());
+    /// # }
+    /// ```
+    ///
+    #[cfg(unix)]
+    pub fn to_string_lossy(&self) -> String {
+        match *self.0 {
+            Cmd(ref cmd) => {
+                // Simple case - quote command line using `shell_words::quote`
+                shell_words::join(cmd.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>())
+            }
+
+            Pipe(ref cmd1, ref cmd2) => {
+                // We use subshell `(a|b)` for pipe to capture possible hierarchy
+                // in complex commands - this isn't necessary for top-level pipe
+                // but we dont have enough context to detect this if there is
+                // an arbitratry process tree
+                format!("({} | {})", cmd1.to_string_lossy(), cmd2.to_string_lossy())
+            }
+
+            Io(ref io, ref cmd) => match io {
+                // Stdio redirections
+                StdinPath(p) => format!(
+                    "{} <{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&p.to_string_lossy())
+                ),
+                StdoutPath(p) => format!(
+                    "{} >{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&p.to_string_lossy())
+                ),
+                StderrPath(p) => format!(
+                    "{} 2>{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&p.to_string_lossy())
+                ),
+                StdinNull => format!("{} </dev/null", cmd.to_string_lossy()),
+                StdoutNull => format!("{} >/dev/null", cmd.to_string_lossy()),
+                StderrNull => format!("{} 2>/dev/null", cmd.to_string_lossy()),
+
+                // For StdxxxFile we dont know what the underlying FD is so just show as FD redirection
+                StdinFile(f) => format!("{} <&{}", cmd.to_string_lossy(), f.as_raw_fd()),
+                StdoutFile(f) => format!("{} >&{}", cmd.to_string_lossy(), f.as_raw_fd()),
+                StderrFile(f) => format!("{} 2>&{}", cmd.to_string_lossy(), f.as_raw_fd()),
+
+                // For StdinBytes use here string (note bash/zsh only)
+                StdinBytes(b) => format!(
+                    "{} <<<{}",
+                    cmd.to_string_lossy(),
+                    shell_words::quote(&String::from_utf8_lossy(b))
+                ),
+
+                // Redirect file descriptors
+                StderrToStdout => format!("{} 2>&1", cmd.to_string_lossy()),
+                StdoutToStderr => format!("{} >&2", cmd.to_string_lossy()),
+                StdoutStderrSwap => format!("{} 3>&1 1>&2 2>&3", cmd.to_string_lossy()),
+
+                // Change directory - unfortunately `env -C` is GNU-only (not available on
+                // MacOS/BSD) so we use cd in subshell
+                Dir(d) => format!("(cd {} && {})", d.to_string_lossy(), cmd.to_string_lossy()),
+
+                // Add Env var using `env`
+                // Note that we try to detect multiple Env/EnvRemove and merge them
+                // into a single `env` command (otherwise would end up with multiple
+                // `env` commands). This only works if these are contiguous
+                Env(k, v) => {
+                    let mut next: &Expression = cmd;
+                    let mut env_add = vec![format!(
+                        "{}={}",
+                        k.to_string_lossy(),
+                        shell_words::quote(&v.to_string_lossy())
+                    )];
+                    let mut env_remove = vec![];
+                    loop {
+                        // Match next cmd and check if it is Env/EnvRemove
+                        match next.0.as_ref() {
+                            Io(Env(k, v), cmd) => {
+                                env_add.push(format!(
+                                    "{}={}",
+                                    k.to_string_lossy(),
+                                    shell_words::quote(&v.to_string_lossy())
+                                ));
+                                next = cmd;
+                            }
+                            Io(EnvRemove(k), cmd) => {
+                                env_remove.push(format!("-u {}", k.to_string_lossy()));
+                                next = cmd;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if env_remove.is_empty() {
+                        format!("env {} {}", env_add.join(" "), next.to_string_lossy())
+                    } else {
+                        format!(
+                            "env {} {} {}",
+                            env_remove.join(" "),
+                            env_add.join(" "),
+                            next.to_string_lossy()
+                        )
+                    }
+                }
+
+                // Remove Env var using `env -u`
+                // We do the same merging as for Env
+                EnvRemove(k) => {
+                    let mut next: &Expression = cmd;
+                    let mut env_add = vec![];
+                    let mut env_remove = vec![format!("-u {}", k.to_string_lossy(),)];
+                    loop {
+                        // Match next cmd and check if it is Env/EnvRemove
+                        match next.0.as_ref() {
+                            Io(Env(k, v), cmd) => {
+                                env_add.push(format!(
+                                    "{}={}",
+                                    k.to_string_lossy(),
+                                    shell_words::quote(&v.to_string_lossy())
+                                ));
+                                next = cmd;
+                            }
+                            Io(EnvRemove(k), cmd) => {
+                                env_remove.push(format!("-u {}", k.to_string_lossy()));
+                                next = cmd;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if env_add.is_empty() {
+                        format!("env {} {}", env_remove.join(" "), next.to_string_lossy())
+                    } else {
+                        format!(
+                            "env {} {} {}",
+                            env_remove.join(" "),
+                            env_add.join(" "),
+                            next.to_string_lossy()
+                        )
+                    }
+                }
+
+                // Clear Env var using `env -i` and explicitly set
+                FullEnv(e) => format!(
+                    "env -i {} {}",
+                    e.iter()
+                        .map(|(k, v)| format!(
+                            "{}={}",
+                            k.to_string_lossy(),
+                            shell_words::quote(&v.to_string_lossy())
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    cmd.to_string_lossy()
+                ),
+
+                // We cant really show these so just return command
+                StdoutCapture | StderrCapture | Unchecked | BeforeSpawn(_) => cmd.to_string_lossy(),
+            },
+        }
+    }
+
     fn new(inner: ExpressionInner) -> Expression {
         Expression(Arc::new(inner))
     }
