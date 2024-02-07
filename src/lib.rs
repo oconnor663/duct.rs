@@ -1076,7 +1076,6 @@ impl Expression {
     /// # use duct::cmd;
     /// # fn main() {
     /// let cmd = cmd!("pwd").dir("/");
-    /// // We assume next fd is #3
     /// assert_eq!("(cd / && pwd)", cmd.to_string_lossy());
     /// # }
     /// ```
