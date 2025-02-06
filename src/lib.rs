@@ -1696,9 +1696,9 @@ fn canonicalize_exe_path_for_dir(exe_name: &OsStr, context: &IoContext) -> io::R
     // Windows users might pass a local file like "foo.bat" as a string, which
     // we can't distinguish from a global program name. However, because the
     // Windows has the preferred "relative to parent's cwd" behavior already,
-    // this case actually works without our help. (The thing Windows users have
-    // to watch out for instead is local files shadowing global program names,
-    // which I don't think we can or should prevent.)
+    // this case actually works without our help. (Windows users previously
+    // needed to watch out for local files shadowing global program names, but
+    // Rust 1.58 improved this.)
 
     let has_separator = exe_name
         .to_string_lossy()
