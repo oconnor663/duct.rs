@@ -1159,6 +1159,10 @@ enum HandleInner {
     // Thus the handle preserves the right side's errors here.
     Pipe(Box<PipeHandle>),
     StdinBytes(Box<StdinBytesHandle>),
+    // Why does "uncheckedness" need to be a handle type and not just a field on
+    // IoContext? Because when one side of a pipe is checked, that side's errors
+    // take priority over the checked side, even when the pipe expression
+    // *itself* is also unchecked.
     Unchecked(Box<HandleInner>),
 }
 
@@ -1334,7 +1338,7 @@ impl PipeHandle {
 // 1) If either side unfinished, the result is unfinished.
 // 2) Checked errors trump unchecked errors.
 // 3) Any errors trump success.
-// 4) All else equal, the right side wins.
+// 4) All else equal, the right side wins (as in Bash).
 fn pipe_status_precedence(
     left_maybe_status: Option<ExpressionStatus>,
     right_maybe_status: Option<ExpressionStatus>,
