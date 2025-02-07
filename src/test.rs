@@ -524,32 +524,79 @@ fn test_dropping_reader() {
 }
 
 #[test]
-fn test_kill_with_grandchild() -> io::Result<()> {
+fn test_kill_with_grandchild_stderr_capture() -> io::Result<()> {
     // We're going to start a child process, and that child is going to start a
     // grandchild. The grandchild is going to sleep forever (1 day). We'll read
     // some output from the child to make sure it's done starting the
-    // grandchild, and then we'll kill the child. Now, the grandchild will not
-    // be killed, and it will still hold a write handle to the stdout pipe. So
-    // this tests that the wait done by kill only waits on the child to exit,
-    // and does not wait on IO to finish.
+    // grandchild, and then we'll kill the child. The grandchild will not be
+    // killed, and it'll hold open copies of all the child's pipes. This tests
+    // that the wait done by kill only waits on the child to exit, and doesn't
+    // wait on IO to finish.
     //
     // This test leaks the grandchild process. I'm sorry.
 
     // Capturing stderr means an IO thread is spawned, even though we're using
     // a ReaderHandle to read stdout. What we're testing here is that kill()
-    // doesn't wait on that IO thread.
+    // and try_wait() don't wait on that IO thread.
     let mut reader = cmd!(path_to_exe("child_grandchild"))
         .stderr_capture()
         .reader()?;
 
     // Read "started" from the child to make sure we don't kill it before it
-    // starts the grandchild.
+    // starts the grandchild. Note that read_to_end would block here.
     let mut started_read = [0; 7];
     reader.read_exact(&mut started_read)?;
     assert_eq!(&started_read, b"started");
 
-    // Ok, this had better not block!
-    reader.kill()
+    // Ok, we're going to kill() the child, which includes an implicit wait().
+    // The stderr_capture thread is still running, and it won't exit until the
+    // grandchild exits ("forever" i.e. in one day). If we try to join them,
+    // this will not return.
+    reader.kill()?;
+
+    // At this point the child has been reaped, but .try_wait() should still
+    // return Ok(None), because the stderr capture thread is still waiting.
+    assert!(reader.try_wait()?.is_none());
+
+    Ok(())
+}
+
+#[test]
+fn test_kill_with_grandchild_stdin_bytes() -> io::Result<()> {
+    // We're going to start a child process, and that child is going to start a
+    // grandchild. The grandchild is going to sleep forever (1 day). We'll read
+    // some output from the child to make sure it's done starting the
+    // grandchild, and then we'll kill the child. The grandchild will not be
+    // killed, and it'll hold open copies of all the child's pipes. This tests
+    // that the wait done by kill only waits on the child to exit, and doesn't
+    // wait on IO to finish.
+    //
+    // This test leaks the grandchild process. I'm sorry.
+
+    // Writing to stdin means an IO thread is spawned, even though we're using
+    // a ReaderHandle to read stdout. What we're testing here is that kill()
+    // and try_wait() don't wait on that IO thread.
+    let mut reader = cmd!(path_to_exe("child_grandchild"))
+        .stdin_bytes(vec![0; 1_000_000]) // 1 MB should be enough to fill the pipe buffer and block.
+        .reader()?;
+
+    // Read "started" from the child to make sure we don't kill it before it
+    // starts the grandchild. Note that read_to_end would block here.
+    let mut started_read = [0; 7];
+    reader.read_exact(&mut started_read)?;
+    assert_eq!(&started_read, b"started");
+
+    // Ok, we're going to kill() the child, which includes an implicit wait().
+    // The stdin_bytes thread is still running, and it won't exit until the
+    // grandchild exits ("forever" i.e. in one day). If we try to join them,
+    // this will not return.
+    reader.kill()?;
+
+    // At this point the child has been reaped, but .try_wait() should still
+    // return Ok(None), because the stdin bytes thread is still waiting.
+    assert!(reader.try_wait()?.is_none());
+
+    Ok(())
 }
 
 #[test]
