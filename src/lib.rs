@@ -88,7 +88,6 @@
 //! # }
 //! ```
 
-use once_cell::sync::OnceCell;
 use shared_child::SharedChild;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -99,7 +98,7 @@ use std::io::prelude::*;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 #[cfg(not(windows))]
@@ -312,7 +311,7 @@ impl Expression {
 
         Ok(Handle {
             inner: self.0.start(context)?,
-            result: OnceCell::new(),
+            result: OnceLock::new(),
             readers: Mutex::new((
                 stdout_capture.maybe_read_thread(),
                 stderr_capture.maybe_read_thread(),
@@ -354,7 +353,7 @@ impl Expression {
         let context = IoContext::new(&stdout_capture, &stderr_capture);
         let handle = Handle {
             inner: self.stdout_capture().0.start(context)?,
-            result: OnceCell::new(),
+            result: OnceLock::new(),
             readers: Mutex::new((None, stderr_capture.maybe_read_thread())),
         };
         Ok(ReaderHandle {
@@ -976,7 +975,7 @@ impl<'a> From<&'a Expression> for Expression {
 #[derive(Debug)]
 pub struct Handle {
     inner: HandleInner,
-    result: OnceCell<(ExpressionStatus, Output)>,
+    result: OnceLock<(ExpressionStatus, Output)>,
     readers: Mutex<(Option<ReaderThread>, Option<ReaderThread>)>,
 }
 
@@ -1810,7 +1809,7 @@ fn clone_io_error(error: &io::Error) -> io::Error {
 
 #[derive(Debug)]
 struct SharedThread<T> {
-    result: OnceCell<T>,
+    result: OnceLock<T>,
     handle: Mutex<Option<JoinHandle<T>>>,
 }
 
@@ -1818,7 +1817,7 @@ struct SharedThread<T> {
 impl<T> SharedThread<T> {
     fn new(handle: JoinHandle<T>) -> Self {
         SharedThread {
-            result: OnceCell::new(),
+            result: OnceLock::new(),
             handle: Mutex::new(Some(handle)),
         }
     }
@@ -1878,19 +1877,27 @@ type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
 
 #[derive(Debug)]
 struct OutputCaptureContext {
-    pair: OnceCell<(os_pipe::PipeReader, os_pipe::PipeWriter)>,
+    pair: OnceLock<(os_pipe::PipeReader, os_pipe::PipeWriter)>,
 }
 
 impl OutputCaptureContext {
     fn new() -> Self {
         Self {
-            pair: OnceCell::new(),
+            pair: OnceLock::new(),
         }
     }
 
     fn write_pipe(&self) -> io::Result<os_pipe::PipeWriter> {
-        let (_, writer) = self.pair.get_or_try_init(os_pipe::pipe)?;
-        writer.try_clone()
+        // OnceLock::get_or_try_init would be nice if it stabilizes.
+        match self.pair.get() {
+            Some((_, writer)) => writer.try_clone(),
+            None => {
+                let (reader, writer) = os_pipe::pipe()?;
+                let clone = writer.try_clone();
+                self.pair.set((reader, writer)).unwrap();
+                clone
+            }
+        }
     }
 
     // Only spawn a read thread if the write pipe was used.
