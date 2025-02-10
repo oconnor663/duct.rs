@@ -110,6 +110,9 @@ use std::os::windows::prelude::*;
 #[cfg(unix)]
 pub mod unix;
 
+mod shared_thread;
+use shared_thread::SharedThread;
+
 // enums defined below
 use ExpressionInner::*;
 use IoExpressionInner::*;
@@ -1804,35 +1807,6 @@ fn clone_io_error(error: &io::Error) -> io::Error {
         io::Error::from_raw_os_error(code)
     } else {
         io::Error::new(error.kind(), error.to_string())
-    }
-}
-
-#[derive(Debug)]
-struct SharedThread<T> {
-    result: OnceLock<T>,
-    handle: Mutex<Option<JoinHandle<T>>>,
-}
-
-// A thread that sticks its result in a lazy cell, so that multiple callers can see it.
-impl<T> SharedThread<T> {
-    fn new(handle: JoinHandle<T>) -> Self {
-        SharedThread {
-            result: OnceLock::new(),
-            handle: Mutex::new(Some(handle)),
-        }
-    }
-
-    // If the other thread panicked, this will panic.
-    fn join(&self) -> &T {
-        let mut handle_lock = self.handle.lock().expect("shared thread handle poisoned");
-        if let Some(handle) = handle_lock.take() {
-            let ret = handle.join().expect("panic on shared thread");
-            self.result
-                .set(ret)
-                .map_err(|_| "result cell unexpectedly full")
-                .unwrap();
-        }
-        self.result.get().expect("result cell unexpectedly empty")
     }
 }
 
