@@ -98,8 +98,7 @@ use std::io::prelude::*;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::JoinHandle;
+use std::sync::{Arc, OnceLock, RwLock};
 
 #[cfg(not(windows))]
 use std::os::unix::prelude::*;
@@ -315,7 +314,7 @@ impl Expression {
         Ok(Handle {
             inner: self.0.start(context)?,
             result: OnceLock::new(),
-            readers: Mutex::new((
+            readers: RwLock::new((
                 stdout_capture.maybe_read_thread(),
                 stderr_capture.maybe_read_thread(),
             )),
@@ -357,7 +356,7 @@ impl Expression {
         let handle = Handle {
             inner: self.stdout_capture().0.start(context)?,
             result: OnceLock::new(),
-            readers: Mutex::new((None, stderr_capture.maybe_read_thread())),
+            readers: RwLock::new((None, stderr_capture.maybe_read_thread())),
         };
         Ok(ReaderHandle {
             handle,
@@ -979,7 +978,7 @@ impl<'a> From<&'a Expression> for Expression {
 pub struct Handle {
     inner: HandleInner,
     result: OnceLock<(ExpressionStatus, Output)>,
-    readers: Mutex<(Option<ReaderThread>, Option<ReaderThread>)>,
+    readers: RwLock<(Option<ReaderThread>, Option<ReaderThread>)>,
 }
 
 impl Handle {
@@ -999,9 +998,9 @@ impl Handle {
     pub fn wait(&self) -> io::Result<&Output> {
         // Await the children and any threads that are reading their output.
         // Another caller may already have done this.
-        let (expression_status, output) = wait_on_handle_and_output(self)?;
-        // If the child returned a non-zero exit status, and that's a checked
-        // error, return the error.
+        let (expression_status, output) = wait_on_handle_and_output(self, WaitMode::Blocking)?
+            .expect("blocking wait shouldn't return None");
+        // If the child returned a "checked" non-zero exit status, make that an error.
         if expression_status.is_checked_error() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -1026,11 +1025,20 @@ impl Handle {
     /// error and return an `Output` even when the exit status is non-zero, use
     /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
     pub fn try_wait(&self) -> io::Result<Option<&Output>> {
-        if self.inner.wait(WaitMode::Nonblocking)?.is_none() {
-            Ok(None)
-        } else {
-            self.wait().map(Some)
+        // Check whether child processes and IO threads are finished.
+        let Some((expression_status, output)) =
+            wait_on_handle_and_output(self, WaitMode::NonBlocking)?
+        else {
+            return Ok(None);
+        };
+        // If the child returned a "checked" non-zero exit status, make that an error.
+        if expression_status.is_checked_error() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                expression_status.message(),
+            ));
         }
+        Ok(Some(output))
     }
 
     /// Wait for the running expression to finish, and then return a
@@ -1073,12 +1081,13 @@ impl Handle {
         // This wait cleans up the child but does not return an error for a
         // non-zero exit status.
         //
-        // Note that we *must not* call wait_on_handle_and_output here. There
-        // might be un-signaled grandchild processes holding the output pipe,
-        // and we can't expect them to exit promptly. We only want to reap our
-        // immediate zombie children here. See gotchas.md for more on why we
-        // can't do better.
-        self.inner.wait(WaitMode::Blocking)?;
+        // There might be un-signaled grandchild processes holding the output
+        // pipe, and we can't expect them to exit promptly. We only want to
+        // reap our immediate zombie children here. See gotchas.md for more on
+        // why we can't do better. (We could call wait_on_handle_and_output
+        // with WaitMode::ReapZombies, but there's no point in taking IO
+        // locks here.)
+        self.inner.wait(WaitMode::ReapZombies)?;
         Ok(())
     }
 
@@ -1089,48 +1098,57 @@ impl Handle {
     }
 }
 
-// Does a blocking wait on the handle, if it hasn't been awaited yet. This
-// includes collection the output results from reader threads. After calling
-// this function, the result cell is guaranteed to be populated. This does not
-// do any status checking.
-fn wait_on_handle_and_output(handle: &Handle) -> io::Result<&(ExpressionStatus, Output)> {
-    // Take the reader threads lock and then see if a result has already been
-    // collected. Doing this check inside the lock avoids racing to fill the
-    // result if it's empty.
-    let mut readers_lock = handle.readers.lock().expect("readers lock poisoned");
-    if let Some(result) = handle.result.get() {
-        // This handle has already been waited on. Return the same result
-        // again.
-        Ok(result)
-    } else {
-        // This handle hasn't been waited on yet. Do that now. If waiting on
-        // the children returns an error, just short-circuit with that. This
-        // shouldn't really happen.
-        let status = handle
-            .inner
-            .wait(WaitMode::Blocking)?
-            .expect("blocking wait can't return None");
-        // Now that we have an exit status, we need to join the output reader
-        // threads, if any. We're already holding the lock that we need.
-        let (stdout_reader, stderr_reader) = &mut *readers_lock;
-        // If either of the reader threads returned an error, just
-        // short-circuit with that. Future calls to this function will panic.
-        // But this really shouldn't happen.
-        let stdout = stdout_reader
-            .take()
-            .map(|t| t.join().expect("stdout reader error"))
-            .unwrap_or(Ok(Vec::new()))?;
-        let stderr = stderr_reader
-            .take()
-            .map(|t| t.join().expect("stderr reader error"))
-            .unwrap_or(Ok(Vec::new()))?;
-        let output = Output {
-            status: status.status,
-            stdout,
-            stderr,
-        };
-        Ok(handle.result.get_or_init(|| (status, output)))
+// Wait on the handle and on captured output. Depending on the mode, this wait might or might not
+// be blocking. This does not do any status checking.
+fn wait_on_handle_and_output(
+    handle: &Handle,
+    mode: WaitMode,
+) -> io::Result<Option<&(ExpressionStatus, Output)>> {
+    let Some(status) = handle.inner.wait(mode)? else {
+        return Ok(None);
+    };
+    // We need non-blocking waiters (try_wait) to be able to access the SharedThread IO readers,
+    // even while a blocking waiter (wait) is blocking, so we can't take RwLock::write until we
+    // know the threads have already exited.
+    let shared_lock = handle.readers.read().unwrap();
+    let (maybe_stdout_reader, maybe_stderr_reader) = &*shared_lock;
+    if let Some(stdout_reader) = maybe_stdout_reader {
+        if mode.maybe_join_io_thread(stdout_reader)?.is_none() {
+            return Ok(None);
+        }
     }
+    if let Some(stderr_reader) = maybe_stderr_reader {
+        if mode.maybe_join_io_thread(stderr_reader)?.is_none() {
+            return Ok(None);
+        }
+    }
+    drop(shared_lock);
+
+    // At this point we know that the child and all its IO threads (if any) have exited, so we can
+    // collect output without blocking. Take the RwLock::write lock and take ownership of the
+    // output vectors. If another thread has already done this, result.set() will be a no-op. If a
+    // reader thread encountered an IO error, it will only be returned
+    let mut unique_lock = handle.readers.write().unwrap();
+    let (maybe_stdout_reader, maybe_stderr_reader) = &mut *unique_lock;
+    let stdout: Vec<u8> = maybe_stdout_reader
+        .take()
+        .map(SharedThread::into_result)
+        .transpose()
+        .expect("IO errors already short-circuited")
+        .unwrap_or_default();
+    let stderr: Vec<u8> = maybe_stderr_reader
+        .take()
+        .map(SharedThread::into_result)
+        .transpose()
+        .expect("IO errors already short-circuited")
+        .unwrap_or_default();
+    let output = Output {
+        status: status.status,
+        stdout,
+        stderr,
+    };
+    let _ = handle.result.set((status, output)); // might already be set
+    Ok(handle.result.get())
 }
 
 #[derive(Debug)]
@@ -1242,10 +1260,7 @@ struct ChildHandle {
 
 impl ChildHandle {
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        let maybe_status = match mode {
-            WaitMode::Blocking => Some(self.child.wait()?),
-            WaitMode::Nonblocking => self.child.try_wait()?,
-        };
+        let maybe_status = mode.maybe_wait_on_child(&self.child)?;
         if let Some(status) = maybe_status {
             Ok(Some(ExpressionStatus {
                 status,
@@ -1298,7 +1313,7 @@ impl PipeHandle {
                 // Similarly, this private API wait should never return an
                 // error. It might return a non-zero status, but here that's
                 // still an Ok result.
-                left_handle.wait(WaitMode::Blocking)?;
+                left_handle.wait(WaitMode::ReapZombies)?;
                 Err(e)
             }
         }
@@ -1452,37 +1467,31 @@ impl StdinBytesHandle {
     ) -> io::Result<StdinBytesHandle> {
         let (reader, mut writer) = os_pipe::pipe()?;
         context.stdin = IoValue::Handle(into_file(reader));
-        let inner = expression.0.start(context)?;
-        // We only spawn the writer thread if the expression started
-        // successfully, so that start errors won't leak a zombie thread.
-        let thread = std::thread::spawn(move || writer.write_all(&input));
+        let inner_handle = expression.0.start(context)?;
+        let writer_thread = SharedThread::spawn(move || {
+            // Broken pipe errors are expected here. Suppress them.
+            match writer.write_all(&input) {
+                Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e),
+                _ => Ok(()),
+            }
+        });
         Ok(StdinBytesHandle {
-            inner_handle: inner,
-            writer_thread: SharedThread::new(thread),
+            inner_handle,
+            writer_thread,
         })
     }
 
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        // We're responsible for joining the writer thread and not leaving a zombie.
-        // But waiting on the inner child can return an error, and in that case we
-        // don't know whether the child is still running or not. The rule in
-        // nonblocking mode is "clean up as much as we can, but never block," so we
-        // can't wait on the writer thread. But the rule in blocking mode is "clean
-        // up everything, even if some cleanup returns errors," so we must wait
-        // regardless of what's going on with the child.
-        let wait_res = self.inner_handle.wait(mode);
-        if mode.should_join_background_thread(&wait_res) {
-            // Join the writer thread. Broken pipe errors here are expected if
-            // the child exited without reading all of its input, so we suppress
-            // them. Return other errors though.
-            match self.writer_thread.join() {
-                Err(err) if err.kind() != io::ErrorKind::BrokenPipe => {
-                    return Err(clone_io_error(err));
-                }
-                _ => {}
-            }
+        let maybe_status = self.inner_handle.wait(mode)?;
+        // Even if the child has exited, grandchild processes might still be reading from the
+        // writer thread. If the wait mode is Blocking, mode.maybe_join_io_thread will wait for
+        // the writer thread to finish (i.e. it will never return Ok(false)). Otherwise, if the IO
+        // thread is still
+        let io_finished = mode.maybe_join_io_thread(&self.writer_thread)?.is_some();
+        if !io_finished {
+            return Ok(None);
         }
-        wait_res
+        Ok(maybe_status)
     }
 
     fn kill(&self) -> io::Result<()> {
@@ -1812,20 +1821,36 @@ fn clone_io_error(error: &io::Error) -> io::Error {
 
 #[derive(Clone, Copy, Debug)]
 enum WaitMode {
-    Blocking,
-    Nonblocking,
+    Blocking,    // like .wait(), wait until everything is finished
+    NonBlocking, // like .try_wait(), never block
+    ReapZombies, // like .kill(), wait on child processes but don't join IO threads
 }
 
 impl WaitMode {
-    fn should_join_background_thread(
-        &self,
-        expression_result: &io::Result<Option<ExpressionStatus>>,
-    ) -> bool {
-        // Nonblocking waits can only join associated background threads if the
-        // running expression is finished (that is, when the thread is
-        // guaranteed to finish soon). Blocking waits should always join, even
-        // in the presence of errors.
-        matches!(self, WaitMode::Blocking) || matches!(expression_result, Ok(Some(_)))
+    fn maybe_wait_on_child(self, child: &SharedChild) -> io::Result<Option<ExitStatus>> {
+        match self {
+            WaitMode::Blocking | WaitMode::ReapZombies => child.wait().map(Some),
+            WaitMode::NonBlocking => child.try_wait(),
+        }
+    }
+
+    /// Returns Ok(true) if IO finished successfully, Ok(false) if IO is not yet finished (and the
+    /// mode is not Blocking), or Err(e) if IO failed with an error.
+    fn maybe_join_io_thread<T>(
+        self,
+        io_thread: &SharedThread<io::Result<T>>,
+    ) -> io::Result<Option<&T>> {
+        match self {
+            WaitMode::Blocking => match io_thread.join() {
+                Ok(val) => Ok(Some(val)),
+                Err(e) => Err(clone_io_error(e)),
+            },
+            WaitMode::ReapZombies | WaitMode::NonBlocking => match io_thread.try_join() {
+                Some(Ok(val)) => Ok(Some(val)),
+                Some(Err(e)) => Err(clone_io_error(e)),
+                None => Ok(None),
+            },
+        }
     }
 }
 
@@ -1847,7 +1872,7 @@ fn canonicalize_env_var_name(name: OsString) -> OsString {
     name
 }
 
-type ReaderThread = JoinHandle<io::Result<Vec<u8>>>;
+type ReaderThread = SharedThread<io::Result<Vec<u8>>>;
 
 #[derive(Debug)]
 struct OutputCaptureContext {
@@ -1877,7 +1902,7 @@ impl OutputCaptureContext {
     // Only spawn a read thread if the write pipe was used.
     fn maybe_read_thread(self) -> Option<ReaderThread> {
         if let Some((mut reader, _)) = self.pair.into_inner() {
-            Some(std::thread::spawn(move || {
+            Some(SharedThread::spawn(move || {
                 let mut output = Vec::new();
                 reader.read_to_end(&mut output)?;
                 Ok(output)
