@@ -656,3 +656,87 @@ fn test_pids() -> io::Result<()> {
 
     Ok(())
 }
+
+#[cfg(not(windows))]
+fn ps_observes_pid(pid: u32) -> io::Result<bool> {
+    let pid_str = &pid.to_string()[..];
+    let ps_output = cmd!("ps", "-p", pid_str)
+        .unchecked()
+        .stdout_capture()
+        .run()?;
+    let ps_str = String::from_utf8_lossy(&ps_output.stdout);
+    let ps_lines: Vec<&str> = ps_str.lines().collect();
+    // `ps` prints headers on the first line by default.
+    assert!(ps_lines.len() == 1 || ps_lines.len() == 2);
+    if ps_lines.len() == 2 {
+        assert!(ps_lines[1].contains(pid_str));
+        // The exit code should agree with the output.
+        assert!(ps_output.status.success());
+        Ok(true)
+    } else {
+        assert!(!ps_output.status.success());
+        Ok(false)
+    }
+}
+
+// We don't spawn reaper threads on Windows, and `ps` doesn't exist on Windows either.
+#[cfg(not(windows))]
+#[test]
+fn test_zombies_reaped() -> io::Result<()> {
+    let mut child_handles = Vec::new();
+    let mut child_pids = Vec::new();
+
+    // Spawn 10 children that will exit immediately.
+    let (mut stdout_reader, stdout_writer) = os_pipe::pipe()?;
+    for _ in 0..10 {
+        let handle = cmd!(path_to_exe("status"), "0")
+            .stdout_file(stdout_writer.try_clone()?)
+            .start()?;
+        child_pids.push(handle.pids()[0]);
+        child_handles.push(handle);
+    }
+
+    // Spawn 10 children that will wait on stdin to exit. The previous 10 children will probably
+    // exit while we're doing this.
+    let (stdin_reader, stdin_writer) = os_pipe::pipe()?;
+    for _ in 0..10 {
+        let handle = cmd!(path_to_exe("cat"))
+            .stdin_file(stdin_reader.try_clone()?)
+            .stdout_file(stdout_writer.try_clone()?)
+            .start()?;
+        child_pids.push(handle.pids()[0]);
+        child_handles.push(handle);
+    }
+    drop(stdin_reader);
+    drop(stdout_writer);
+
+    // Drop all the handles. The first 10 children will probably get reaped at this point without
+    // spawning a thread. The last 10 children definitely have not exited, and each of them will
+    // get a waiter thread.
+    drop(child_handles);
+
+    // Drop the stdin writer. Now the last 10 children will begin exiting.
+    drop(stdin_writer);
+
+    // Read the stdout pipe to EOF. This means all the children have exited. It's not a *guarantee*
+    // that `ps` won't still observe them, but this plus a few `ps` retries should be good enough.
+    // If this test starts spuriously failing, I'll need to double check this assumption.
+    let mut stdout_bytes = Vec::new();
+    stdout_reader.read_to_end(&mut stdout_bytes)?;
+    assert_eq!(stdout_bytes.len(), 0, "no output expected");
+
+    // Assert that all the children get cleaned up. This is a Unix-only test, so we can just shell
+    // out to `ps`.
+    for (i, pid) in child_pids.into_iter().enumerate() {
+        eprintln!("checking child #{i} (PID {pid})");
+        // Retry `ps` 100 times for each child, to be as confident as possible that the child has
+        // time to get reaped.
+        let mut tries = 0;
+        while ps_observes_pid(pid)? {
+            tries += 1;
+            assert!(tries < 100, "PID never went away?");
+        }
+    }
+
+    Ok(())
+}
