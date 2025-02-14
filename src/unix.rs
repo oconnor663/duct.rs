@@ -19,7 +19,7 @@ impl HandleExt for Handle {
 impl HandleExt for HandleInner {
     fn send_signal(&self, signal: libc::c_int) -> io::Result<()> {
         match *self {
-            HandleInner::Child(ref child_handle) => child_handle.child.send_signal(signal),
+            HandleInner::Child(ref child_handle) => child_handle.child().send_signal(signal),
             HandleInner::Pipe(ref pipe_handle) => pipe_handle.send_signal(signal),
             HandleInner::StdinBytes(ref stdin_bytes_handle) => {
                 stdin_bytes_handle.inner_handle.send_signal(signal)

@@ -500,30 +500,6 @@ fn test_no_argument() {
 }
 
 #[test]
-fn test_dropping_reader() {
-    // Use an explicit stderr pipe to test the ReaderHandle's drop behavior.
-    let (mut stderr_reader, stderr_writer) = os_pipe::pipe().unwrap();
-    let mut reader_handle = cmd!(path_to_exe("sleep"), "1000000")
-        .stdout_file(stderr_writer)
-        .reader()
-        .unwrap();
-    // A zero-length read doesn't block.
-    let n = reader_handle.read(&mut []).unwrap();
-    assert_eq!(n, 0);
-    // Try-wait returns None.
-    let output = reader_handle.try_wait().unwrap();
-    assert!(output.is_none());
-    // Now we drop the reader. This kills the child.
-    drop(reader_handle);
-    // Now that the child is killed, reading the stderr pipe will not block.
-    // (Note that our copy was closed when the temporary Expression above
-    // dropped.)
-    let mut stderr = Vec::new();
-    let n = stderr_reader.read_to_end(&mut stderr).unwrap();
-    assert_eq!(n, 0);
-}
-
-#[test]
 fn test_kill_with_grandchild_stderr_capture() -> io::Result<()> {
     // We're going to start a child process, and that child is going to start a
     // grandchild. The grandchild is going to sleep forever (1 day). We'll read

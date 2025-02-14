@@ -371,15 +371,16 @@ impl Expression {
     /// # Errors
     ///
     /// During execution, if one side of the pipe returns a non-zero exit
-    /// status, that becomes the status of the whole pipe, similar to Bash's
-    /// `pipefail` option. If both sides return non-zero, and one of them is
-    /// [`unchecked`](struct.Expression.html#method.unchecked), then the checked
-    /// side wins. Otherwise the right side wins.
+    /// status, that becomes the status of the whole pipe. If both sides return
+    /// non-zero, and one of them is
+    /// [`unchecked`](struct.Expression.html#method.unchecked), the checked
+    /// side wins. Otherwise the right side wins. This is close to the behavior
+    /// of Bash with `-o pipefail`.
     ///
-    /// During spawning, if the left side of the pipe spawns successfully, but
-    /// the right side fails to spawn, the left side will be killed and
-    /// awaited. That's necessary to return the spawn error immediately,
-    /// without leaking the left side as a zombie.
+    /// During spawning, if the left side of the pipe spawns successfully but
+    /// the right side fails to spawn (e.g. the binary doesn't exist), the left
+    /// side will be cleaned up without blocking, which might require spawning
+    /// a thread. See the [`Handle`] docs for more on this behavior.
     ///
     /// # Example
     ///
@@ -963,14 +964,14 @@ impl<'a> From<&'a Expression> for Expression {
 /// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
 /// `Handle` may be shared between multiple threads.
 ///
-/// Like `std::process::Child`, `Handle` doesn't do anything special in its
-/// destructor. If you drop a handle without waiting on it, child processes and
-/// background IO threads will keep running, and the children will become
-/// [zombie processes](https://en.wikipedia.org/wiki/Zombie_process) when they
-/// exit. That's a resource leak, similar to leaking memory or file handles.
-/// Note that in contrast to `Handle`, a
-/// [`ReaderHandle`](struct.ReaderHandle.html) kills child processes in its
-/// destructor, to avoid creating zombies.
+/// If you drop a `Handle` without first [`wait`][Handle::wait]ing on the child
+/// to exit, it will [`try_wait`][Handle::try_wait] to see if it can reap the
+/// child. If the child is still running, it will _spawn a thread_ to wait on
+/// the child. This is an expensive way to do cleanup, but it's the only
+/// portable way to avoid leaking [zombie
+/// processes](https://en.wikipedia.org/wiki/Zombie_process) on Unix. Windows
+/// doesn't have zombie processes, and this `Drop` implementation is omitted on
+/// Windows.
 ///
 /// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
 /// crate for implementation details behind making handles thread safe.
@@ -1212,7 +1213,7 @@ impl HandleInner {
 
     fn pids(&self) -> Vec<u32> {
         match self {
-            HandleInner::Child(child_handle) => vec![child_handle.child.id()],
+            HandleInner::Child(child_handle) => vec![child_handle.child().id()],
             HandleInner::Pipe(pipe_handle) => pipe_handle.pids(),
             HandleInner::StdinBytes(stdin_bytes_handle) => stdin_bytes_handle.inner_handle.pids(),
             HandleInner::Unchecked(inner_handle) => inner_handle.pids(),
@@ -1247,20 +1248,27 @@ fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> 
     let shared_child = SharedChild::spawn(&mut command)?;
     let command_string = format!("{:?}", argv);
     Ok(ChildHandle {
-        child: shared_child,
+        child: Some(shared_child),
         command_string,
     })
 }
 
 #[derive(Debug)]
 struct ChildHandle {
-    child: shared_child::SharedChild,
+    child: Option<shared_child::SharedChild>, // optional so that `drop` can take ownership
     command_string: String,
 }
 
 impl ChildHandle {
+    // a helper to reduce the need for .as_ref().unwrap() everywhere
+    fn child(&self) -> &SharedChild {
+        self.child
+            .as_ref()
+            .expect("ChildHandle should not yet have been dropped")
+    }
+
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
-        let maybe_status = mode.maybe_wait_on_child(&self.child)?;
+        let maybe_status = mode.maybe_wait_on_child(self.child())?;
         if let Some(status) = maybe_status {
             Ok(Some(ExpressionStatus {
                 status,
@@ -1273,7 +1281,60 @@ impl ChildHandle {
     }
 
     fn kill(&self) -> io::Result<()> {
-        self.child.kill()
+        self.child().kill()
+    }
+}
+
+// Use Drop to prevent zombie processes on Unix. Zombies aren't a thing on Windows, so omit the
+// entire impl there.
+//
+// Aside: Even without this impl, Expressions and Handles are recursive data structures, and we
+// could worry about recursive drop overflowing the stack. (This is an issue in linked list
+// implementations, see https://rust-unofficial.github.io/too-many-lists/first-drop.html.) But it
+// would take a pathological pipeline expression to trigger this, and I don't think it's worth
+// adding a bunch of tricky iterative drop code unless there's a serious use case.
+#[cfg(not(windows))]
+impl Drop for ChildHandle {
+    fn drop(&mut self) {
+        let child = self.child.take().expect("only drop should take the child");
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                // The child has been cleaned up. Cool.
+            }
+            Err(e) => {
+                // Ignore IO errors here unless we're running tests. It's hard to provoke these
+                // without doing something very weird (transmute, libc::waitpid, etc).
+                if cfg!(test) {
+                    panic!("ChildHandle cleanup failed: {e}");
+                }
+            }
+            Ok(None) => {
+                // The child is still running and will become a zombie when it exits. Spawn a
+                // reaper thread just to wait on it. This is an awfully expensive thing to do in a
+                // destructor, but the alternative is a resource leak. Use Builder::spawn instead
+                // of thread::spawn so that (as above) we can ignore errors if spawning fails
+                // somehow.
+                //
+                // Aside: Could we use one shared thread and send it PIDs over a channel, instead
+                // of spawning a new thread for each zombie? It's possible in general, but I don't
+                // think it's possible in portable library code. If we owned the SIGCHLD handler,
+                // we could have a shared thread .try_wait() on all the zombies every time SIGCHLD
+                // comes in. (That would technically be O(n^2), but that's the least of our
+                // problems.) Or if we used Linux-specific pidfd's, we could wait on all of them
+                // with epoll(). But we don't own the signal handler, and we don't want a strategy
+                // that only works on Linux, so I think thread-per-zombie is the right approach. A
+                // caller who genuinely wants to spawn a large number of zombies and doesn't want
+                // to pay the cost of spawning reaper threads is doing something quite...let's say
+                // "advanced"...and they should probably use std::process::Command or something
+                // even lower level instead of Duct.
+                let spawn_result = std::thread::Builder::new().spawn(move || {
+                    _ = child.wait();
+                });
+                if cfg!(test) {
+                    spawn_result.expect("failed to spawn a reaper thread");
+                }
+            }
+        }
     }
 }
 
@@ -1291,32 +1352,18 @@ impl PipeHandle {
         left_context.stdout = IoValue::Handle(into_file(writer));
         let mut right_context = context;
         right_context.stdin = IoValue::Handle(into_file(reader));
-
-        // Errors starting the left side just short-circuit us.
         let left_handle = left.0.start(left_context)?;
-
-        // Now the left side is started. If the right side fails to start, we
-        // can't let the left side turn into a zombie. We have to await it, and
-        // that means we have to kill it first.
-        let right_result = right.0.start(right_context);
-        match right_result {
-            Ok(right_handle) => Ok(PipeHandle {
-                left_handle,
-                right_handle,
-            }),
-            Err(e) => {
-                // Realistically, kill should never return an error. If it
-                // does, it's probably due to some bug in this library or one
-                // of its dependencies. If that happens just propagate the
-                // error and accept that we're probably leaking something.
-                left_handle.kill()?;
-                // Similarly, this private API wait should never return an
-                // error. It might return a non-zero status, but here that's
-                // still an Ok result.
-                left_handle.wait(WaitMode::ReapZombies)?;
-                Err(e)
-            }
-        }
+        // The left side has already started. If we fail to start the right
+        // side, ChildHandle::drop will clean it up one way or another. Note
+        // that `right_context` is passed by value here, so if start() returns
+        // an error, all pipe readers will already have been closed, and
+        // there's a decent chance the left side will exit quickly via EPIPE
+        // before we .try_wait() it in ChildHandle::drop.
+        let right_handle = right.0.start(right_context)?;
+        Ok(PipeHandle {
+            left_handle,
+            right_handle,
+        })
     }
 
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
@@ -1921,18 +1968,18 @@ impl OutputCaptureContext {
 /// returns a non-zero exit status, the read at EOF will return an error,
 /// unless you use [`unchecked`](struct.Expression.html#method.unchecked).
 ///
-/// If the reader is dropped before reaching EOF, it calls
-/// [`kill`](struct.ReaderHandle.html#method.kill) in its destructor.
-///
 /// Both `ReaderHandle` and `&ReaderHandle` implement
-/// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html). That
-/// makes it possible for one thread to
+/// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html). The
+/// latter makes it possible for one thread to
 /// [`kill`](struct.ReaderHandle.html#method.kill) the `ReaderHandle` while
 /// another thread is reading it. That can be useful for effectively canceling
 /// the read and unblocking the reader thread. However, note that killed child
 /// processes return a non-zero exit status, which is an error for the reader
 /// by default, unless you use
 /// [`unchecked`](struct.Expression.html#method.unchecked).
+///
+/// `ReaderHandle` contains a [`Handle`] internally, and it takes the same
+/// approach to cleaning up zombie processess on Unix.
 ///
 /// # Example
 ///
@@ -2056,14 +2103,6 @@ impl Read for ReaderHandle {
     /// error, just as [`run`](struct.Expression.html#method.run) would.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (&*self).read(buf)
-    }
-}
-
-impl Drop for ReaderHandle {
-    fn drop(&mut self) {
-        // Just call kill() unconditionally. If wait() has already happened,
-        // this has no effect.
-        let _ = self.handle.kill();
     }
 }
 
