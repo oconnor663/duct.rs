@@ -109,7 +109,6 @@ use std::os::windows::prelude::*;
 #[cfg(unix)]
 pub mod unix;
 
-mod shared_thread;
 use shared_thread::SharedThread;
 
 // enums defined below
@@ -1133,13 +1132,13 @@ fn wait_on_handle_and_output(
     let (maybe_stdout_reader, maybe_stderr_reader) = &mut *unique_lock;
     let stdout: Vec<u8> = maybe_stdout_reader
         .take()
-        .map(SharedThread::into_result)
+        .map(SharedThread::into_output)
         .transpose()
         .expect("IO errors already short-circuited")
         .unwrap_or_default();
     let stderr: Vec<u8> = maybe_stderr_reader
         .take()
-        .map(SharedThread::into_result)
+        .map(SharedThread::into_output)
         .transpose()
         .expect("IO errors already short-circuited")
         .unwrap_or_default();

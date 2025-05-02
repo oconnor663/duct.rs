@@ -13,6 +13,7 @@ edition = "2021"
 [dependencies]
 os_pipe = "1.0.0"
 shared_child = "1.0.0"
+shared_thread = "0.1.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.43"
