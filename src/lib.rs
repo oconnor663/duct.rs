@@ -89,6 +89,7 @@
 //! ```
 
 use shared_child::SharedChild;
+use shared_thread::SharedThread;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -108,8 +109,6 @@ use std::os::windows::prelude::*;
 /// Unix-specific extensions to duct, for sending signals.
 #[cfg(unix)]
 pub mod unix;
-
-use shared_thread::SharedThread;
 
 // enums defined below
 use ExpressionInner::*;
