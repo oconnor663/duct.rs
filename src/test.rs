@@ -686,6 +686,12 @@ fn test_zombies_reaped() -> io::Result<()> {
     drop(stdin_reader);
     drop(stdout_writer);
 
+    // At this point probably half the children have exited and become zombies, but all of the
+    // child PIDs should still be observable.
+    for &pid in &child_pids {
+        assert!(ps_observes_pid(pid)?);
+    }
+
     // Drop all the handles. The first 10 children will probably get reaped at this point without
     // spawning a thread. The last 10 children definitely have not exited, and each of them will
     // get a waiter thread.
@@ -710,7 +716,7 @@ fn test_zombies_reaped() -> io::Result<()> {
         let mut tries = 0;
         while ps_observes_pid(pid)? {
             tries += 1;
-            assert!(tries < 100, "PID never went away?");
+            assert!(tries < 100, "child #{i} (PID {pid}) never went away?");
         }
     }
 
