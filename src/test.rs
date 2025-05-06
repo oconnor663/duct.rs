@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 use std::sync::{Arc, Once};
+use std::time::Instant;
 
 // Include a copy of the sh function, because we have a lot of old tests that
 // use it, and it's a lot easier than managing a circular dependency between
@@ -524,15 +525,20 @@ fn test_kill_with_grandchild_stderr_capture() -> io::Result<()> {
     reader.read_exact(&mut started_read)?;
     assert_eq!(&started_read, b"started");
 
-    // Ok, we're going to kill() the child, which includes an implicit wait().
-    // The stderr_capture thread is still running, and it won't exit until the
-    // grandchild exits ("forever" i.e. in one day). If we try to join them,
-    // this will not return.
+    // Kill() the child. This does not wait.
     reader.kill()?;
 
-    // At this point the child has been reaped, but .try_wait() should still
-    // return Ok(None), because the stderr capture thread is still waiting.
-    assert!(reader.try_wait()?.is_none());
+    // At this point .try_wait() should still return Ok(None), because the stderr capture thread is
+    // still waiting. It won't exit until the grandchild exits ("forever" i.e. in one day). If we
+    // try to join IO threads, this will not return. Loop on this for 100ms to be sure it waits.
+    let start_time = Instant::now();
+    while Instant::now()
+        .saturating_duration_since(start_time)
+        .as_millis()
+        < 100
+    {
+        assert!(reader.try_wait()?.is_none());
+    }
 
     Ok(())
 }
@@ -562,15 +568,20 @@ fn test_kill_with_grandchild_stdin_bytes() -> io::Result<()> {
     reader.read_exact(&mut started_read)?;
     assert_eq!(&started_read, b"started");
 
-    // Ok, we're going to kill() the child, which includes an implicit wait().
-    // The stdin_bytes thread is still running, and it won't exit until the
-    // grandchild exits ("forever" i.e. in one day). If we try to join them,
-    // this will not return.
+    // Kill() the child. This does not wait.
     reader.kill()?;
 
-    // At this point the child has been reaped, but .try_wait() should still
-    // return Ok(None), because the stdin bytes thread is still waiting.
-    assert!(reader.try_wait()?.is_none());
+    // At this point .try_wait() should still return Ok(None), because the stdin bytes thread is
+    // still waiting. It won't exit until the grandchild exits ("forever" i.e. in one day). If we
+    // try to join IO threads, this will not return. Loop on this for 100ms to be sure it waits.
+    let start_time = Instant::now();
+    while Instant::now()
+        .saturating_duration_since(start_time)
+        .as_millis()
+        < 100
+    {
+        assert!(reader.try_wait()?.is_none());
+    }
 
     Ok(())
 }

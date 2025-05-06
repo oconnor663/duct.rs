@@ -1063,10 +1063,7 @@ impl Handle {
         Ok(output)
     }
 
-    /// Kill the running expression and await all the child processes. Any
-    /// errors that would normally result from a non-zero exit status are
-    /// ignored, as with
-    /// [`unchecked`](struct.Expression.html#method.unchecked).
+    /// Kill all the child processes in the running expression.
     ///
     /// Note that as with
     /// [`std::process::Child::kill`](https://doc.rust-lang.org/beta/std/process/struct.Child.html#method.kill),
@@ -1075,19 +1072,13 @@ impl Handle {
     /// spawned itself. See
     /// [`gotchas.md`](https://github.com/oconnor663/duct.py/blob/master/gotchas.md)
     /// for an extensive discussion of this behavior.
+    ///
+    /// This method does not wait on the child processes to exit. Calling [`wait`][Handle::wait]
+    /// after `kill` almost always returns quickly, but there are edge cases where it might not.
+    /// One case is if a child process is blocked reading an unresponsive FUSE filesystem. Another
+    /// is if a child process is paused by a debugger.
     pub fn kill(&self) -> io::Result<()> {
-        self.inner.kill()?;
-        // This wait cleans up the child but does not return an error for a
-        // non-zero exit status.
-        //
-        // There might be un-signaled grandchild processes holding the output
-        // pipe, and we can't expect them to exit promptly. We only want to
-        // reap our immediate zombie children here. See gotchas.md for more on
-        // why we can't do better. (We could call wait_on_handle_and_output
-        // with WaitMode::ReapZombies, but there's no point in taking IO
-        // locks here.)
-        self.inner.wait(WaitMode::ReapZombies)?;
-        Ok(())
+        self.inner.kill()
     }
 
     /// Return a `Vec<u32>` containing the PIDs of all of the child processes.
@@ -1326,6 +1317,7 @@ impl Drop for ChildHandle {
                 // "advanced"...and they should probably use std::process::Command or something
                 // even lower level instead of Duct.
                 let spawn_result = std::thread::Builder::new().spawn(move || {
+                    // TODO: replace this with Python's cleanup strategy
                     _ = child.wait();
                 });
                 if cfg!(test) {
@@ -1868,13 +1860,12 @@ fn clone_io_error(error: &io::Error) -> io::Error {
 enum WaitMode {
     Blocking,    // like .wait(), wait until everything is finished
     NonBlocking, // like .try_wait(), never block
-    ReapZombies, // like .kill(), wait on child processes but don't join IO threads
 }
 
 impl WaitMode {
     fn maybe_wait_on_child(self, child: &SharedChild) -> io::Result<Option<ExitStatus>> {
         match self {
-            WaitMode::Blocking | WaitMode::ReapZombies => child.wait().map(Some),
+            WaitMode::Blocking => child.wait().map(Some),
             WaitMode::NonBlocking => child.try_wait(),
         }
     }
@@ -1890,7 +1881,7 @@ impl WaitMode {
                 Ok(val) => Ok(Some(val)),
                 Err(e) => Err(clone_io_error(e)),
             },
-            WaitMode::ReapZombies | WaitMode::NonBlocking => match io_thread.try_join() {
+            WaitMode::NonBlocking => match io_thread.try_join() {
                 Some(Ok(val)) => Ok(Some(val)),
                 Some(Err(e)) => Err(clone_io_error(e)),
                 None => Ok(None),
@@ -2050,13 +2041,9 @@ impl ReaderHandle {
         self.handle.try_wait()
     }
 
-    /// Kill the underlying expression and await all the child processes.
+    /// Kill all the child processes in the running expression.
     ///
-    /// Any errors that would normally result from a non-zero exit status are
-    /// ignored during this wait, as with
-    /// [`Handle::kill`](struct.Handle.html#method.kill).
-    ///
-    /// Note that as with
+    /// See [`Handle::kill`]. Note that as with
     /// [`std::process::Child::kill`](https://doc.rust-lang.org/beta/std/process/struct.Child.html#method.kill),
     /// this does not kill any grandchild processes that the children have
     /// spawned on their own. It only kills the child processes that Duct
