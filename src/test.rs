@@ -647,6 +647,10 @@ fn test_pids() -> io::Result<()> {
 #[cfg(not(windows))]
 fn ps_observes_pid(pid: u32) -> io::Result<bool> {
     let pid_str = &pid.to_string()[..];
+    // One of the tricky details here is that best-effort zombie cleanup is triggered by subsequent
+    // calls to ChildHandle::start, so the fact that `ps_observes_pid` uses Duct internally is a
+    // load-bearing implementation detail. If we used std::process::Command here, some of the
+    // asserts in test_zombies_reaped would fail.
     let ps_output = cmd!("ps", "-p", pid_str)
         .unchecked()
         .stdout_capture()
@@ -719,7 +723,10 @@ fn test_zombies_reaped() -> io::Result<()> {
     assert_eq!(stdout_bytes.len(), 0, "no output expected");
 
     // Assert that all the children get cleaned up. This is a Unix-only test, so we can just shell
-    // out to `ps`.
+    // out to `ps`. One of the tricky details here is that best-effort zombie cleanup is triggered
+    // by subsequent calls to ChildHandle::start, so the fact that `ps_observes_pid` uses Duct
+    // internally is a load-bearing implementation detail. If we used std::process::Command, some
+    // of these asserts would fail.
     for (i, pid) in child_pids.into_iter().enumerate() {
         eprintln!("checking child #{i} (PID {pid})");
         // Retry `ps` 100 times for each child, to be as confident as possible that the child has

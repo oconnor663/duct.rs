@@ -962,14 +962,12 @@ impl<'a> From<&'a Expression> for Expression {
 /// most of the methods on `Handle` take `&self` rather than `&mut self`, and a
 /// `Handle` may be shared between multiple threads.
 ///
-/// If you drop a `Handle` without first [`wait`][Handle::wait]ing on the child
-/// to exit, it will [`try_wait`][Handle::try_wait] to see if it can reap the
-/// child. If the child is still running, it will _spawn a thread_ to wait on
-/// the child. This is an expensive way to do cleanup, but it's the only
-/// portable way to avoid leaking [zombie
-/// processes](https://en.wikipedia.org/wiki/Zombie_process) on Unix. Windows
-/// doesn't have zombie processes, and this `Drop` implementation is omitted on
-/// Windows.
+/// If you drop a `Handle` without first [`wait`][Handle::wait]ing on the child to exit, it will
+/// [`try_wait`][Handle::try_wait] internally to see if it can reap the child. If the child is
+/// still running, its handle will be added to a global list and polled whenever new child
+/// processes are spawned. This avoids leaking [zombie
+/// processes](https://en.wikipedia.org/wiki/Zombie_process) on Unix platforms. (This `Drop`
+/// implementation is omitted on Windows, where zombies aren't a problem.)
 ///
 /// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
 /// crate for implementation details behind making handles thread safe.
@@ -1151,7 +1149,7 @@ enum ExpressionInner {
 impl ExpressionInner {
     fn start(&self, context: IoContext) -> io::Result<HandleInner> {
         Ok(match self {
-            Cmd(argv) => HandleInner::Child(start_argv(argv, context)?),
+            Cmd(argv) => HandleInner::Child(ChildHandle::start(argv, context)?),
             Pipe(left, right) => {
                 HandleInner::Pipe(Box::new(PipeHandle::start(left, right, context)?))
             }
@@ -1210,36 +1208,38 @@ impl HandleInner {
     }
 }
 
-fn start_argv(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> {
-    let exe = canonicalize_exe_path_for_dir(&argv[0], &context)?;
-    let mut command = Command::new(exe);
-    command.args(&argv[1..]);
-    if !matches!(context.stdin, IoValue::ParentStdin) {
-        command.stdin(context.stdin.into_stdio()?);
+// Use std::process::Child instead of SharedChild to avoid taking extra locks when we poll.
+#[cfg(not(windows))]
+static LEAKED_CHILDREN: RwLock<Vec<std::process::Child>> = RwLock::new(Vec::new());
+
+// In `impl Drop for ChildHandle` below, children who are still running when they're dropped get
+// added to this global list. Poll the list to reap as many zombie children as possible each time
+// we spawn a new child process. See the comments in the Drop impl regarding tradeoffs.
+#[cfg(not(windows))]
+fn cleanup_leaked_children() {
+    if !LEAKED_CHILDREN.read().unwrap().is_empty() {
+        LEAKED_CHILDREN.write().unwrap().retain_mut(|child| {
+            match child.try_wait() {
+                Ok(Some(_)) => false, // remove
+                Ok(None) => true,     // retain
+                Err(e) => {
+                    // try_wait errors require odd circumstances to trigger. For example, something
+                    // else might call libc::waitpid (or its safe wrapper from `nix`) and reap the
+                    // child, causing us to get a "process not found" error here. If that happens
+                    // in a test, go ahead and panic, but otherwise ignore the error. The most
+                    // important thing is that we don't leave the whole process in a broken state
+                    // where every future call to ChildHandle::start returns an error. Also, it
+                    // might not be helpful or appropriate to report this error to our caller.
+                    // Remember that this is lazy, global cleanup of some state that might belong
+                    // to some other thread, running code from some other crate. Let it go...
+                    if cfg!(test) {
+                        panic!("cleanup_leaked_children failed: {e}");
+                    }
+                    false // remove
+                }
+            }
+        });
     }
-    if !matches!(context.stdout, IoValue::ParentStdout) {
-        command.stdout(context.stdout.into_stdio()?);
-    }
-    if !matches!(context.stderr, IoValue::ParentStderr) {
-        command.stderr(context.stderr.into_stdio()?);
-    }
-    if let Some(dir) = context.dir {
-        command.current_dir(dir);
-    }
-    command.env_clear();
-    for (name, val) in context.env {
-        command.env(name, val);
-    }
-    // The innermost hooks are pushed last, and we execute them last.
-    for hook in context.before_spawn_hooks.iter() {
-        hook.call(&mut command)?;
-    }
-    let shared_child = SharedChild::spawn(&mut command)?;
-    let command_string = format!("{:?}", argv);
-    Ok(ChildHandle {
-        child: Some(shared_child),
-        command_string,
-    })
 }
 
 #[derive(Debug)]
@@ -1249,6 +1249,42 @@ struct ChildHandle {
 }
 
 impl ChildHandle {
+    fn start(argv: &[OsString], context: IoContext) -> io::Result<ChildHandle> {
+        // See comments in the Drop impl below.
+        #[cfg(not(windows))]
+        cleanup_leaked_children();
+
+        let exe = canonicalize_exe_path_for_dir(&argv[0], &context)?;
+        let mut command = Command::new(exe);
+        command.args(&argv[1..]);
+        if !matches!(context.stdin, IoValue::ParentStdin) {
+            command.stdin(context.stdin.into_stdio()?);
+        }
+        if !matches!(context.stdout, IoValue::ParentStdout) {
+            command.stdout(context.stdout.into_stdio()?);
+        }
+        if !matches!(context.stderr, IoValue::ParentStderr) {
+            command.stderr(context.stderr.into_stdio()?);
+        }
+        if let Some(dir) = context.dir {
+            command.current_dir(dir);
+        }
+        command.env_clear();
+        for (name, val) in context.env {
+            command.env(name, val);
+        }
+        // The innermost hooks are pushed last, and we execute them last.
+        for hook in context.before_spawn_hooks.iter() {
+            hook.call(&mut command)?;
+        }
+        let shared_child = SharedChild::spawn(&mut command)?;
+        let command_string = format!("{:?}", argv);
+        Ok(ChildHandle {
+            child: Some(shared_child),
+            command_string,
+        })
+    }
+
     // a helper to reduce the need for .as_ref().unwrap() everywhere
     fn child(&self) -> &SharedChild {
         self.child
@@ -1276,54 +1312,39 @@ impl ChildHandle {
 
 // Use Drop to prevent zombie processes on Unix. Zombies aren't a thing on Windows, so omit the
 // entire impl there.
-//
-// Aside: Even without this impl, Expressions and Handles are recursive data structures, and we
-// could worry about recursive drop overflowing the stack. (This is an issue in linked list
-// implementations, see https://rust-unofficial.github.io/too-many-lists/first-drop.html.) But it
-// would take a pathological pipeline expression to trigger this, and I don't think it's worth
-// adding a bunch of tricky iterative drop code unless there's a serious use case.
 #[cfg(not(windows))]
 impl Drop for ChildHandle {
     fn drop(&mut self) {
         let child = self.child.take().expect("only drop should take the child");
         match child.try_wait() {
-            Ok(Some(_)) => {
-                // The child has been cleaned up. Cool.
-            }
+            // The child has been cleaned up. Cool.
+            Ok(Some(_)) => (),
+
+            // Ignore IO errors here unless we're running tests. It's hard to provoke these without
+            // doing something very weird (transmute, libc::waitpid, etc).
             Err(e) => {
-                // Ignore IO errors here unless we're running tests. It's hard to provoke these
-                // without doing something very weird (transmute, libc::waitpid, etc).
                 if cfg!(test) {
                     panic!("ChildHandle cleanup failed: {e}");
                 }
             }
-            Ok(None) => {
-                // The child is still running and will become a zombie when it exits. Spawn a
-                // reaper thread just to wait on it. This is an awfully expensive thing to do in a
-                // destructor, but the alternative is a resource leak. Use Builder::spawn instead
-                // of thread::spawn so that (as above) we can ignore errors if spawning fails
-                // somehow.
-                //
-                // Aside: Could we use one shared thread and send it PIDs over a channel, instead
-                // of spawning a new thread for each zombie? It's possible in general, but I don't
-                // think it's possible in portable library code. If we owned the SIGCHLD handler,
-                // we could have a shared thread .try_wait() on all the zombies every time SIGCHLD
-                // comes in. (That would technically be O(n^2), but that's the least of our
-                // problems.) Or if we used Linux-specific pidfd's, we could wait on all of them
-                // with epoll(). But we don't own the signal handler, and we don't want a strategy
-                // that only works on Linux, so I think thread-per-zombie is the right approach. A
-                // caller who genuinely wants to spawn a large number of zombies and doesn't want
-                // to pay the cost of spawning reaper threads is doing something quite...let's say
-                // "advanced"...and they should probably use std::process::Command or something
-                // even lower level instead of Duct.
-                let spawn_result = std::thread::Builder::new().spawn(move || {
-                    // TODO: replace this with Python's cleanup strategy
-                    _ = child.wait();
-                });
-                if cfg!(test) {
-                    spawn_result.expect("failed to spawn a reaper thread");
-                }
-            }
+
+            // This child is still running, but the caller is never going to wait on it. Add it to
+            // a global list of (potentially) zombie children. We poll this list whenever we spawn
+            // new child processes, to mitigate leaks. This is the same strategy used in the
+            // CPython `subprocess` module:
+            //   - https://github.com/python/cpython/blob/v3.13.3/Lib/subprocess.py#L1133-L1146
+            //   - https://github.com/python/cpython/blob/v3.13.3/Lib/subprocess.py#L268-L285
+            // The main downside of this strategy is that spawning N child processes becomes O(N^2)
+            // if you leak all of them and they're all long-lived. I think that's an ok tradeoff
+            // for a couple of reasons:
+            //   1. Dropping un-waited-for child handles isn't usually what you want to be doing in
+            //      your happy path, because it means you can't hear about error codes your
+            //      children return. Children whose handles are retained don't enter this list and
+            //      don't contribute to O(N^2) behavior.
+            //   2. Callers who do "very advanced" things (say, a systemd clone) probably shouldn't
+            //      be using Duct. They need more fine-grained control than Duct is designed to
+            //      provide.
+            Ok(None) => LEAKED_CHILDREN.write().unwrap().push(child.into_inner()),
         }
     }
 }
