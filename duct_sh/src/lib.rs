@@ -136,15 +136,17 @@ fn shell_command_argv(command: OsString) -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_sh() {
-        let out = ::sh("echo hi").read().unwrap();
+        let out = sh("echo hi").read().unwrap();
         assert_eq!("hi", out);
     }
 
     #[test]
     fn test_sh_dangerous() {
-        let out = ::sh_dangerous("echo hi".to_owned()).read().unwrap();
+        let out = sh_dangerous("echo hi".to_owned()).read().unwrap();
         assert_eq!("hi", out);
     }
 }

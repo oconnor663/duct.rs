@@ -6,6 +6,7 @@ description = "a sub-crate for the sh function, formerly in duct"
 repository = "https://github.com/oconnor663/duct.rs/tree/master/duct_sh"
 documentation = "https://docs.rs/duct_sh"
 license = "MIT"
+edition = "2021"
 
 [dependencies]
 duct = { path = "../", version = "0.13" }
