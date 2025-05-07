@@ -966,8 +966,8 @@ impl<'a> From<&'a Expression> for Expression {
 /// [`try_wait`][Handle::try_wait] internally to see if it can reap the child. If the child is
 /// still running, its handle will be added to a global list and polled whenever new child
 /// processes are spawned. This avoids leaking [zombie
-/// processes](https://en.wikipedia.org/wiki/Zombie_process) on Unix platforms. (This `Drop`
-/// implementation is omitted on Windows, where zombies aren't a problem.)
+/// processes](https://en.wikipedia.org/wiki/Zombie_process) on Unix platforms. This `Drop`
+/// implementation is omitted on Windows, where zombies aren't a problem.
 ///
 /// See the [`shared_child`](https://github.com/oconnor663/shared_child.rs)
 /// crate for implementation details behind making handles thread safe.
@@ -1114,8 +1114,8 @@ fn wait_on_handle_and_output(
 
     // At this point we know that the child and all its IO threads (if any) have exited, so we can
     // collect output without blocking. Take the RwLock::write lock and take ownership of the
-    // output vectors. If another thread has already done this, result.set() will be a no-op. If a
-    // reader thread encountered an IO error, it will only be returned
+    // output vectors. If another thread has already done this, .unwrap_or_default() will return
+    // empty Vecs, and result.set() will be a no-op.
     let mut unique_lock = handle.readers.write().unwrap();
     let (maybe_stdout_reader, maybe_stderr_reader) = &mut *unique_lock;
     let stdout: Vec<u8> = maybe_stdout_reader
