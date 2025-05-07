@@ -1,6 +1,6 @@
 [package]
 name = "duct_sh"
-version = "0.13.7"
+version = "1.0.0"
 authors = ["oconnor663@gmail.com"]
 description = "a sub-crate for the sh function, formerly in duct"
 repository = "https://github.com/oconnor663/duct.rs/tree/master/duct_sh"
@@ -9,4 +9,4 @@ license = "MIT"
 edition = "2021"
 
 [dependencies]
-duct = { path = "../", version = "0.13" }
+duct = { path = "../", version = "1" }
