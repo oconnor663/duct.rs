@@ -451,13 +451,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    #[cfg(not(windows))]
-    pub fn stdin_file<T: IntoRawFd>(&self, file: T) -> Expression {
-        Self::new(Io(StdinFile(into_file(file)), self.clone()))
-    }
-    #[cfg(windows)]
-    pub fn stdin_file<T: IntoRawHandle>(&self, file: T) -> Expression {
-        Self::new(Io(StdinFile(into_file(file)), self.clone()))
+    pub fn stdin_file<T: Into<FdOrHandle>>(&self, file: T) -> Expression {
+        Self::new(Io(StdinFile(file.into()), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as input for an expression.
@@ -518,13 +513,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    #[cfg(not(windows))]
-    pub fn stdout_file<T: IntoRawFd>(&self, file: T) -> Expression {
-        Self::new(Io(StdoutFile(into_file(file)), self.clone()))
-    }
-    #[cfg(windows)]
-    pub fn stdout_file<T: IntoRawHandle>(&self, file: T) -> Expression {
-        Self::new(Io(StdoutFile(into_file(file)), self.clone()))
+    pub fn stdout_file<T: Into<FdOrHandle>>(&self, file: T) -> Expression {
+        Self::new(Io(StdoutFile(file.into()), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as output for an expression.
@@ -638,13 +628,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    #[cfg(not(windows))]
-    pub fn stderr_file<T: IntoRawFd>(&self, file: T) -> Expression {
-        Self::new(Io(StderrFile(into_file(file)), self.clone()))
-    }
-    #[cfg(windows)]
-    pub fn stderr_file<T: IntoRawHandle>(&self, file: T) -> Expression {
-        Self::new(Io(StderrFile(into_file(file)), self.clone()))
+    pub fn stderr_file<T: Into<FdOrHandle>>(&self, file: T) -> Expression {
+        Self::new(Io(StderrFile(file.into()), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as error output for an expression.
@@ -1360,9 +1345,9 @@ impl PipeHandle {
         let (reader, writer) = os_pipe::pipe()?;
         // dup'ing stdin/stdout isn't strictly necessary, but no big deal
         let mut left_context = context.try_clone()?;
-        left_context.stdout = IoValue::Handle(into_file(writer));
+        left_context.stdout = IoValue::Handle(writer.into());
         let mut right_context = context;
-        right_context.stdin = IoValue::Handle(into_file(reader));
+        right_context.stdin = IoValue::Handle(reader.into());
         let left_handle = left.0.start(left_context)?;
         // The left side has already started. If we fail to start the right
         // side, ChildHandle::drop will clean it up one way or another. Note
@@ -1447,7 +1432,7 @@ fn start_io(
             )?)));
         }
         StdinPath(p) => {
-            context.stdin = IoValue::Handle(File::open(p)?);
+            context.stdin = IoValue::Handle(File::open(p)?.into());
         }
         StdinFile(f) => {
             context.stdin = IoValue::Handle(f.try_clone()?);
@@ -1456,7 +1441,7 @@ fn start_io(
             context.stdin = IoValue::Null;
         }
         StdoutPath(p) => {
-            context.stdout = IoValue::Handle(File::create(p)?);
+            context.stdout = IoValue::Handle(File::create(p)?.into());
         }
         StdoutFile(f) => {
             context.stdout = IoValue::Handle(f.try_clone()?);
@@ -1465,13 +1450,13 @@ fn start_io(
             context.stdout = IoValue::Null;
         }
         StdoutCapture => {
-            context.stdout = IoValue::Handle(into_file(context.stdout_capture.write_pipe()?));
+            context.stdout = IoValue::Handle(context.stdout_capture.write_pipe()?.into());
         }
         StdoutToStderr => {
             context.stdout = context.stderr.try_clone()?;
         }
         StderrPath(p) => {
-            context.stderr = IoValue::Handle(File::create(p)?);
+            context.stderr = IoValue::Handle(File::create(p)?.into());
         }
         StderrFile(f) => {
             context.stderr = IoValue::Handle(f.try_clone()?);
@@ -1480,7 +1465,7 @@ fn start_io(
             context.stderr = IoValue::Null;
         }
         StderrCapture => {
-            context.stderr = IoValue::Handle(into_file(context.stderr_capture.write_pipe()?));
+            context.stderr = IoValue::Handle(context.stderr_capture.write_pipe()?.into());
         }
         StderrToStdout => {
             context.stderr = context.stdout.try_clone()?;
@@ -1524,7 +1509,7 @@ impl StdinBytesHandle {
         input: Arc<Vec<u8>>,
     ) -> io::Result<StdinBytesHandle> {
         let (reader, mut writer) = os_pipe::pipe()?;
-        context.stdin = IoValue::Handle(into_file(reader));
+        context.stdin = IoValue::Handle(reader.into());
         let inner_handle = expression.0.start(context)?;
         let writer_thread = SharedThread::spawn(move || {
             // Broken pipe errors are expected here. Suppress them.
@@ -1561,15 +1546,15 @@ impl StdinBytesHandle {
 enum IoExpressionInner {
     StdinBytes(Arc<Vec<u8>>),
     StdinPath(PathBuf),
-    StdinFile(File),
+    StdinFile(FdOrHandle),
     StdinNull,
     StdoutPath(PathBuf),
-    StdoutFile(File),
+    StdoutFile(FdOrHandle),
     StdoutNull,
     StdoutCapture,
     StdoutToStderr,
     StderrPath(PathBuf),
-    StderrFile(File),
+    StderrFile(FdOrHandle),
     StderrNull,
     StderrCapture,
     StderrToStdout,
@@ -1663,10 +1648,7 @@ enum IoValue {
     ParentStdout,
     ParentStderr,
     Null,
-    // We store all handles as File, even when they're e.g. anonymous pipes,
-    // using the into_file() conversion below. The File type is a very thin
-    // wrapper around the raw handle, but it gives us try_clone() and drop().
-    Handle(File),
+    Handle(FdOrHandle),
 }
 
 impl IoValue {
@@ -1689,24 +1671,6 @@ impl IoValue {
             IoValue::Handle(f) => f.into(),
         })
     }
-}
-
-// We would rather convert an fd-owning object directly into a
-// std::process::Stdio, since all you can do with that is give it to a
-// std::process::Command. Unfortunately, Stdio doesn't provide a try_clone
-// method, and we need that in order to pass the object to multiple children.
-// As a workaround, convert the object to a std::fs::File. All we will use this
-// File for is try_clone and Into<Stdio>, which should be sound on any type of
-// descriptor. (Some types will lead to an error, like a TcpStream, but that's
-// not unsound.) If we discover any unsound cases, we might have to replace
-// this with a new trait.
-#[cfg(not(windows))]
-fn into_file<T: IntoRawFd>(handle: T) -> File {
-    unsafe { File::from_raw_fd(handle.into_raw_fd()) }
-}
-#[cfg(windows)]
-fn into_file<T: IntoRawHandle>(handle: T) -> File {
-    unsafe { File::from_raw_handle(handle.into_raw_handle()) }
 }
 
 // This struct keeps track of a child exit status, whether or not it's been
@@ -2111,6 +2075,11 @@ impl Read for ReaderHandle {
         (&*self).read(buf)
     }
 }
+
+#[cfg(not(windows))]
+type FdOrHandle = OwnedFd;
+#[cfg(windows)]
+type FdOrHandle = OwnedHandle;
 
 #[cfg(test)]
 mod test;
