@@ -230,7 +230,7 @@ fn test_input() {
 
 #[test]
 fn test_stderr() {
-    let (mut reader, writer) = ::os_pipe::pipe().unwrap();
+    let (mut reader, writer) = std::io::pipe().unwrap();
     sh("echo hi>&2").stderr_file(writer).run().unwrap();
     let mut s = String::new();
     reader.read_to_string(&mut s).unwrap();
@@ -476,7 +476,7 @@ fn test_path_sanitization() {
 
 #[test]
 fn test_before_spawn_hook() {
-    let (reader, mut writer) = os_pipe::pipe().unwrap();
+    let (reader, mut writer) = std::io::pipe().unwrap();
     let expr = cmd!(path_to_exe("cat")).before_spawn(move |cmd| {
         let reader_clone = reader.try_clone()?;
         cmd.stdin(reader_clone);
@@ -678,7 +678,7 @@ fn test_zombies_reaped() -> io::Result<()> {
     let mut child_pids = Vec::new();
 
     // Spawn 10 children that will exit immediately.
-    let (mut stdout_reader, stdout_writer) = os_pipe::pipe()?;
+    let (mut stdout_reader, stdout_writer) = std::io::pipe()?;
     for _ in 0..10 {
         let handle = cmd!(path_to_exe("status"), "0")
             .stdout_file(stdout_writer.try_clone()?)
@@ -689,7 +689,7 @@ fn test_zombies_reaped() -> io::Result<()> {
 
     // Spawn 10 children that will wait on stdin to exit. The previous 10 children will probably
     // exit while we're doing this.
-    let (stdin_reader, stdin_writer) = os_pipe::pipe()?;
+    let (stdin_reader, stdin_writer) = std::io::pipe()?;
     for _ in 0..10 {
         let handle = cmd!(path_to_exe("cat"))
             .stdin_file(stdin_reader.try_clone()?)

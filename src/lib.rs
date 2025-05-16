@@ -1347,7 +1347,7 @@ struct PipeHandle {
 
 impl PipeHandle {
     fn start(left: &Expression, right: &Expression, context: IoContext) -> io::Result<PipeHandle> {
-        let (reader, writer) = os_pipe::pipe()?;
+        let (reader, writer) = std::io::pipe()?;
         // dup'ing stdin/stdout isn't strictly necessary, but no big deal
         let mut left_context = context.try_clone()?;
         left_context.stdout = IoValue::Handle(writer.into());
@@ -1513,7 +1513,7 @@ impl StdinBytesHandle {
         mut context: IoContext,
         input: Arc<Vec<u8>>,
     ) -> io::Result<StdinBytesHandle> {
-        let (reader, mut writer) = os_pipe::pipe()?;
+        let (reader, mut writer) = std::io::pipe()?;
         context.stdin = IoValue::Handle(reader.into());
         let inner_handle = expression.0.start(context)?;
         let writer_thread = SharedThread::spawn(move || {
@@ -1669,9 +1669,9 @@ impl IoValue {
 
     fn into_stdio(self) -> io::Result<Stdio> {
         Ok(match self {
-            IoValue::ParentStdin => os_pipe::dup_stdin()?.into(),
-            IoValue::ParentStdout => os_pipe::dup_stdout()?.into(),
-            IoValue::ParentStderr => os_pipe::dup_stderr()?.into(),
+            IoValue::ParentStdin => try_clone_to_owned(std::io::stdin())?.into(),
+            IoValue::ParentStdout => try_clone_to_owned(std::io::stdout())?.into(),
+            IoValue::ParentStderr => try_clone_to_owned(std::io::stderr())?.into(),
             IoValue::Null => Stdio::null(),
             IoValue::Handle(f) => f.into(),
         })
@@ -1902,7 +1902,7 @@ type ReaderThread = SharedThread<io::Result<Vec<u8>>>;
 
 #[derive(Debug)]
 struct OutputCaptureContext {
-    pair: OnceLock<(os_pipe::PipeReader, os_pipe::PipeWriter)>,
+    pair: OnceLock<(std::io::PipeReader, std::io::PipeWriter)>,
 }
 
 impl OutputCaptureContext {
@@ -1912,12 +1912,12 @@ impl OutputCaptureContext {
         }
     }
 
-    fn write_pipe(&self) -> io::Result<os_pipe::PipeWriter> {
+    fn write_pipe(&self) -> io::Result<std::io::PipeWriter> {
         // OnceLock::get_or_try_init would be nice if it stabilizes.
         match self.pair.get() {
             Some((_, writer)) => writer.try_clone(),
             None => {
-                let (reader, writer) = os_pipe::pipe()?;
+                let (reader, writer) = std::io::pipe()?;
                 let clone = writer.try_clone();
                 self.pair.set((reader, writer)).unwrap();
                 clone
@@ -2012,7 +2012,7 @@ impl OutputCaptureContext {
 #[derive(Debug)]
 pub struct ReaderHandle {
     handle: Handle,
-    reader: os_pipe::PipeReader,
+    reader: std::io::PipeReader,
 }
 
 impl ReaderHandle {
@@ -2096,6 +2096,15 @@ fn owned_from_raw(raw: impl IntoRawFd) -> OwnedFd {
 #[cfg(windows)]
 fn owned_from_raw(raw: impl IntoRawHandle) -> OwnedHandle {
     unsafe { OwnedHandle::from_raw_handle(raw.into_raw_handle()) }
+}
+
+#[cfg(not(windows))]
+fn try_clone_to_owned(handle: impl AsFd) -> io::Result<OwnedFd> {
+    handle.as_fd().try_clone_to_owned()
+}
+#[cfg(windows)]
+fn try_clone_to_owned(handle: impl AsHandle) -> io::Result<OwnedHandle> {
+    handle.as_handle().try_clone_to_owned()
 }
 
 #[cfg(test)]
