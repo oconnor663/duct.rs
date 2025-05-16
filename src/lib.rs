@@ -106,6 +106,11 @@ use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 
+#[cfg(not(windows))]
+use std::os::fd::IntoRawFd as IntoRawFdOrHandle;
+#[cfg(windows)]
+use std::os::windows::io::IntoRawHandle as IntoRawFdOrHandle;
+
 /// Unix-specific extensions to duct, for sending signals.
 #[cfg(unix)]
 pub mod unix;
@@ -451,8 +456,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stdin_file<T: Into<FdOrHandle>>(&self, file: T) -> Expression {
-        Self::new(Io(StdinFile(file.into()), self.clone()))
+    pub fn stdin_file<T: IntoRawFdOrHandle>(&self, file: T) -> Expression {
+        Self::new(Io(StdinFile(owned_from_raw(file)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as input for an expression.
@@ -513,8 +518,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stdout_file<T: Into<FdOrHandle>>(&self, file: T) -> Expression {
-        Self::new(Io(StdoutFile(file.into()), self.clone()))
+    pub fn stdout_file<T: IntoRawFdOrHandle>(&self, file: T) -> Expression {
+        Self::new(Io(StdoutFile(owned_from_raw(file)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as output for an expression.
@@ -628,8 +633,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stderr_file<T: Into<FdOrHandle>>(&self, file: T) -> Expression {
-        Self::new(Io(StderrFile(file.into()), self.clone()))
+    pub fn stderr_file<T: IntoRawFdOrHandle>(&self, file: T) -> Expression {
+        Self::new(Io(StderrFile(owned_from_raw(file)), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as error output for an expression.
@@ -2080,6 +2085,18 @@ impl Read for ReaderHandle {
 type FdOrHandle = OwnedFd;
 #[cfg(windows)]
 type FdOrHandle = OwnedHandle;
+
+// Without these conversions this crate could be 100% safe code, so this is kind of a shame, but I
+// don't want to change the trait bounds on stdin_file/stdout_file/stderr_file. There are types
+// that implement IntoRawFd but not Into<OwnedFd>, including RawFd itself.
+#[cfg(not(windows))]
+fn owned_from_raw(raw: impl IntoRawFd) -> OwnedFd {
+    unsafe { OwnedFd::from_raw_fd(raw.into_raw_fd()) }
+}
+#[cfg(windows)]
+fn owned_from_raw(raw: impl IntoRawHandle) -> OwnedHandle {
+    unsafe { OwnedHandle::from_raw_handle(raw.into_raw_handle()) }
+}
 
 #[cfg(test)]
 mod test;
