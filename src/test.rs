@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 use std::sync::{Arc, Once};
-use std::time::Instant;
+#[cfg(feature = "timeout")]
+use std::time::{Duration, Instant};
 
 // Include a copy of the sh function, because we have a lot of old tests that
 // use it, and it's a lot easier than managing a circular dependency between
@@ -528,17 +529,21 @@ fn test_kill_with_grandchild_stderr_capture() -> io::Result<()> {
     // Kill() the child. This does not wait.
     reader.kill()?;
 
-    // At this point .try_wait() should still return Ok(None), because the stderr capture thread is
-    // still waiting. It won't exit until the grandchild exits ("forever" i.e. in one day). If we
-    // try to join IO threads, this will not return. Loop on this for 100ms to be sure it waits.
-    let start_time = Instant::now();
-    while Instant::now()
-        .saturating_duration_since(start_time)
-        .as_millis()
-        < 100
+    // .wait_timeout() should block until the timeout expires and then return Ok(None), because the
+    // stderr capture thread is still running. Check the clock to make sure it doesn't return too
+    // quickly. (wait_timeout calls wait_deadline internally, so this effectively tests both.)
+    #[cfg(feature = "timeout")]
     {
-        assert!(reader.try_wait()?.is_none());
+        let start = Instant::now();
+        assert!(reader
+            .handle
+            .wait_timeout(Duration::from_millis(100))?
+            .is_none());
+        assert!(Instant::now() - start > Duration::from_millis(50));
     }
+
+    // .try_wait() should also return Ok(None).
+    assert!(reader.try_wait()?.is_none());
 
     Ok(())
 }
@@ -571,17 +576,21 @@ fn test_kill_with_grandchild_stdin_bytes() -> io::Result<()> {
     // Kill() the child. This does not wait.
     reader.kill()?;
 
-    // At this point .try_wait() should still return Ok(None), because the stdin bytes thread is
-    // still waiting. It won't exit until the grandchild exits ("forever" i.e. in one day). If we
-    // try to join IO threads, this will not return. Loop on this for 100ms to be sure it waits.
-    let start_time = Instant::now();
-    while Instant::now()
-        .saturating_duration_since(start_time)
-        .as_millis()
-        < 100
+    // .wait_timeout() should block until the timeout expires and then return Ok(None), because the
+    // stdin bytes thread is still running. Check the clock to make sure it doesn't return too
+    // quickly. (wait_timeout calls wait_deadline internally, so this effectively tests both.)
+    #[cfg(feature = "timeout")]
     {
-        assert!(reader.try_wait()?.is_none());
+        let start = Instant::now();
+        assert!(reader
+            .handle
+            .wait_timeout(Duration::from_millis(100))?
+            .is_none());
+        assert!(Instant::now() - start > Duration::from_millis(50));
     }
+
+    // .try_wait() should also return Ok(None).
+    assert!(reader.try_wait()?.is_none());
 
     Ok(())
 }
@@ -738,5 +747,30 @@ fn test_zombies_reaped() -> io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "timeout")]
+fn test_wait_timeout_and_deadline() -> io::Result<()> {
+    // Use a pipe as a poor man's &&.
+    let handle = cmd!(path_to_exe("sleep"), "0.250")
+        .pipe(cmd!(path_to_exe("echo"), "hi"))
+        .stdout_capture()
+        .start()
+        .unwrap();
+
+    assert!(handle.wait_timeout(Duration::from_millis(1))?.is_none());
+    assert!(handle
+        .wait_deadline(Instant::now() + Duration::from_millis(1))?
+        .is_none());
+    let output1 = handle
+        .wait_timeout(Duration::from_millis(10_000))?
+        .expect("should exit");
+    let output2 = handle
+        .wait_deadline(Instant::now() + Duration::from_millis(10_000))?
+        .expect("should exit");
+    assert_eq!(output1, output2);
+    assert_eq!(output1.stdout, b"hi\n");
     Ok(())
 }

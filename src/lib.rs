@@ -942,7 +942,7 @@ impl<'a> From<&'a Expression> for Expression {
     }
 }
 
-/// A handle to a running expression, returned by the
+/// A handle to a running [`Expression`], returned by the
 /// [`start`](struct.Expression.html#method.start) method.
 ///
 /// Calling `start` followed by
@@ -969,50 +969,58 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// Wait for the running expression to finish, and return a reference to its
+    /// Wait for the running [`Expression`] to finish, and return a reference to its
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
-    /// Multiple threads may wait at the same time.
+    /// Multiple threads may wait at the same time, and waiting more than once returns the same
+    /// output again.
     ///
     /// # Errors
     ///
     /// In addition to all the IO errors possible with
-    /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
-    /// `wait` will return an
-    /// [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
-    /// IO error if child returns a non-zero exit status. To suppress this
-    /// error and return an `Output` even when the exit status is non-zero, use
-    /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
+    /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html), `wait`
+    /// will return an [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
+    /// IO error if the child returns a non-zero exit status. To suppress this error and return an
+    /// `Output` even when the exit status is non-zero, use the
+    /// [`unchecked`](struct.Expression.html#method.unchecked) method.
     pub fn wait(&self) -> io::Result<&Output> {
-        // Await the children and any threads that are reading their output.
-        // Another caller may already have done this.
-        let (expression_status, output) = wait_on_handle_and_output(self, WaitMode::Blocking)?
-            .expect("blocking wait shouldn't return None");
-        // If the child returned a "checked" non-zero exit status, make that an error.
-        if expression_status.is_checked_error() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                expression_status.message(),
-            ));
-        }
-        Ok(output)
+        wait_on_handle_and_output(self, WaitMode::Blocking)?;
+        self.try_wait().transpose().expect("already exited")
     }
 
-    /// Check whether the running expression is finished. If it is, return a
-    /// reference to its
+    /// Same as [`wait`][Self::wait], but with a timeout. If the running [`Expression`] finishes
+    /// within the timeout (or if it's already finished), return a reference to its
     /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
-    /// If it's still running, return `Ok(None)`.
+    /// Otherwise, return `Ok(None)`.
     ///
     /// # Errors
     ///
-    /// In addition to all the IO errors possible with
-    /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
-    /// `try_wait` will return an
-    /// [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
-    /// IO error if child returns a non-zero exit status. To suppress this
-    /// error and return an `Output` even when the exit status is non-zero, use
-    /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
+    /// Same as [`wait`][Self::wait].
+    #[cfg(feature = "timeout")]
+    pub fn wait_timeout(&self, timeout: std::time::Duration) -> io::Result<Option<&Output>> {
+        let deadline = std::time::Instant::now() + timeout;
+        self.wait_deadline(deadline)
+    }
+
+    /// Same as [`wait_timeout`][Self::wait_timeout], but with a deadline instead of a timeout.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`wait`][Self::wait].
+    #[cfg(feature = "timeout")]
+    pub fn wait_deadline(&self, deadline: std::time::Instant) -> io::Result<Option<&Output>> {
+        wait_on_handle_and_output(self, WaitMode::Deadline(deadline))?;
+        self.try_wait()
+    }
+
+    /// Check whether the running [`Expression`] has already finished. If it has, return a
+    /// reference to its
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html).
+    /// Otherwise, return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`wait`][Self::wait].
     pub fn try_wait(&self) -> io::Result<Option<&Output>> {
-        // Check whether child processes and IO threads are finished.
         let Some((expression_status, output)) =
             wait_on_handle_and_output(self, WaitMode::NonBlocking)?
         else {
@@ -1028,30 +1036,21 @@ impl Handle {
         Ok(Some(output))
     }
 
-    /// Wait for the running expression to finish, and then return a
-    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html)
-    /// object containing the results, including any captured output. This
-    /// consumes the `Handle`. Calling
-    /// [`start`](struct.Expression.html#method.start) followed by
-    /// `into_output` is equivalent to
-    /// [`run`](struct.Expression.html#method.run).
+    /// Same as [`wait`][Self::wait], but consume the `Handle` and return its
+    /// [`std::process::Output`](https://doc.rust-lang.org/std/process/struct.Output.html) by
+    /// value. Calling [`start`](struct.Expression.html#method.start) followed by `into_output` is
+    /// equivalent to [`run`](struct.Expression.html#method.run).
     ///
     /// # Errors
     ///
-    /// In addition to all the IO errors possible with
-    /// [`std::process::Child`](https://doc.rust-lang.org/std/process/struct.Child.html),
-    /// `into_output` will return an
-    /// [`ErrorKind::Other`](https://doc.rust-lang.org/std/io/enum.ErrorKind.html)
-    /// IO error if child returns a non-zero exit status. To suppress this
-    /// error and return an `Output` even when the exit status is non-zero, use
-    /// the [`unchecked`](struct.Expression.html#method.unchecked) method.
+    /// Same as [`wait`][Self::wait].
     pub fn into_output(self) -> io::Result<Output> {
         self.wait()?;
         let (_, output) = self.result.into_inner().expect("result missing");
         Ok(output)
     }
 
-    /// Kill all the child processes in the running expression.
+    /// Kill all the child processes in the running [`Expression`].
     ///
     /// Note that as with
     /// [`std::process::Child::kill`](https://doc.rust-lang.org/beta/std/process/struct.Child.html#method.kill),
@@ -1062,9 +1061,11 @@ impl Handle {
     /// for an extensive discussion of this behavior.
     ///
     /// This method does not wait on the child processes to exit. Calling [`wait`][Handle::wait]
-    /// after `kill` almost always returns quickly, but there are edge cases where it might not.
-    /// One case is if a child process is blocked reading an unresponsive FUSE filesystem. Another
-    /// is if a child process is paused by a debugger.
+    /// after `kill` usually returns quickly, but there are edge cases where it might not.
+    /// The most common case is if a grandchild process has inherited one or more of the child's
+    /// stdin/stdout/stderr pipes, and a worker thread
+    /// One such case is if a child process is blocked reading an unresponsive FUSE filesystem.
+    /// Another is if a child process is paused by a debugger.
     pub fn kill(&self) -> io::Result<()> {
         self.inner.kill()
     }
@@ -1848,8 +1849,13 @@ fn clone_io_error(error: &io::Error) -> io::Error {
 
 #[derive(Clone, Copy, Debug)]
 enum WaitMode {
-    Blocking,    // like .wait(), wait until everything is finished
-    NonBlocking, // like .try_wait(), never block
+    // block until everything is finished, as in .wait()
+    Blocking,
+    // don't block at all, as in .try_wait()
+    NonBlocking,
+    // block with a deadline, as in .wait_deadline() or .wait_timeout()
+    #[cfg(feature = "timeout")]
+    Deadline(std::time::Instant),
 }
 
 impl WaitMode {
@@ -1857,6 +1863,8 @@ impl WaitMode {
         match self {
             WaitMode::Blocking => child.wait().map(Some),
             WaitMode::NonBlocking => child.try_wait(),
+            #[cfg(feature = "timeout")]
+            WaitMode::Deadline(deadline) => child.wait_deadline(deadline),
         }
     }
 
@@ -1872,6 +1880,12 @@ impl WaitMode {
                 Err(e) => Err(clone_io_error(e)),
             },
             WaitMode::NonBlocking => match io_thread.try_join() {
+                Some(Ok(val)) => Ok(Some(val)),
+                Some(Err(e)) => Err(clone_io_error(e)),
+                None => Ok(None),
+            },
+            #[cfg(feature = "timeout")]
+            WaitMode::Deadline(deadline) => match io_thread.join_deadline(deadline) {
                 Some(Ok(val)) => Ok(Some(val)),
                 Some(Err(e)) => Err(clone_io_error(e)),
                 None => Ok(None),

@@ -22,6 +22,8 @@ jobs:
         toolchain: ${{ matrix.rust_version }}
         override: true
     - run: cargo test
+    - run: cargo test --no-default-features
+    - run: cargo test --all-features
     - name: test duct_sh
       run: cargo test
       working-directory: ./duct_sh

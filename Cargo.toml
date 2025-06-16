@@ -12,8 +12,12 @@ edition = "2021"
 
 [dependencies]
 os_pipe = "1.0.0"
-shared_child = "1.0.0"
-shared_thread = "0.1.0"
+shared_child = { version = "1.1.0", default-features = false }
+shared_thread = "0.2.0"
+
+[features]
+default = ["timeout"]
+timeout = ["shared_child/timeout"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.43"
