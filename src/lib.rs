@@ -180,15 +180,14 @@ macro_rules! cmd {
     };
 }
 
-/// The central objects in Duct, Expressions are created with
-/// [`cmd`](fn.cmd.html) or [`cmd!`](macro.cmd.html), combined with
-/// [`pipe`](struct.Expression.html#method.pipe), and finally executed with
-/// [`run`](struct.Expression.html#method.run),
-/// [`read`](struct.Expression.html#method.read),
+/// The central objects in Duct, created with
+/// [`cmd`](fn.cmd.html) or [`cmd!`](macro.cmd.html).
+///
+/// Expressions can be combined with [`pipe`](struct.Expression.html#method.pipe) and executed with
+/// [`run`](struct.Expression.html#method.run), [`read`](struct.Expression.html#method.read),
 /// [`start`](struct.Expression.html#method.start), or
-/// [`reader`](struct.Expression.html#method.reader). They also support several
-/// methods to control their execution, like
-/// [`stdin_bytes`](struct.Expression.html#method.stdin_bytes),
+/// [`reader`](struct.Expression.html#method.reader). There are many other methods to control their
+/// execution, like [`stdin_bytes`](struct.Expression.html#method.stdin_bytes),
 /// [`stdout_capture`](struct.Expression.html#method.stdout_capture),
 /// [`env`](struct.Expression.html#method.env), and
 /// [`unchecked`](struct.Expression.html#method.unchecked).
@@ -207,13 +206,13 @@ macro_rules! cmd {
 /// # use duct::cmd;
 /// # fn main() -> std::io::Result<()> {
 /// // Only suppress stderr on the left side.
-/// cmd!("foo").stderr_null().pipe(cmd!("bar")).run()?;
+/// cmd!("foo").stderr_null().pipe(cmd!("bar")).run()?; // foo 2>/dev/null | bar
 ///
 /// // Only suppress stderr on the right side.
-/// cmd!("foo").pipe(cmd!("bar").stderr_null()).run()?;
+/// cmd!("foo").pipe(cmd!("bar").stderr_null()).run()?; // foo | bar 2>/dev/null
 ///
 /// // Suppress stderr on both sides.
-/// cmd!("foo").pipe(cmd!("bar")).stderr_null().run()?;
+/// cmd!("foo").pipe(cmd!("bar")).stderr_null().run()?; // (foo | bar) 2>/dev/null
 /// # Ok(())
 /// # }
 /// ```
@@ -1061,11 +1060,12 @@ impl Handle {
     /// for an extensive discussion of this behavior.
     ///
     /// This method does not wait on the child processes to exit. Calling [`wait`][Handle::wait]
-    /// after `kill` usually returns quickly, but there are edge cases where it might not.
-    /// The most common case is if a grandchild process has inherited one or more of the child's
-    /// stdin/stdout/stderr pipes, and a worker thread
-    /// One such case is if a child process is blocked reading an unresponsive FUSE filesystem.
-    /// Another is if a child process is paused by a debugger.
+    /// after `kill` usually returns quickly, but there are edge cases where it might not. The most
+    /// common case is if a grandchild process has inherited one or more of the child's
+    /// stdin/stdout/stderr pipes, and a worker thread related to
+    /// [`stdin_bytes`][Expression::stdin_bytes]/[`stdout_capture][Expression::stdout_capture]/[`stderr_capture][Expression::stderr_capture]
+    /// is still running. The kill signal might also be delayed if the child is blocked reading an
+    /// unresponsive FUSE filesystem, or paused by a debugger.
     pub fn kill(&self) -> io::Result<()> {
         self.inner.kill()
     }
