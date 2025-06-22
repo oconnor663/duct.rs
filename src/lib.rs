@@ -1532,10 +1532,12 @@ impl StdinBytesHandle {
 
     fn wait(&self, mode: WaitMode) -> io::Result<Option<ExpressionStatus>> {
         let maybe_status = self.inner_handle.wait(mode)?;
-        // Even if the child has exited, grandchild processes might still be reading from the
-        // writer thread. If the wait mode is Blocking, mode.maybe_join_io_thread will wait for
-        // the writer thread to finish (i.e. it will never return Ok(false)). Otherwise, if the IO
-        // thread is still
+        // Even if the child has exited, some grandchild process might keep this pipe open and keep
+        // reading from it. It's tempting not to wait for this IO thread at all and just let it run
+        // in the background, but that wouldn't work if the current process exited. (When the main
+        // function returns and the process exits, all background threads are terminated.) Waiting
+        // on this Handle might be the last thing the caller does in main, who knows, so for
+        // correctness a blocking waiter does need to wait until this IO thread is finished.
         let io_finished = mode.maybe_join_io_thread(&self.writer_thread)?.is_some();
         if !io_finished {
             return Ok(None);
