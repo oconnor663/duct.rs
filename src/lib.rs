@@ -88,6 +88,7 @@
 //! # }
 //! ```
 
+use env_name_str::EnvNameString;
 use shared_child::SharedChild;
 use shared_thread::SharedThread;
 use std::collections::HashMap;
@@ -110,6 +111,8 @@ use std::os::windows::prelude::*;
 use std::os::fd::IntoRawFd as IntoRawFdOrHandle;
 #[cfg(windows)]
 use std::os::windows::io::IntoRawHandle as IntoRawFdOrHandle;
+
+mod env_name_str;
 
 /// Unix-specific extensions to duct, for sending signals.
 #[cfg(unix)]
@@ -771,10 +774,7 @@ impl Expression {
         T: Into<OsString>,
         U: Into<OsString>,
     {
-        Self::new(Io(
-            Env(canonicalize_env_var_name(name.into()), val.into()),
-            self.clone(),
-        ))
+        Self::new(Io(Env(name.into().into(), val.into()), self.clone()))
     }
 
     /// Remove a variable from the expression's environment.
@@ -803,10 +803,7 @@ impl Expression {
     where
         T: Into<OsString>,
     {
-        Self::new(Io(
-            EnvRemove(canonicalize_env_var_name(name.into())),
-            self.clone(),
-        ))
+        Self::new(Io(EnvRemove(name.into().into()), self.clone()))
     }
 
     /// Set the expression's entire environment, from a collection of
@@ -841,7 +838,7 @@ impl Expression {
     {
         let env_map = name_vals
             .into_iter()
-            .map(|(k, v)| (canonicalize_env_var_name(k.into()), v.into()))
+            .map(|(k, v)| (k.into().into(), v.into()))
             .collect();
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
@@ -1568,9 +1565,9 @@ enum IoExpressionInner {
     StderrToStdout,
     StdoutStderrSwap,
     Dir(PathBuf),
-    Env(OsString, OsString),
-    EnvRemove(OsString),
-    FullEnv(HashMap<OsString, OsString>),
+    Env(EnvNameString, OsString),
+    EnvRemove(EnvNameString),
+    FullEnv(HashMap<EnvNameString, OsString>),
     Unchecked,
     BeforeSpawn(BeforeSpawnHook),
 }
@@ -1614,7 +1611,7 @@ struct IoContext<'a> {
     stdout_capture: &'a OutputCaptureContext,
     stderr_capture: &'a OutputCaptureContext,
     dir: Option<PathBuf>,
-    env: HashMap<OsString, OsString>,
+    env: HashMap<EnvNameString, OsString>,
     before_spawn_hooks: Vec<BeforeSpawnHook>,
 }
 
@@ -1631,7 +1628,7 @@ impl<'a> IoContext<'a> {
             stdout_capture,
             stderr_capture,
             dir: None,
-            env: std::env::vars_os().collect(),
+            env: std::env::vars_os().map(|(k, v)| (k.into(), v)).collect(),
             before_spawn_hooks: Vec::new(),
         }
     }
@@ -1894,24 +1891,6 @@ impl WaitMode {
             },
         }
     }
-}
-
-#[cfg(windows)]
-fn canonicalize_env_var_name(name: OsString) -> OsString {
-    // On Windows, because env vars are case-insensitive, we uppercase all env
-    // var names. That makes assignments and deletions in our internal map work
-    // the same way they would on the real environment.
-    match name.into_string() {
-        Ok(name) => name.to_uppercase().into(),
-        // If the name isn't valid Unicode then just leave it as is.
-        Err(name) => name,
-    }
-}
-
-#[cfg(not(windows))]
-fn canonicalize_env_var_name(name: OsString) -> OsString {
-    // No-op on all other platforms.
-    name
 }
 
 type ReaderThread = SharedThread<io::Result<Vec<u8>>>;
