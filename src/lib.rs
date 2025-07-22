@@ -1631,7 +1631,9 @@ impl<'a> IoContext<'a> {
             stdout_capture,
             stderr_capture,
             dir: None,
-            env: std::env::vars_os().collect(),
+            env: std::env::vars_os()
+                .map(|(name, val)| (canonicalize_env_var_name(name), val))
+                .collect(),
             before_spawn_hooks: Vec::new(),
         }
     }
@@ -1902,7 +1904,10 @@ fn canonicalize_env_var_name(name: OsString) -> OsString {
     // var names. That makes assignments and deletions in our internal map work
     // the same way they would on the real environment.
     match name.into_string() {
-        Ok(name) => name.to_uppercase().into(),
+        Ok(mut name) => {
+            name.make_ascii_uppercase();
+            name.into()
+        }
         // If the name isn't valid Unicode then just leave it as is.
         Err(name) => name,
     }
