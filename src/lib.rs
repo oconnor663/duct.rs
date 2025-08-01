@@ -1247,6 +1247,12 @@ impl ChildHandle {
 
         let exe = canonicalize_exe_path_for_dir(&argv[0], &context)?;
         let mut command = Command::new(exe);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         command.args(&argv[1..]);
         if !matches!(context.stdin, IoValue::ParentStdin) {
             command.stdin(context.stdin.into_stdio()?);
