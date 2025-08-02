@@ -50,7 +50,13 @@ impl Hash for EnvNameString {
         // On Windows, env var names are case-insensitive
         #[cfg(windows)]
         match self.0.to_str() {
-            Some(s) => s.to_ascii_uppercase().hash(state),
+            Some(s) => {
+                // Uppercase each byte separately to avoid reallocating. This is similar to what
+                // eq_ignore_ascii_case does internally.
+                for &b in s.as_bytes() {
+                    b.to_ascii_uppercase().hash(state);
+                }
+            }
             // If the name isn't valid Unicode then just leave it as is.
             None => self.0.hash(state),
         }
