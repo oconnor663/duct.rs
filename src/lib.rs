@@ -774,7 +774,7 @@ impl Expression {
         T: Into<OsString>,
         U: Into<OsString>,
     {
-        Self::new(Io(Env(name.into().into(), val.into()), self.clone()))
+        Self::new(Io(Env(EnvNameString::from(name), val.into()), self.clone()))
     }
 
     /// Remove a variable from the expression's environment.
@@ -803,7 +803,7 @@ impl Expression {
     where
         T: Into<OsString>,
     {
-        Self::new(Io(EnvRemove(name.into().into()), self.clone()))
+        Self::new(Io(EnvRemove(EnvNameString::from(name)), self.clone()))
     }
 
     /// Set the expression's entire environment, from a collection of
@@ -838,7 +838,7 @@ impl Expression {
     {
         let env_map = name_vals
             .into_iter()
-            .map(|(k, v)| (k.into().into(), v.into()))
+            .map(|(k, v)| (EnvNameString::from(k), v.into()))
             .collect();
         Self::new(Io(FullEnv(env_map), self.clone()))
     }
