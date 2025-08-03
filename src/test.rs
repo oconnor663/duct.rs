@@ -421,7 +421,7 @@ fn test_env_remove_case_sensitivity() {
     // Set an environment variable in the parent. Note that it's important that
     // no other tests use this variable name, because the test runner is
     // multithreaded.
-    let var_name = "TEST_ENV_REMOVE_CASE_SENSITIVITY";
+    let var_name = "TeSt_EnV_rEmOvE_cAsE_sEnSiTiViTy";
     env::set_var(var_name, "abc123");
 
     // Run a command that tries to clear the same variable, but in lowercase.
