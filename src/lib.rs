@@ -1480,6 +1480,10 @@ fn start_io(
             context.dir = Some(p.clone());
         }
         Env(name, val) => {
+            // Note that HashMap::insert overwrites a preexisting *value*, but not a preexisting
+            // *key*. We rely on this to match platform behavior on Windows, where the original
+            // casing of a variable name is preserved even if an equivalent name with a different
+            // casing is added.
             context.env.insert(name.clone(), val.clone());
         }
         EnvRemove(name) => {
