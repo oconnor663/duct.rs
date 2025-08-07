@@ -421,7 +421,7 @@ fn test_env_remove_case_sensitivity() {
     // Set an environment variable in the parent. Note that it's important that
     // no other tests use this variable name, because the test runner is
     // multithreaded.
-    let var_name = "TEST_ENV_REMOVE_CASE_SENSITIVITY";
+    let var_name = "TeSt_EnV_rEmOvE_cAsE_sEnSiTiViTy";
     env::set_var(var_name, "abc123");
 
     // Run a command that tries to clear the same variable, but in lowercase.
@@ -447,6 +447,130 @@ fn test_env_remove_case_sensitivity() {
         assert_eq!(output1, "");
     } else {
         assert_eq!(output1, "abc123");
+    }
+}
+
+#[test]
+fn test_env_case_preserving() {
+    // Even on Windows, environment variable names are case-preserving. Also, overwriting an
+    // existing env var with a new value does *not* change the casing of the name. (To do that, you
+    // have to remove it first.)
+    let var_name = "TeSt_EnV_cAsE_pReSeRvInG";
+    let var_value = "A unique value that no other var in the environment has. Banana.";
+
+    // Read the name of that variable as seen by a child process. Case should be preserved.
+    assert_eq!(
+        cmd!(path_to_exe("print_env_name"), var_value)
+            .env(var_name, var_value)
+            .read()
+            .unwrap(),
+        var_name,
+    );
+
+    // Use .env() twice, the second time with a different casing. On Unix that's a distinct
+    // variable, and the first var is unchanged. On Windows the value of the first var is changed,
+    // but the name is not.
+    let new_value = "Another unique value that no other var in the environment has. Rutabaga.";
+    #[cfg(windows)]
+    {
+        // No variable has the original value.
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), var_value)
+                // Note: outer modifiers are applied before inner ones.
+                .env(var_name.to_lowercase(), new_value)
+                .env(var_name, var_value)
+                .read()
+                .unwrap(),
+            "",
+        );
+        // The variable with the new value still has the original casing.
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), new_value)
+                // Note: outer modifiers are applied before inner ones.
+                .env(var_name.to_lowercase(), new_value)
+                .env(var_name, var_value)
+                .read()
+                .unwrap(),
+            var_name,
+        );
+        // But doing a removal (in any casing) in between makes the new casing visible.
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), new_value)
+                // Note: outer modifiers are applied before inner ones.
+                .env(var_name.to_lowercase(), new_value)
+                .env_remove(var_name.to_uppercase())
+                .env(var_name, var_value)
+                .read()
+                .unwrap(),
+            var_name.to_lowercase(),
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        // The original variable and the new variable are distinct.
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), var_value)
+                .env(var_name, var_value)
+                .env(var_name.to_lowercase(), new_value)
+                .read()
+                .unwrap(),
+            var_name,
+        );
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), new_value)
+                .env(var_name, var_value)
+                .env(var_name.to_lowercase(), new_value)
+                .read()
+                .unwrap(),
+            var_name.to_lowercase(),
+        );
+    }
+
+    // Double check that env vars in the actual OS environment (as opposed to our `.env()`) behave
+    // the same way. (Do this last so that they're not visible to the tests above.)
+    env::set_var(var_name, var_value);
+    env::set_var(var_name.to_lowercase(), new_value);
+    #[cfg(windows)]
+    {
+        // No variable has the original value.
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), var_value)
+                .read()
+                .unwrap(),
+            "",
+        );
+        // The variable with the new value still has the original casing.
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), new_value)
+                .read()
+                .unwrap(),
+            var_name,
+        );
+        // But doing a removal (in any casing) in between makes the new casing visible.
+        env::remove_var(var_name.to_uppercase());
+        env::set_var(var_name.to_lowercase(), new_value);
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), new_value)
+                .read()
+                .unwrap(),
+            var_name.to_lowercase(),
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        // The original variable and the new variable are distinct.
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), var_value)
+                .read()
+                .unwrap(),
+            var_name,
+        );
+        assert_eq!(
+            cmd!(path_to_exe("print_env_name"), new_value)
+                .read()
+                .unwrap(),
+            var_name.to_lowercase(),
+        );
     }
 }
 
