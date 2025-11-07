@@ -27,3 +27,8 @@ jobs:
     - name: test duct_sh
       run: cargo test
       working-directory: ./duct_sh
+    # One more run with a very long test duration for test_pipe_inheritance.
+    - name: run test_pipe_inheritance for 5 minutes
+      run: cargo test --all-features
+      env:
+        DUCT_RACE_TEST_SECONDS: 300

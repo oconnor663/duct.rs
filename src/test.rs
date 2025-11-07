@@ -10,6 +10,10 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
+#[cfg(feature = "timeout")]
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+#[cfg(feature = "timeout")]
+use std::sync::Barrier;
 use std::sync::{Arc, Once};
 #[cfg(feature = "timeout")]
 use std::time::{Duration, Instant};
@@ -897,4 +901,113 @@ fn test_wait_timeout_and_deadline() -> io::Result<()> {
     assert_eq!(output1, output2);
     assert_eq!(output1.stdout, b"hi\n");
     Ok(())
+}
+
+/// Spawn lots of child processes, 100 `cat`s and 100 `sleep`s at a time, for a fixed number of
+/// seconds (longer in CI). The goal is to see whether any of the `sleep`s inherits the write end
+/// of a pipe that one of the `cat`s is trying to read. If so, that `cat` will hang. Detect that
+/// with a `wait_timeout`, and fail if we see it.
+///
+/// This test is most relevant in Python, where the standard library doesn't protect
+/// `subprocess.Popen` with a global mutex, which means that spawning child processes from multiple
+/// threads is prone to deadlocks on Windows. The updated `close_fds=True` default in Python 3.7+
+/// is a workaround, and the Python version of this tests exercises that. The Rust standard library
+/// has a global `Mutex` that prevents that particular race. However, Python's `close_fds` feature
+/// also works around a bug on macOS, where there's no `pipe2` syscall, so we can't open pipes and
+/// mark them `CLOEXEC` atomically. Rust is vulnerable to this race, and the main thing we're
+/// testing here is that we use our own global lock to make sure pipe opening and child spawning
+/// don't overlap.
+#[test]
+#[cfg(feature = "timeout")]
+fn test_pipe_inheritance() {
+    let mut test_duration_secs: u64 = 1;
+    if let Ok(test_duration_secs_str) = std::env::var("DUCT_RACE_TEST_SECONDS") {
+        dbg!(&test_duration_secs_str);
+        test_duration_secs = test_duration_secs_str.parse().expect("invalid u64");
+    }
+    let test_start = Instant::now();
+    let test_deadline = test_start + Duration::from_secs(test_duration_secs);
+    let spawns_per_iteration = 100;
+    // If they don't hang, the `cat` processes should exit almost immediately, so a 1 second wait
+    // is generous.
+    let deadlock_timeout = Duration::from_secs(1);
+    let start_barrier = Barrier::new(2);
+    let end_barrier = Barrier::new(2);
+    let deadlocked = AtomicBool::new(false);
+    let finished = AtomicBool::new(false);
+    let mut iterations = 0;
+    std::thread::scope(|scope| {
+        // A background thread spawns `sleep`s.
+        scope.spawn(|| {
+            while !finished.load(Relaxed) && !deadlocked.load(Relaxed) {
+                let mut sleeps = Vec::new();
+                let sleep_cmd = cmd!(path_to_exe("sleep"), "1000000").unchecked();
+                start_barrier.wait();
+                // Spawn all the `sleep`s.
+                for _ in 0..spawns_per_iteration {
+                    let handle = sleep_cmd.start().unwrap();
+                    sleeps.push(handle);
+                }
+                end_barrier.wait();
+                // Clean up `sleep`s *after* the end barrier, so that we wait until the main thread
+                // has confirmed there are no deadlocks.
+                for sleep in sleeps {
+                    sleep.kill().unwrap();
+                    sleep.wait().unwrap();
+                }
+            }
+        });
+        // This thread spawns `cat`s.
+        while !finished.load(Relaxed) && !deadlocked.load(Relaxed) {
+            iterations += 1;
+            let mut cats = Vec::new();
+            let cat_cmd = cmd!(path_to_exe("cat"))
+                // `stdin_bytes` opens a pipe
+                .stdin_bytes(b"foo")
+                // `pipe` opens a pipe (of course)
+                .pipe(cmd!(path_to_exe("cat")))
+                // Capturing output also opens a pipe.
+                .stdout_capture()
+                .unchecked();
+            start_barrier.wait();
+            // Spawn all the `cat`s.
+            for _ in 0..spawns_per_iteration {
+                let handle = cat_cmd.start().unwrap();
+                cats.push(handle);
+            }
+            // Check for deadlocks *before* the end barrier, so that `sleep` cleanup doesn't happen
+            // until this loop is done.
+            for cat in &cats {
+                // Only do a `wait_timeout` if we haven't seen a deadlock yet, so that we exit
+                // quickly once we know the test has failed.
+                if !deadlocked.load(Relaxed) {
+                    let still_running = cat.wait_timeout(deadlock_timeout).unwrap().is_none();
+                    if still_running {
+                        deadlocked.store(true, Relaxed);
+                    }
+                }
+            }
+            // Check the deadline *before* the end barrier, so that both loops are guaranteed to
+            // see the flag in the next iteration.
+            if Instant::now() >= test_deadline {
+                finished.store(true, Relaxed);
+            }
+            end_barrier.wait();
+            // Kill and reap `cat`s *after* the end barrier, because `wait` blocks on their IO
+            // threads, which (if there are inheritance bugs) might be kept running by a `sleep`.
+            // Deadlocking this test isn't the end of the world, because either way it's a CI
+            // failure, but it's a lot nicer to return a clear message quickly. Note that we don't
+            // have to worry about a cycle of `cat`s inheriting each other's pipes, because only
+            // this thread is spawning `cat`s.
+            for cat in cats {
+                cat.kill().unwrap();
+                cat.wait().unwrap();
+            }
+        }
+    });
+    assert!(
+        !deadlocked.load(Relaxed),
+        "deadlock after {iterations} iterations ({:.3} seconds)",
+        (test_start.elapsed() - deadlock_timeout).as_secs_f32(),
+    );
 }
