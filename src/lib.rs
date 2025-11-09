@@ -1520,7 +1520,7 @@ impl StdinBytesHandle {
         mut context: IoContext,
         input: Arc<Vec<u8>>,
     ) -> io::Result<StdinBytesHandle> {
-        let (reader, mut writer) = open_pipe_protected()?;
+        let (reader, mut writer) = os_pipe::pipe()?;
         context.stdin = IoValue::Handle(reader.into());
         let inner_handle = expression.0.start(context)?;
         let writer_thread = SharedThread::spawn(move || {
