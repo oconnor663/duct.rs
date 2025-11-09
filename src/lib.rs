@@ -1350,7 +1350,7 @@ struct PipeHandle {
 
 impl PipeHandle {
     fn start(left: &Expression, right: &Expression, context: IoContext) -> io::Result<PipeHandle> {
-        let (reader, writer) = open_pipe_protected()?;
+        let (reader, writer) = os_pipe::pipe()?;
         // dup'ing stdin/stdout isn't strictly necessary, but no big deal
         let mut left_context = context.try_clone()?;
         left_context.stdout = IoValue::Handle(writer.into());
