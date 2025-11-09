@@ -1921,7 +1921,7 @@ impl OutputCaptureContext {
         match self.pair.get() {
             Some((_, writer)) => writer.try_clone(),
             None => {
-                let (reader, writer) = open_pipe_protected()?;
+                let (reader, writer) = os_pipe::pipe()?;
                 let clone = writer.try_clone();
                 self.pair.set((reader, writer)).unwrap();
                 clone
