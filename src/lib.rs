@@ -100,7 +100,7 @@ use std::io::prelude::*;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, MutexGuard, OnceLock, RwLock};
 
 #[cfg(not(windows))]
 use std::os::unix::prelude::*;
@@ -1265,7 +1265,12 @@ impl ChildHandle {
         for hook in context.before_spawn_hooks.iter() {
             hook.call(&mut command)?;
         }
+
+        // See comments below about why we take this lock (macOS only).
+        let spawn_guard = pipe_and_spawn_lock_guard();
         let shared_child = SharedChild::spawn(&mut command)?;
+        drop(spawn_guard);
+
         let command_string = format!("{:?}", argv);
         Ok(ChildHandle {
             child: Some(shared_child),
@@ -1345,7 +1350,7 @@ struct PipeHandle {
 
 impl PipeHandle {
     fn start(left: &Expression, right: &Expression, context: IoContext) -> io::Result<PipeHandle> {
-        let (reader, writer) = os_pipe::pipe()?;
+        let (reader, writer) = open_pipe_protected()?;
         // dup'ing stdin/stdout isn't strictly necessary, but no big deal
         let mut left_context = context.try_clone()?;
         left_context.stdout = IoValue::Handle(writer.into());
@@ -1515,7 +1520,7 @@ impl StdinBytesHandle {
         mut context: IoContext,
         input: Arc<Vec<u8>>,
     ) -> io::Result<StdinBytesHandle> {
-        let (reader, mut writer) = os_pipe::pipe()?;
+        let (reader, mut writer) = open_pipe_protected()?;
         context.stdin = IoValue::Handle(reader.into());
         let inner_handle = expression.0.start(context)?;
         let writer_thread = SharedThread::spawn(move || {
@@ -1916,7 +1921,7 @@ impl OutputCaptureContext {
         match self.pair.get() {
             Some((_, writer)) => writer.try_clone(),
             None => {
-                let (reader, writer) = os_pipe::pipe()?;
+                let (reader, writer) = open_pipe_protected()?;
                 let clone = writer.try_clone();
                 self.pair.set((reader, writer)).unwrap();
                 clone
@@ -2095,6 +2100,34 @@ fn owned_from_raw(raw: impl IntoRawFd) -> OwnedFd {
 #[cfg(windows)]
 fn owned_from_raw(raw: impl IntoRawHandle) -> OwnedHandle {
     unsafe { OwnedHandle::from_raw_handle(raw.into_raw_handle()) }
+}
+
+fn open_pipe_protected() -> io::Result<(os_pipe::PipeReader, os_pipe::PipeWriter)> {
+    let _guard = pipe_and_spawn_lock_guard(); // See comments below.
+    os_pipe::pipe()
+}
+
+#[allow(unreachable_code)]
+fn pipe_and_spawn_lock_guard() -> Option<MutexGuard<'static, ()>> {
+    // macOS and some other Unixes are missing the pipe2() syscall, which means that opening pipes
+    // can't atomically set CLOEXEC. That creates a race condition between pipe opening threads and
+    // child spawning threads, where children can unintentionally inherit extra pipes, possibly
+    // leading to deadlocks. Use a global lock to prevent this race within Duct itself.
+    // Unfortunately, callers who open their own pipes with e.g. std::io::pipe(), and who can't
+    // guarantee that other (macOS) threads aren't spawning child processes at the same time, need
+    // to create their own global lock.
+    //
+    // Ideally we'd keep this list of targets in sync with the `os_pipe` create, which also should
+    // try to stay in sync with `std::io::pipe()`. In practice I haven't set up any automation for
+    // that, so if you're reading this in 10+ years it might be stale :)
+    #[cfg(any(target_os = "aix", target_vendor = "apple", target_os = "haiku"))]
+    {
+        use std::sync::Mutex;
+        static PIPE_OPENING_LOCK: Mutex<()> = Mutex::new(());
+        return Some(PIPE_OPENING_LOCK.lock().unwrap());
+    }
+    // On Windows, Linux, and most other Unixes, this lock isn't needed.
+    None
 }
 
 #[cfg(test)]
