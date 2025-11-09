@@ -1267,9 +1267,7 @@ impl ChildHandle {
         }
 
         // See comments below about why we take this lock (macOS only).
-        let spawn_guard = pipe_and_spawn_lock_guard();
         let shared_child = SharedChild::spawn(&mut command)?;
-        drop(spawn_guard);
 
         let command_string = format!("{:?}", argv);
         Ok(ChildHandle {
