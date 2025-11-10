@@ -1060,7 +1060,7 @@ impl Handle {
     /// after `kill` usually returns quickly, but there are edge cases where it might not. The most
     /// common case is if a grandchild process has inherited one or more of the child's
     /// stdin/stdout/stderr pipes, and a worker thread related to
-    /// [`stdin_bytes`][Expression::stdin_bytes]/[`stdout_capture][Expression::stdout_capture]/[`stderr_capture][Expression::stderr_capture]
+    /// [`stdin_bytes`][Expression::stdin_bytes]/[`stdout_capture`][Expression::stdout_capture]/[`stderr_capture`][Expression::stderr_capture]
     /// is still running. The kill signal might also be delayed if the child is blocked reading an
     /// unresponsive FUSE filesystem, or paused by a debugger.
     pub fn kill(&self) -> io::Result<()> {
