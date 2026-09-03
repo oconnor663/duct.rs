@@ -1,5 +1,4 @@
 use super::{cmd, Expression};
-use std;
 use std::collections::HashMap;
 use std::env;
 use std::env::consts::EXE_EXTENSION;

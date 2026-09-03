@@ -932,7 +932,7 @@ impl fmt::Debug for Expression {
 
 // Implementing Into<Expression> for references lets us accept both references
 // and values in `pipe`.
-impl<'a> From<&'a Expression> for Expression {
+impl From<&Expression> for Expression {
     fn from(expr: &Expression) -> Expression {
         expr.clone()
     }
@@ -1030,10 +1030,7 @@ impl Handle {
         };
         // If the child returned a "checked" non-zero exit status, make that an error.
         if expression_status.is_checked_error() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                expression_status.message(),
-            ));
+            return Err(io::Error::other(expression_status.message()));
         }
         Ok(Some(output))
     }
@@ -1798,7 +1795,7 @@ pub trait IntoExecutablePath {
 
 // TODO: Get rid of most of these impls once specialization lands.
 
-impl<'a> IntoExecutablePath for &'a Path {
+impl IntoExecutablePath for &Path {
     fn to_executable(self) -> OsString {
         dotify_relative_exe_path(self).into()
     }
@@ -1810,13 +1807,13 @@ impl IntoExecutablePath for PathBuf {
     }
 }
 
-impl<'a> IntoExecutablePath for &'a PathBuf {
+impl IntoExecutablePath for &PathBuf {
     fn to_executable(self) -> OsString {
         dotify_relative_exe_path(self).into()
     }
 }
 
-impl<'a> IntoExecutablePath for &'a str {
+impl IntoExecutablePath for &str {
     fn to_executable(self) -> OsString {
         self.into()
     }
@@ -1828,13 +1825,13 @@ impl IntoExecutablePath for String {
     }
 }
 
-impl<'a> IntoExecutablePath for &'a String {
+impl IntoExecutablePath for &String {
     fn to_executable(self) -> OsString {
         self.into()
     }
 }
 
-impl<'a> IntoExecutablePath for &'a OsStr {
+impl IntoExecutablePath for &OsStr {
     fn to_executable(self) -> OsString {
         self.into()
     }
@@ -1846,7 +1843,7 @@ impl IntoExecutablePath for OsString {
     }
 }
 
-impl<'a> IntoExecutablePath for &'a OsString {
+impl IntoExecutablePath for &OsString {
     fn to_executable(self) -> OsString {
         self.into()
     }
@@ -2066,7 +2063,7 @@ impl ReaderHandle {
     }
 }
 
-impl<'a> Read for &'a ReaderHandle {
+impl Read for &ReaderHandle {
     /// Note that if you don't use
     /// [`unchecked`](struct.Expression.html#method.unchecked), and the child
     /// returns a non-zero exit status, the final call to `read` will return an
