@@ -11,7 +11,7 @@ keywords = ["process", "subprocess", "command", "child", "pipe"]
 edition = "2021"
 
 [dependencies]
-os_pipe = "1.0.0"
+os_pipe = "1.2.3"
 shared_child = { version = "1.1.0", default-features = false }
 shared_thread = "0.2.0"
 

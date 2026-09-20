@@ -88,6 +88,8 @@
 //! # }
 //! ```
 
+#![forbid(unsafe_code)]
+
 use env_name_str::EnvNameString;
 use shared_child::SharedChild;
 use shared_thread::SharedThread;
@@ -103,14 +105,9 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, MutexGuard, OnceLock, RwLock};
 
 #[cfg(not(windows))]
-use std::os::unix::prelude::*;
+use std::os::fd::OwnedFd as OwnedFdOrHandle;
 #[cfg(windows)]
-use std::os::windows::prelude::*;
-
-#[cfg(not(windows))]
-use std::os::fd::IntoRawFd as IntoRawFdOrHandle;
-#[cfg(windows)]
-use std::os::windows::io::IntoRawHandle as IntoRawFdOrHandle;
+use std::os::windows::io::OwnedHandle as OwnedFdOrHandle;
 
 mod env_name_str;
 
@@ -458,8 +455,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stdin_file<T: IntoRawFdOrHandle>(&self, file: T) -> Expression {
-        Self::new(Io(StdinFile(owned_from_raw(file)), self.clone()))
+    pub fn stdin_file<T: Into<OwnedFdOrHandle>>(&self, file: T) -> Expression {
+        Self::new(Io(StdinFile(file.into()), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as input for an expression.
@@ -520,8 +517,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stdout_file<T: IntoRawFdOrHandle>(&self, file: T) -> Expression {
-        Self::new(Io(StdoutFile(owned_from_raw(file)), self.clone()))
+    pub fn stdout_file<T: Into<OwnedFdOrHandle>>(&self, file: T) -> Expression {
+        Self::new(Io(StdoutFile(file.into()), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as output for an expression.
@@ -635,8 +632,8 @@ impl Expression {
     /// # }
     /// # }
     /// ```
-    pub fn stderr_file<T: IntoRawFdOrHandle>(&self, file: T) -> Expression {
-        Self::new(Io(StderrFile(owned_from_raw(file)), self.clone()))
+    pub fn stderr_file<T: Into<OwnedFdOrHandle>>(&self, file: T) -> Expression {
+        Self::new(Io(StderrFile(file.into()), self.clone()))
     }
 
     /// Use `/dev/null` (or `NUL` on Windows) as error output for an expression.
@@ -1563,15 +1560,15 @@ impl StdinBytesHandle {
 enum IoExpressionInner {
     StdinBytes(Arc<Vec<u8>>),
     StdinPath(PathBuf),
-    StdinFile(FdOrHandle),
+    StdinFile(OwnedFdOrHandle),
     StdinNull,
     StdoutPath(PathBuf),
-    StdoutFile(FdOrHandle),
+    StdoutFile(OwnedFdOrHandle),
     StdoutNull,
     StdoutCapture,
     StdoutToStderr,
     StderrPath(PathBuf),
-    StderrFile(FdOrHandle),
+    StderrFile(OwnedFdOrHandle),
     StderrNull,
     StderrCapture,
     StderrToStdout,
@@ -1665,7 +1662,7 @@ enum IoValue {
     ParentStdout,
     ParentStderr,
     Null,
-    Handle(FdOrHandle),
+    Handle(OwnedFdOrHandle),
 }
 
 impl IoValue {
@@ -1714,6 +1711,8 @@ impl ExpressionStatus {
 
     #[cfg(not(windows))]
     fn exit_code_string(&self) -> String {
+        use std::os::unix::process::ExitStatusExt;
+
         if self.status.code().is_none() {
             return format!("<signal {}>", self.status.signal().unwrap());
         }
@@ -2086,23 +2085,6 @@ impl Read for ReaderHandle {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (&*self).read(buf)
     }
-}
-
-#[cfg(not(windows))]
-type FdOrHandle = OwnedFd;
-#[cfg(windows)]
-type FdOrHandle = OwnedHandle;
-
-// Without these conversions this crate could be 100% safe code, so this is kind of a shame, but I
-// don't want to change the trait bounds on stdin_file/stdout_file/stderr_file. There are types
-// that implement IntoRawFd but not Into<OwnedFd>, including RawFd itself.
-#[cfg(not(windows))]
-fn owned_from_raw(raw: impl IntoRawFd) -> OwnedFd {
-    unsafe { OwnedFd::from_raw_fd(raw.into_raw_fd()) }
-}
-#[cfg(windows)]
-fn owned_from_raw(raw: impl IntoRawHandle) -> OwnedHandle {
-    unsafe { OwnedHandle::from_raw_handle(raw.into_raw_handle()) }
 }
 
 fn open_pipe_protected() -> io::Result<(os_pipe::PipeReader, os_pipe::PipeWriter)> {
